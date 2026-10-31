@@ -246,7 +246,7 @@ export class ChatGptBrowser {
     this.lastProgressAt = undefined;
   }
 
-  async picker(kind: PickerKind, select?: string): Promise<{ choices: string[]; selected?: string }> {
+  async picker(kind: PickerKind, select?: string): Promise<{ choices: string[]; selected?: string; confirmed?: boolean }> {
     await this.ensureLoggedIn();
     return readPicker(this.requirePage(), kind, select);
   }

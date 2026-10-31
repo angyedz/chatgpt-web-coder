@@ -145,7 +145,17 @@ try {
   $downloadDir = Join-Path $release 'download'
   New-Item -ItemType Directory -Force -Path $app, $runtime, $downloadDir, (Join-Path $target 'browsers') | Out-Null
 
-  $stage = 'downloading Node.js'
+  $stage = 'preparing Node.js'
+  $previousRuntime = if ($Update) { Join-Path (Join-Path (Join-Path $target 'releases') $ExpectedCurrentRelease) 'runtime' } else { '' }
+  $reuseRuntime = $false
+  if ($previousRuntime -and (Test-Path -LiteralPath (Join-Path $previousRuntime 'node.exe')) -and (Test-Path -LiteralPath (Join-Path $previousRuntime 'npm.cmd'))) {
+    $previousNodeVersion = & (Join-Path $previousRuntime 'node.exe') --version
+    $reuseRuntime = $LASTEXITCODE -eq 0 -and $previousNodeVersion -match '^v24\.'
+  }
+  if ($reuseRuntime) {
+    Write-Host '[1/7] Reusing the installed Node.js 24 runtime...'
+    Copy-Item -Path (Join-Path $previousRuntime '*') -Destination $runtime -Recurse -Force
+  } else {
   Write-Host '[1/7] Downloading a private Node.js 24 runtime...'
   $base = 'https://nodejs.org/dist/latest-v24.x/'
   $checksums = (Invoke-WebRequest -Uri ($base + 'SHASUMS256.txt') -UseBasicParsing -TimeoutSec 60).Content
@@ -161,12 +171,19 @@ try {
   $nodeDir = Join-Path $downloadDir ([IO.Path]::GetFileNameWithoutExtension($archiveName))
   if (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'node.exe')) -or -not (Test-Path -LiteralPath (Join-Path $nodeDir 'npm.cmd'))) { throw 'Node.js archive is incomplete.' }
   Copy-Item -Path (Join-Path $nodeDir '*') -Destination $runtime -Recurse -Force
+  }
   $node = Join-Path $runtime 'node.exe'
   $npm = Join-Path $runtime 'npm.cmd'
   $env:PATH = $runtime + ';' + $env:PATH
   $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $target 'browsers'
 
-  $stage = 'downloading portable Git'
+  $stage = 'preparing portable Git'
+  $gitDir = Join-Path $release 'git'
+  $previousGit = if ($Update) { Join-Path (Join-Path (Join-Path $target 'releases') $ExpectedCurrentRelease) 'git' } else { '' }
+  if ($previousGit -and (Test-Path -LiteralPath (Join-Path $previousGit 'cmd\git.exe'))) {
+    Write-Host '[2/7] Reusing the installed portable Git...'
+    Copy-Item -LiteralPath $previousGit -Destination $gitDir -Recurse
+  } else {
   Write-Host '[2/7] Downloading and verifying portable Git...'
   $gitRelease = Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' -Headers @{ 'User-Agent' = 'chatgpt-coder' } -TimeoutSec 60
   $gitAsset = $gitRelease.assets | Where-Object { $_.name -match '^MinGit-[0-9.]+-64-bit\.zip$' } | Select-Object -First 1
@@ -177,8 +194,8 @@ try {
   $gitZip = Join-Path $downloadDir $gitAsset.name
   Download-File $gitUri.AbsoluteUri $gitZip
   if ((Get-Sha256 -Path $gitZip) -ne $gitHash) { throw 'Portable Git SHA-256 verification failed.' }
-  $gitDir = Join-Path $release 'git'
   Expand-Archive -LiteralPath $gitZip -DestinationPath $gitDir
+  }
   if (-not (Test-Path -LiteralPath (Join-Path $gitDir 'cmd\git.exe'))) { throw 'Portable Git archive is incomplete.' }
 
   $stage = 'installing npm dependencies'

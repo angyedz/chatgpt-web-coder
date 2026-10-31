@@ -710,7 +710,8 @@ export class Orchestrator {
       requested = this.pickerChoices[kind][Number(argument) - 1] ?? "";
       if (!requested) throw new Error(`Use /${kind} first, then choose one of the listed numbers.`);
     }
-    const selected = (await this.browser.picker(kind, requested)).selected;
+    const selection = await this.browser.picker(kind, requested);
+    const selected = selection.selected;
     if (!selected) throw new Error("ChatGPT did not confirm a selection.");
     const previous = this.config.browser[key];
     this.config.browser[key] = selected;
@@ -721,7 +722,10 @@ export class Orchestrator {
       this.pickerChoices.effort = [];
     }
     this.browser.refreshSession();
-    output(`${kind === "model" ? "Model" : "Thinking effort"} selected in ChatGPT: ${selected}.${kind === "model" && previous !== selected ? " Use /effort to see the options for this model." : ""}`);
+    const message = kind === "model" && selection.confirmed === undefined
+      ? `Model selection requested: ${selected}. ChatGPT did not expose confirmation; check the browser.`
+      : `${kind === "model" ? "Model" : "Thinking effort"} selected in ChatGPT: ${selected}.`;
+    output(`${message}${kind === "model" && previous !== selected ? " Use /effort to see the options for this model." : ""}`);
   }
 
   private async handleUpdateCommand(argument: string): Promise<void> {

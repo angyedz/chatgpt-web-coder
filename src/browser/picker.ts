@@ -58,8 +58,9 @@ async function pickerButton(page: Page, kind: PickerKind): Promise<Locator | und
 
 interface MenuItem { label: string; locator: Locator; submenu: boolean }
 interface Choice { label: string; route: string[] }
+interface PickerOrigin { x: number; y: number }
 
-async function items(page: Page): Promise<MenuItem[]> {
+async function items(page: Page, modelOrigin?: PickerOrigin): Promise<MenuItem[]> {
   const menus = page.locator('[role="menu"], [role="listbox"]');
   let scope: Locator | undefined;
   for (let i = 0; i < await menus.count(); i++) {
@@ -78,12 +79,28 @@ async function items(page: Page): Promise<MenuItem[]> {
     const popup = await locator.getAttribute("aria-haspopup");
     result.push({ label, locator, submenu: popup === "menu" || popup === "listbox" || popup === "true" });
   }
+  // Some ChatGPT popovers render model choices as buttons rather than ARIA
+  // menu items. Only consider model-labelled controls near the opened picker.
+  if (modelOrigin) {
+    const buttons = scope ? scope.locator('button, [role="button"]') : page.locator('button, [role="button"]');
+    for (let index = 0; index < await buttons.count(); index += 1) {
+      const locator = buttons.nth(index);
+      if (!(await locator.isVisible().catch(() => false)) || await locator.isDisabled().catch(() => false)) continue;
+      const label = ((await locator.innerText().catch(() => "")).trim().split("\n")[0] || await locator.getAttribute("aria-label") || "").trim();
+      if (!modelChoice.test(label) || label.length > 120 || seen.has(label.toLocaleLowerCase())) continue;
+      const box = await locator.boundingBox().catch(() => null);
+      if (!box || Math.abs(box.x + box.width / 2 - modelOrigin.x) > 350 || Math.abs(box.y + box.height / 2 - modelOrigin.y) > 400) continue;
+      seen.add(label.toLocaleLowerCase());
+      const popup = await locator.getAttribute("aria-haspopup");
+      result.push({ label, locator, submenu: popup === "menu" || popup === "listbox" || popup === "true" });
+    }
+  }
   return result;
 }
 
-async function collectChoices(page: Page, kind: PickerKind, route: string[] = [], depth = 0): Promise<Choice[]> {
+async function collectChoices(page: Page, kind: PickerKind, route: string[] = [], depth = 0, modelOrigin?: PickerOrigin): Promise<Choice[]> {
   const result: Choice[] = [];
-  const menu = await items(page);
+  const menu = await items(page, modelOrigin);
   for (const item of menu) {
     const next = [...route, item.label];
     if (!item.submenu) {
@@ -94,20 +111,82 @@ async function collectChoices(page: Page, kind: PickerKind, route: string[] = []
     if (depth >= 2) continue;
     await item.locator.click();
     await page.waitForTimeout(200);
-    try { result.push(...await collectChoices(page, kind, next, depth + 1)); }
+    try { result.push(...await collectChoices(page, kind, next, depth + 1, modelOrigin)); }
     finally { await page.keyboard.press("Escape").catch(() => undefined); }
   }
   return result;
 }
 
-async function chooseRoute(page: Page, route: string[]): Promise<void> {
+async function chooseRoute(page: Page, route: string[], modelOrigin?: PickerOrigin): Promise<void> {
   for (let index = 0; index < route.length; index++) {
-    const menu = await items(page);
+    const menu = await items(page, modelOrigin);
     const item = menu.find((choice) => choice.label === route[index]);
     if (!item || (index < route.length - 1 && !item.submenu)) throw new Error("ChatGPT's menu changed. Open the list again before choosing.");
     await item.locator.click();
     if (index < route.length - 1) await page.waitForTimeout(200);
   }
+}
+
+async function openModelPicker(page: Page): Promise<PickerOrigin | undefined> {
+  const effort = await pickerButton(page, "effort");
+  if (effort) {
+    const box = await effort.boundingBox().catch(() => null);
+    if (box) {
+      const origin = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      await effort.click();
+      await page.waitForTimeout(300);
+      const candidates = page.locator('button, [role="button"], [role="menuitem"], [role="menuitemradio"]');
+      let trigger: { locator: Locator; distance: number } | undefined;
+      for (let index = 0; index < await candidates.count(); index += 1) {
+        const locator = candidates.nth(index);
+        if (!(await locator.isVisible().catch(() => false)) || await locator.isDisabled().catch(() => false)) continue;
+        const text = ((await locator.innerText().catch(() => "")).trim().split("\n")[0] || await locator.getAttribute("aria-label") || "").trim().replace(/\s*[›→>]\s*$/, "");
+        if (!effortChoice.test(text)) continue;
+        const candidateBox = await locator.boundingBox().catch(() => null);
+        if (!candidateBox) continue;
+        const x = candidateBox.x + candidateBox.width / 2 - origin.x;
+        const y = candidateBox.y + candidateBox.height / 2 - origin.y;
+        const distance = Math.abs(x) + Math.abs(y);
+        // Exclude the outer button itself, which can also be named Medium.
+        if (Math.abs(y) > 10 && Math.abs(x) <= 250 && Math.abs(y) <= 200 && (!trigger || distance < trigger.distance)) trigger = { locator, distance };
+      }
+      if (trigger) {
+        await trigger.locator.click();
+        await page.waitForTimeout(300);
+        return origin;
+      }
+      await page.keyboard.press("Escape").catch(() => undefined);
+    }
+  }
+  const model = await pickerButton(page, "model");
+  if (!model) return undefined;
+  await model.click();
+  await page.waitForTimeout(300);
+  const box = await model.boundingBox().catch(() => null);
+  return box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : undefined;
+}
+
+async function confirmModelSelection(page: Page, expected: string): Promise<boolean | undefined> {
+  const normalized = expected.trim().toLocaleLowerCase();
+  const modelButton = await pickerButton(page, "model");
+  if (modelButton) {
+    const label = ((await modelButton.innerText().catch(() => "")).trim().split("\n")[0] || await modelButton.getAttribute("aria-label") || "").trim().toLocaleLowerCase();
+    if (label === normalized || label.includes(normalized)) return true;
+  }
+  await page.keyboard.press("Escape").catch(() => undefined);
+  const origin = await openModelPicker(page);
+  if (!origin) return undefined;
+  const options = await items(page, origin);
+  const match = options.find((option) => option.label.trim().toLocaleLowerCase() === normalized);
+  if (!match) return undefined;
+  const checked = await match.locator.getAttribute("aria-checked");
+  const selected = await match.locator.getAttribute("aria-selected");
+  const pressed = await match.locator.getAttribute("aria-pressed");
+  const state = await match.locator.getAttribute("data-state");
+  if (checked === "true" || selected === "true" || pressed === "true" || state === "checked") return true;
+  if (await match.locator.locator('[aria-checked="true"], [aria-selected="true"], [data-state="checked"]').count()) return true;
+  if (checked === "false" || selected === "false" || pressed === "false" || state === "unchecked") return false;
+  return undefined;
 }
 
 interface SliderState { min: number; max: number; value: number; text?: string }
@@ -213,18 +292,26 @@ async function readEffortSlider(slider: Locator, select?: string): Promise<{ cho
   return { choices, selected: matches[0] };
 }
 
-export async function readPicker(page: Page, kind: PickerKind, select?: string): Promise<{ choices: string[]; selected?: string }> {
-  const button = await pickerButton(page, kind);
-  if (!button) throw new Error(`The ${kind} control was not found in ChatGPT. Its availability depends on the model and account.`);
+export async function readPicker(page: Page, kind: PickerKind, select?: string): Promise<{ choices: string[]; selected?: string; confirmed?: boolean }> {
   let selected: string | undefined;
+  let confirmed: boolean | undefined;
   try {
-    await button.click();
-    await page.waitForTimeout(300);
+    let modelOrigin: PickerOrigin | undefined;
+    let button: Locator | undefined;
+    if (kind === "model") {
+      modelOrigin = await openModelPicker(page);
+      if (!modelOrigin) throw new Error("The model control was not found in ChatGPT. Open the thinking effort control to check its availability.");
+    } else {
+      button = await pickerButton(page, kind);
+      if (!button) throw new Error("The effort control was not found in ChatGPT. Its availability depends on the model and account.");
+      await button.click();
+      await page.waitForTimeout(300);
+    }
     if (kind === "effort") {
-      const slider = await visibleEffortSlider(page, button);
+      const slider = await visibleEffortSlider(page, button!);
       if (slider) return await readEffortSlider(slider, select);
     }
-    const found = await collectChoices(page, kind);
+    const found = await collectChoices(page, kind, [], 0, modelOrigin);
     const counts = new Map<string, number>();
     for (const choice of found) counts.set(choice.label.toLocaleLowerCase(), (counts.get(choice.label.toLocaleLowerCase()) ?? 0) + 1);
     const choices = found.map((choice) => counts.get(choice.label.toLocaleLowerCase()) === 1 ? choice : { ...choice, label: choice.route.join(" › ") });
@@ -234,11 +321,15 @@ export async function readPicker(page: Page, kind: PickerKind, select?: string):
       const exact = choices.filter((choice) => choice.label.toLocaleLowerCase() === needle || choice.route.join(" › ").toLocaleLowerCase() === needle);
       const matches = exact.length ? exact : choices.filter((choice) => choice.label.toLocaleLowerCase().includes(needle));
       if (matches.length !== 1) throw new Error(matches.length ? `More than one ${kind} matches "${select}"; choose a number from /${kind}.` : `"${select}" is unavailable. Use /${kind} to see the current options.`);
-      await chooseRoute(page, matches[0]!.route);
+      await chooseRoute(page, matches[0]!.route, modelOrigin);
       selected = matches[0]!.label;
       await page.waitForTimeout(200);
+      if (kind === "model") {
+        confirmed = await confirmModelSelection(page, matches[0]!.route.at(-1)!);
+        if (confirmed === false) throw new Error(`ChatGPT did not select ${selected}. Check the model control and try again.`);
+      }
     }
-    return { choices: choices.map((choice) => choice.label), selected };
+    return { choices: choices.map((choice) => choice.label), selected, confirmed };
   } finally {
     await page.keyboard.press("Escape").catch(() => undefined);
   }
