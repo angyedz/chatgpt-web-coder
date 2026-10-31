@@ -25,6 +25,8 @@ interface Row {
   text: string;
   color?: string;
   bold?: boolean;
+  rail?: string;
+  railColor?: string;
 }
 
 export function Transcript({ messages, tools, height, historicalSystemIds, showSystemDetails = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
@@ -38,7 +40,8 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
     timer.unref?.();
     return () => clearInterval(timer);
   }, [running, reducedMotion]);
-  const width = Math.max(1, columns - 4);
+  // Limit prose width on wide terminals and reserve space for the message rail.
+  const width = Math.max(1, Math.min(96, columns - 7));
   const entries: Entry[] = [
     ...messages.map((message) => ({ kind: "message" as const, time: message.createdAt, order: message.order, message })),
     ...tools.map((call) => ({ kind: "tool" as const, time: call.startedAt, order: call.order, call })),
@@ -54,8 +57,11 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
       if (entryIndex > 0 && entries[entryIndex - 1]?.kind !== "tool") {
         rows.push({ key: `${entry.call.id}:space`, text: " " });
       }
+      if (entryIndex === 0 || entries[entryIndex - 1]?.kind !== "tool") {
+        rows.push({ key: `${entry.call.id}:group`, text: "TOOL ACTIVITY", rail: "  ┄  ", railColor: theme.border, color: theme.dim, bold: true });
+      }
       toolDisplayLines(entry.call, width, reducedMotion ? 0 : frame).forEach((line, index) => {
-        rows.push({ key: `${entry.call.id}:${index}`, text: `  ${line.text}`, color: line.color });
+        rows.push({ key: `${entry.call.id}:${index}`, text: line.text, rail: "  │  ", railColor: theme.border, color: line.color });
       });
       continue;
     }
@@ -64,9 +70,10 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
     if (entryIndex > 0) rows.push({ key: `${message.id}:space`, text: " " });
     const systemTitle = message.role === "system" ? /^([^\n]{1,72})\n\s*\n/.exec(message.text) : null;
     const title = systemTitle ? terminalText(systemTitle[1]!).trim() : "";
-    const label = isUser ? "› you" : message.role === "assistant" ? "✳ chatgpt" : title ? `· system  /  ${title}` : "· system";
+    const label = isUser ? "you" : message.role === "assistant" ? "chatgpt" : title ? `system  ·  ${title}` : "system";
     const color = isUser ? theme.user : message.role === "assistant" ? theme.accent : theme.dim;
-    rows.push({ key: `${message.id}:label`, text: `${label}${message.streaming ? ` ${glyphs.cursor}` : message.interrupted ? " · interrupted" : ""}`, color, bold: true });
+    const state = message.streaming ? `  ${glyphs.cursor}` : message.interrupted ? "  ·  interrupted" : "";
+    rows.push({ key: `${message.id}:label`, text: `${label}${state}`, rail: "  ╭─ ", railColor: color, color, bold: true });
     const body = systemTitle ? message.text.slice(systemTitle[0].length) : message.text;
     const lines = markdownLines(body || (message.streaming ? "…" : ""), width);
     const collapsed = message.role === "system" && historicalSystemIds?.has(message.id) && !showSystemDetails && lines.length > 5;
@@ -74,31 +81,37 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
     visibleLines.forEach((line, index) => {
       rows.push({
         key: `${message.id}:${index}`,
-        text: `  ${line.text}`,
+        text: line.text,
+        rail: "  │  ",
+        railColor: color,
         color: line.tone === "heading" ? theme.accent : line.tone === "code" ? theme.accentAlt : line.tone === "muted" ? theme.dim : isUser ? theme.user : theme.assistant,
         bold: line.bold,
       });
     });
-    if (collapsed) rows.push({ key: `${message.id}:collapsed`, text: `  ↳ ${lines.length - visibleLines.length} more lines · Ctrl+O to expand`, color: theme.dim });
+    if (collapsed) rows.push({ key: `${message.id}:collapsed`, text: `${lines.length - visibleLines.length} more lines  ·  Ctrl+O to expand`, rail: "  │  ", railColor: color, color: theme.dim });
     else if (message.role === "system" && historicalSystemIds?.has(message.id) && showSystemDetails && lines.length > 5) {
-      rows.push({ key: `${message.id}:expanded`, text: "  ↳ Ctrl+O to collapse", color: theme.dim });
+      rows.push({ key: `${message.id}:expanded`, text: "Ctrl+O to collapse", rail: "  │  ", railColor: color, color: theme.dim });
     }
+    rows.push({ key: `${message.id}:end`, text: "", rail: "  ╰─", railColor: color });
   }
 
   // Lay out and clip by actual terminal rows, not by message count. Ink/Yoga
   // otherwise shrinks long messages and paints them over the following tools.
-  const hasHistory = rows.length > height && height > 1;
-  const visibleHeight = Math.max(1, height - (hasHistory ? 1 : 0));
+  const showSection = height >= 4;
+  const contentHeight = Math.max(1, height - (showSection ? 1 : 0));
+  const hasHistory = rows.length > contentHeight && contentHeight > 1;
+  const visibleHeight = Math.max(1, contentHeight - (hasHistory ? 1 : 0));
   const limit = Math.max(0, rows.length - visibleHeight);
   useEffect(() => { onScrollLimit?.(limit); }, [limit, onScrollLimit]);
   const offset = Math.min(scrollOffset, limit);
   const end = Math.max(0, rows.length - offset);
   const visible = rows.slice(Math.max(0, end - visibleHeight), end);
   return (
-    <Box flexDirection="column" flexGrow={1} flexShrink={0} height={height} overflow="hidden" justifyContent="flex-end" paddingX={1}>
+    <Box flexDirection="column" flexGrow={1} flexShrink={0} height={height} overflow="hidden" paddingX={1}>
+      {showSection ? <Text color={theme.border} wrap="truncate-end">  ── <Text bold color={theme.dim}>CONVERSATION</Text> {"─".repeat(Math.max(0, Math.min(24, columns - 22)))}</Text> : null}
       {hasHistory ? <Text color={theme.dim}>{offset > 0 ? "↑ history · PgUp / PgDn to scroll" : "↑ earlier messages · PgUp to scroll"}</Text> : null}
       {entries.length === 0 ? <Welcome height={height} /> : visible.map((row) => (
-        <Text key={row.key} color={row.color} bold={row.bold} wrap="truncate-end">{row.text || " "}</Text>
+        <Text key={row.key} wrap="truncate-end"><Text color={row.railColor}>{row.rail ?? ""}</Text><Text color={row.color} bold={row.bold}>{row.text || (row.rail ? "" : " ")}</Text></Text>
       ))}
     </Box>
   );
