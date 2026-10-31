@@ -106,7 +106,7 @@ export function Transcript({ messages, tools, height, systemView = false, scroll
   return (
     <Box flexDirection="column" flexGrow={1} flexShrink={0} height={height} overflow="hidden" paddingX={1}>
       {showSection ? <Text color={theme.border} wrap="truncate-end">  ── <Text bold color={theme.dim}>{systemView ? "SYSTEM LOG" : "CONVERSATION"}</Text> {"─".repeat(Math.max(0, Math.min(24, columns - 22)))} <Text color={theme.dim}>Ctrl+O {systemView ? "chat" : "system log"}</Text></Text> : null}
-      {hasHistory ? <Text color={theme.dim}>{offset > 0 ? "↑ history · PgUp / PgDn to scroll" : "↑ earlier messages · PgUp to scroll"}</Text> : null}
+      {hasHistory ? <Text color={theme.dim}>{offset > 0 ? "↑ history · mouse wheel / PgUp / PgDn" : "↑ earlier messages · mouse wheel / PgUp"}</Text> : null}
       {entries.length === 0 ? systemView ? <Text color={theme.dim}>  No system messages.</Text> : <Welcome height={height} /> : visible.map((row) => (
         <Text key={row.key} wrap="truncate-end"><Text color={row.railColor}>{row.rail ?? ""}</Text><Text color={row.color} bold={row.bold}>{row.text || (row.rail ? "" : " ")}</Text></Text>
       ))}

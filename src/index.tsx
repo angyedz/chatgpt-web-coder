@@ -12,6 +12,7 @@ import { App } from "./tui/App.js";
 import { terminalText } from "./tui/terminal-text.js";
 import { installTunnelClient } from "./runtime/install-tunnel.js";
 import { APP_VERSION } from "./runtime/version.js";
+import { disableMouse } from "./tui/useMouseWheel.js";
 
 const HELP = `chatgpt-coder — ChatGPT Web drives Codex-style local tools over MCP.
 
@@ -114,6 +115,7 @@ async function main(): Promise<void> {
     await app.waitUntilExit();
   } finally {
     process.off("SIGTERM", onSigterm);
+    if (process.stdout.isTTY && process.env.TERM !== "dumb") process.stdout.write(disableMouse);
     await orchestrator.shutdown();
   }
   process.stdout.write("Bye\n");

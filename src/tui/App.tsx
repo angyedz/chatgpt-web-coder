@@ -20,6 +20,7 @@ import { StatusBar } from "./components/StatusBar.js";
 import { Transcript } from "./components/Transcript.js";
 import { theme } from "./theme.js";
 import { terminalText } from "./terminal-text.js";
+import { useMouseWheel } from "./useMouseWheel.js";
 
 interface Notice {
   id: number;
@@ -371,6 +372,9 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     + (maxPlanSteps ? 2 + Math.min(plan.length, maxPlanSteps) : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0);
   const transcriptHeight = Math.max(0, rows - chrome);
+  useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
+    setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
+  });
 
   return (
     <Box flexDirection="column" height={rows}>
