@@ -27,7 +27,7 @@ export function Header({ model, session, approvalMode, status, localSessionId, c
     <Box flexDirection="column" marginBottom={1}>
       <Box borderStyle="round" borderColor={theme.border} paddingX={1} justifyContent="space-between">
         <Text><Text bold color={theme.accent}>◆ chatgpt-coder</Text>{columns >= 65 ? <Text dimColor>  /  your coding workspace</Text> : null}{columns >= 110 && localSessionId ? <Text dimColor>  ·  {terminalText(localSessionId.slice(0, 8))}</Text> : null}</Text>
-        {columns >= 80 ? <Text dimColor>{terminalText(model || "auto model")}  ·  {session?.temporary === false ? "saved chat" : "temporary chat"}</Text> : null}
+        {columns >= 80 ? <Text dimColor>{terminalText(model || "auto model")}{session?.effort ? ` · ${terminalText(session.effort)}` : ""}  ·  {session?.temporary === false ? "saved chat" : "temporary chat"}</Text> : null}
       </Box>
       <Box paddingX={2} gap={2}>
         <Service label="browser" state={status.browser?.state ?? "off"} />

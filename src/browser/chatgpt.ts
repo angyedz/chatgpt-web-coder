@@ -6,6 +6,7 @@ import { ResponseStream } from "./response-stream.js";
 import { extractResponse, removeResponseStatus } from "./response-text.js";
 import { readMarkdown } from "./markdown.js";
 import { newId } from "../utils/ids.js";
+import { readPicker, type PickerKind } from "./picker.js";
 
 export class ChatGptBrowser {
   private context?: BrowserContext;
@@ -245,54 +246,12 @@ export class ChatGptBrowser {
     this.lastProgressAt = undefined;
   }
 
-  async selectModel(label: string): Promise<void> {
-    if (!label.trim()) return;
-    const page = this.requirePage();
-    const button = await this.firstVisible("modelButton");
-    if (!button) {
-      this.events.emit({
-        type: "notice",
-        level: "warn",
-        text: `Could not find the model picker; keeping the current model instead of "${label}".`,
-      });
-      return;
-    }
-
-    try {
-      await button.click();
-      await page.waitForTimeout(500);
-      const items = page.locator(selectors.modelMenuItem.join(", "));
-      const count = await items.count();
-      for (let index = 0; index < count; index += 1) {
-        const item = items.nth(index);
-        if (!(await item.isVisible().catch(() => false))) continue;
-        const text = (await item.innerText().catch(() => "")).trim();
-        if (text.toLowerCase().includes(label.toLowerCase())) {
-          await item.click();
-          await page.waitForTimeout(300);
-          this.events.emit({
-            type: "notice",
-            level: "info",
-            text: `Selected model: ${text.split("\n")[0]}`,
-          });
-          return;
-        }
-      }
-      await page.keyboard.press("Escape");
-      this.events.emit({
-        type: "notice",
-        level: "warn",
-        text: `Model "${label}" was not found in the picker.`,
-      });
-    } catch (error) {
-      await page.keyboard.press("Escape").catch(() => undefined);
-      this.events.emit({
-        type: "notice",
-        level: "warn",
-        text: `Model selection failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    }
+  async picker(kind: PickerKind, select?: string): Promise<{ choices: string[]; selected?: string }> {
+    await this.ensureLoggedIn();
+    return readPicker(this.requirePage(), kind, select);
   }
+
+  refreshSession(): void { this.emitSession(); }
 
   async send(prompt: string, signal: AbortSignal, options: { continueChat?: boolean; canRecoverStall?: () => boolean } = {}): Promise<string> {
     signal.throwIfAborted();
@@ -303,7 +262,8 @@ export class ChatGptBrowser {
     signal.throwIfAborted();
     if (await this.firstVisible("stopButton")) throw new Error("ChatGPT is still generating a previous response. Wait or stop it in the browser before sending another request.");
     signal.throwIfAborted();
-    await this.selectModel(this.config.modelLabel);
+    if (this.config.modelLabel.trim()) await this.picker("model", this.config.modelLabel);
+    if (this.config.effortLabel.trim()) await this.picker("effort", this.config.effortLabel);
     signal.throwIfAborted();
 
     this.endedAfterTool = false;
@@ -1025,6 +985,7 @@ export class ChatGptBrowser {
         url: page.url(),
         temporary: this.config.useTemporaryChat,
         model: this.config.modelLabel || undefined,
+        effort: this.config.effortLabel || undefined,
       },
     });
   }

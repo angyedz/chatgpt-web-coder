@@ -58,6 +58,7 @@ export interface SessionInfo {
   url?: string;
   temporary: boolean;
   model?: string;
+  effort?: string;
 }
 
 export type HarnessEvent =

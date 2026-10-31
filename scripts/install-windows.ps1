@@ -215,7 +215,17 @@ try {
   $previousRelease = if (Test-Path -LiteralPath $marker) { [IO.File]::ReadAllText($marker).Trim() } else { '' }
   $package = Get-Content -LiteralPath (Join-Path $app 'package.json') -Raw | ConvertFrom-Json
   if ($package.name -ne 'chatgpt-coder' -or -not $package.version) { throw 'Invalid application package metadata.' }
-  $releaseMetadata = @{ version = [string]$package.version; previous = $previousRelease; installedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+  $metadata = @{ version = [string]$package.version; previous = $previousRelease; installedAt = [DateTime]::UtcNow.ToString('o') }
+  $releaseInfoPath = Join-Path $source 'prebuilt\release-info.json'
+  if (Test-Path -LiteralPath $releaseInfoPath) {
+    $releaseInfo = Get-Content -LiteralPath $releaseInfoPath -Raw | ConvertFrom-Json
+    if ($releaseInfo.repository -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $releaseInfo.tag -match '^build-\d+-\d+$' -and $releaseInfo.commit -match '^[a-f0-9]{40}$') {
+      $metadata.repository = [string]$releaseInfo.repository
+      $metadata.tag = [string]$releaseInfo.tag
+      $metadata.commit = [string]$releaseInfo.commit
+    }
+  }
+  $releaseMetadata = $metadata | ConvertTo-Json -Compress
   [IO.File]::WriteAllText((Join-Path $release 'release.json'), $releaseMetadata, [Text.Encoding]::UTF8)
   $markerTemp = Join-Path $target ('.current-' + $releaseId + '.tmp')
   [IO.File]::WriteAllText($markerTemp, $releaseId, [Text.Encoding]::ASCII)

@@ -15,6 +15,7 @@ import {
 import { fetchWebPage, searxngSearch } from "./search.js";
 import { scheduleTimer, describeTimer } from "../runtime/schedule.js";
 import { extensionTools } from "./extensions.js";
+import { sshTools } from "./ssh.js";
 import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
 import type { ExecSessionManager } from "./exec.js";
 import {
@@ -79,6 +80,7 @@ function formatExecResult(
 
 export const toolDefinitions: ToolDefinition[] = [
   ...extensionTools,
+  ...sshTools,
   {
     name: "git_status",
     title: "Git status",

@@ -13,6 +13,7 @@ export interface BrowserConfig {
   useTemporaryChat: boolean;
   newChatPerTurn: boolean;
   modelLabel: string;
+  effortLabel: string;
   connectorName: string;
   attachConnector: boolean;
   autoApproveToolCalls: boolean;
@@ -60,6 +61,7 @@ export interface HarnessConfig {
   approvalMode: ApprovalMode;
   maxOutputChars: number;
   context: { maxTokens: number };
+  updates: { repository: string; autoCheck: boolean };
   browser: BrowserConfig;
   mcp: McpConfig;
   mcpServers: Record<string, ExternalMcpServer>;
@@ -79,6 +81,7 @@ export function defaultConfig(workspace = process.cwd()): HarnessConfig {
     approvalMode: process.env.HARNESS_APPROVAL === "never" ? "never" : "ask",
     maxOutputChars: 30_000,
     context: { maxTokens: 200_000 },
+    updates: { repository: process.env.CHATGPT_CODER_UPDATE_REPOSITORY ?? "angyedz/chatgpt-web-coder", autoCheck: true },
     browser: {
       headless: process.env.HARNESS_HEADLESS === "true",
       baseUrl: process.env.CHATGPT_URL ?? "https://chatgpt.com/",
@@ -87,6 +90,7 @@ export function defaultConfig(workspace = process.cwd()): HarnessConfig {
       useTemporaryChat: true,
       newChatPerTurn: false,
       modelLabel: process.env.CHATGPT_MODEL_LABEL ?? "",
+      effortLabel: process.env.CHATGPT_EFFORT_LABEL ?? "",
       connectorName: process.env.CHATGPT_CONNECTOR_NAME ?? "chatgpt-coder",
       attachConnector: process.env.HARNESS_ATTACH_CONNECTOR !== "false",
       autoApproveToolCalls: true,
@@ -174,11 +178,13 @@ export function loadConfig(workspace = process.cwd()): HarnessConfig {
   merged = merge(merged, readConfigFile(file));
 
   merged.workspace = workspace;
+  merged.updates.repository = process.env.CHATGPT_CODER_UPDATE_REPOSITORY ?? merged.updates.repository;
   merged.searxng.url =
     process.env.SEARXNG_URL ?? merged.searxng.url;
   merged.mcp.port = Number(process.env.MCP_PORT ?? merged.mcp.port);
   merged.browser.modelLabel =
     process.env.CHATGPT_MODEL_LABEL ?? merged.browser.modelLabel;
+  merged.browser.effortLabel = process.env.CHATGPT_EFFORT_LABEL ?? merged.browser.effortLabel;
   merged.browser.connectorName =
     process.env.CHATGPT_CONNECTOR_NAME ?? merged.browser.connectorName;
   merged.browser.attachConnector =
@@ -221,10 +227,28 @@ export function saveHarnessConfig(config: HarnessConfig): void {
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
+export function saveUpdateSetting(config: HarnessConfig, key: "repository" | "autoCheck", value: string | boolean): void {
+  const globalFile = globalConfigPath();
+  const global = readConfigFile(globalFile) ?? {};
+  const settings = (global.updates ?? {}) as Record<string, unknown>;
+  settings[key] = value;
+  (global as Record<string, unknown>).updates = settings;
+  mkdirSync(path.dirname(globalFile), { recursive: true });
+  writeFileSync(globalFile, `${JSON.stringify(global, null, 2)}\n`, "utf8");
+  const localFile = configPath(config.workspace);
+  if (path.resolve(localFile) === path.resolve(globalFile)) return;
+  const local = readConfigFile(localFile);
+  const localSettings = local?.updates as Record<string, unknown> | undefined;
+  if (local && localSettings && Object.hasOwn(localSettings, key)) {
+    localSettings[key] = value;
+    writeFileSync(localFile, `${JSON.stringify(local, null, 2)}\n`, "utf8");
+  }
+}
+
 // Connection identity is shared across projects. If this project already has
 // an explicit override for the same key, update it as well so the next launch
 // does not silently revert the value just chosen by the user.
-export function saveConnectionSetting(config: HarnessConfig, section: "tunnel" | "browser", key: "tunnelId" | "connectorName", value: string): void {
+export function saveConnectionSetting(config: HarnessConfig, section: "tunnel" | "browser", key: "tunnelId" | "connectorName" | "modelLabel" | "effortLabel", value: string): void {
   const globalFile = globalConfigPath();
   const global = readConfigFile(globalFile) ?? {};
   const sectionValue = (global[section] ?? {}) as Record<string, unknown>;
@@ -263,11 +287,13 @@ export function exampleConfig(): string {
     {
       approvalMode: "ask",
       context: { maxTokens: 200_000 },
+      updates: { repository: "angyedz/chatgpt-web-coder", autoCheck: true },
       browser: {
         headless: false,
         useTemporaryChat: true,
         newChatPerTurn: false,
         modelLabel: "",
+        effortLabel: "",
         connectorName: "chatgpt-coder",
         attachConnector: true,
         autoApproveToolCalls: true,

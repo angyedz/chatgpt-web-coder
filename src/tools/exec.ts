@@ -70,14 +70,30 @@ export class ExecSessionManager {
     command: string,
     options: { workdir?: string; yieldTimeMs?: number; env?: NodeJS.ProcessEnv; background?: boolean; timeoutMs?: number } = {},
   ): Promise<ExecResult> {
+    const invocation = shellInvocation(command);
+    return this.runInvocation(invocation.file, invocation.args, command, options);
+  }
+
+  async runExecutable(
+    file: string,
+    args: string[],
+    options: { workdir?: string; yieldTimeMs?: number; env?: NodeJS.ProcessEnv; background?: boolean; timeoutMs?: number; stdin?: string; displayCommand?: string } = {},
+  ): Promise<ExecResult> {
+    return this.runInvocation(file, args, options.displayCommand ?? file, options);
+  }
+
+  private async runInvocation(
+    file: string,
+    args: string[],
+    command: string,
+    options: { workdir?: string; yieldTimeMs?: number; env?: NodeJS.ProcessEnv; background?: boolean; timeoutMs?: number; stdin?: string },
+  ): Promise<ExecResult> {
     const startedAt = Date.now();
     if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > 2_147_000_000)) {
       throw new Error("Command timeout must be between 100 ms and 24 days.");
     }
     const yieldTimeMs = clamp(options.yieldTimeMs ?? (options.background ? 250 : 10_000), 250, 60_000);
-    const invocation = shellInvocation(command);
-
-    const child = spawn(invocation.file, invocation.args, {
+    const child = spawn(file, args, {
       cwd: options.workdir,
       env: {
         ...process.env,
@@ -151,6 +167,7 @@ export class ExecSessionManager {
     child.stdin.on("error", () => {
       /* the process may close stdin early */
     });
+    if (options.stdin !== undefined) child.stdin.end(options.stdin, "utf8");
 
     await Promise.race([session.exitPromise, sleep(yieldTimeMs)]);
 

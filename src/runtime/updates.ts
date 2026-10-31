@@ -13,7 +13,7 @@ const MAX_UNPACKED = 150 * 1024 * 1024;
 const UPDATE_PROTOCOL = "# chatgpt-coder update protocol: 1";
 
 interface Installation { root: string; release: string }
-export interface UpdatePackage { kind: "package"; version: string; source: string; sha256: string; snapshot: string; installation: Installation }
+export interface UpdatePackage { kind: "package"; version: string; source: string; sha256: string; snapshot: string; installation: Installation; githubRelease?: { repository: string; tag: string; commit?: string } }
 export interface UpdateRollback { kind: "rollback"; version: string; targetRelease: string; installation: Installation }
 export type PendingUpdate = UpdatePackage | UpdateRollback;
 
@@ -32,6 +32,17 @@ async function installation(): Promise<Installation> {
 }
 
 export async function checkUpdateAvailability(): Promise<void> { await installation(); }
+
+export async function installedReleaseSource(): Promise<{ repository?: string; tag?: string; commit?: string; sha256?: string }> {
+  const current = await installation();
+  const data = JSON.parse((await readFile(path.join(current.root, "releases", current.release, "release.json"), "utf8")).replace(/^\uFEFF/, "")) as { repository?: unknown; tag?: unknown; commit?: unknown; sha256?: unknown };
+  return {
+    repository: typeof data.repository === "string" ? data.repository : undefined,
+    tag: typeof data.tag === "string" ? data.tag : undefined,
+    commit: typeof data.commit === "string" ? data.commit : undefined,
+    sha256: typeof data.sha256 === "string" ? data.sha256 : undefined,
+  };
+}
 
 function digest(data: Buffer): string { return createHash("sha256").update(data).digest("hex"); }
 
@@ -186,6 +197,18 @@ export async function applyUpdate(pending: PendingUpdate, report: (message: stri
       if (result.code !== 0) throw new Error(`Update installer exited with code ${result.code}. Previous release remains selected unless the installer changed it. Details: ${result.output.slice(-2500)}`);
       const marker = (await readFile(path.join(current.root, "current.txt"), "utf8")).trim();
       if (!/^[0-9a-f]{32}$/.test(marker) || marker === current.release) throw new Error("Installer did not activate a new release. Check its output.");
+      if (pending.githubRelease) {
+        const metadataPath = path.join(current.root, "releases", marker, "release.json");
+        const metadataTemp = `${metadataPath}.${token}.tmp`;
+        try {
+          const metadata = JSON.parse((await readFile(metadataPath, "utf8")).replace(/^\uFEFF/, "")) as Record<string, unknown>;
+          Object.assign(metadata, pending.githubRelease, { sha256: pending.sha256 });
+          await writeFile(metadataTemp, JSON.stringify(metadata), { encoding: "utf8", flag: "wx" });
+          await rename(metadataTemp, metadataPath);
+        } catch {
+          report("Update installed, but its GitHub release identity could not be recorded. Future checks may show an unknown installed build.");
+        } finally { await unlink(metadataTemp).catch(() => undefined); }
+      }
       await discardUpdate(pending);
     } finally {
       await cleanupStaging(source).catch(() => undefined);

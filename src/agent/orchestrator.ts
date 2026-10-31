@@ -1,4 +1,4 @@
-import { saveConnectionSetting, saveHarnessConfig, saveTunnelApiKey, type ExternalMcpServer, type HarnessConfig } from "../config.js";
+import { saveConnectionSetting, saveHarnessConfig, saveTunnelApiKey, saveUpdateSetting, type ExternalMcpServer, type HarnessConfig } from "../config.js";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
 import { HarnessEvents } from "../events.js";
 import { McpHost } from "../mcp/server.js";
@@ -18,6 +18,7 @@ import type { ConnectionState, TurnPhase } from "../types.js";
 import { installTunnelClient } from "../runtime/install-tunnel.js";
 import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, prepareRollback, prepareUpdate, updateLog, type PendingUpdate } from "../runtime/updates.js";
 import { APP_VERSION } from "../runtime/version.js";
+import { latestGithubRelease, prepareGithubUpdate, validateGithubRepository, type GithubRelease } from "../runtime/github-updates.js";
 
 export class Orchestrator {
   readonly events = new HarnessEvents();
@@ -42,6 +43,10 @@ export class Orchestrator {
   private phaseState: TurnPhase = "idle";
   private pendingUpdate?: PendingUpdate;
   private updateOperation?: Promise<void>;
+  private updateCheckTimer?: NodeJS.Timeout;
+  private updateCheckInFlight = false;
+  private lastNotifiedUpdate?: string;
+  private readonly pickerChoices: Record<"model" | "effort", string[]> = { model: [], effort: [] };
 
   constructor(public readonly config: HarnessConfig) {
     this.runtime = createRuntime(config, this.events);
@@ -111,6 +116,13 @@ export class Orchestrator {
     this.tunnel = new TunnelSupervisor(this.config.tunnel, url, this.events);
     void this.tunnel.start();
     void this.bootstrapBrowser();
+    if (process.env.CHATGPT_CODER_INSTALL_DIR) {
+      if (this.config.updates.autoCheck) void this.checkForUpdatesInBackground();
+      this.updateCheckTimer = setInterval(() => {
+        if (this.config.updates.autoCheck) void this.checkForUpdatesInBackground();
+      }, 6 * 60 * 60 * 1000);
+      this.updateCheckTimer.unref();
+    }
   }
 
   async submit(input: string): Promise<void> {
@@ -171,6 +183,7 @@ export class Orchestrator {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    if (this.updateCheckTimer) clearInterval(this.updateCheckTimer);
     await this.updateOperation?.catch(() => undefined);
     await discardUpdate(this.pendingUpdate);
     this.pendingUpdate = undefined;
@@ -350,9 +363,9 @@ export class Orchestrator {
           type: "notice",
           level: "info",
           text: [
-            "Chats: /new fresh chat · /clear transcript · /model <label>",
+            "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
-            "Updates: /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
+            "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
             "Setup: /connect · /doctor · /login · /tunnel · /searxng <url> · /status (Ctrl+D while working)",
             "Tools/context: /tools · /mcp · /skills · /agents [path] · /context [200k] · /compact · /quit",
@@ -379,22 +392,25 @@ export class Orchestrator {
         return;
 
       case "model":
-        if (!argument) {
-          this.events.emit({
-            type: "notice",
-            level: "warn",
-            text: "Usage: /model <visible model label>",
-          });
-          return;
+      case "effort": {
+        const kind = command.toLowerCase() as "model" | "effort";
+        this.busy = true;
+        const operationId = newId("picker");
+        this.events.emit({ type: "turn-start", turnId: operationId });
+        this.events.emit({ type: "phase", phase: "sending" });
+        let ok = false;
+        try {
+          await this.handlePickerCommand(kind, argument);
+          ok = true;
+        } catch (error) {
+          this.events.emit({ type: "notice", level: "error", text: `${kind}: ${error instanceof Error ? error.message : String(error)}` });
+        } finally {
+          this.busy = false;
+          this.events.emit({ type: "turn-end", turnId: operationId, ok });
+          this.events.emit({ type: "phase", phase: "idle" });
         }
-        this.config.browser.modelLabel = argument;
-        this.runtime.context.config.browser.modelLabel = argument;
-        this.events.emit({
-          type: "notice",
-          level: "info",
-          text: `Model label set to "${argument}". It will be selected before the next message.`,
-        });
         return;
+      }
 
       case "approval":
         if (argument !== "ask" && argument !== "never") {
@@ -672,6 +688,43 @@ export class Orchestrator {
     }
   }
 
+  private async handlePickerCommand(kind: "model" | "effort", argument: string): Promise<void> {
+    const key = kind === "model" ? "modelLabel" : "effortLabel";
+    const output = (value: string) => this.events.emit({ type: "system-message", id: newId("system"), text: value });
+    if (argument.toLowerCase() === "default") {
+      this.config.browser[key] = "";
+      saveConnectionSetting(this.config, "browser", key, "");
+      this.pickerChoices[kind] = [];
+      this.browser.refreshSession();
+      output(`${kind === "model" ? "Model" : "Thinking effort"}: using the current ChatGPT setting. No override will be applied on the next message.`);
+      return;
+    }
+    if (!argument || argument.toLowerCase() === "list") {
+      const result = await this.browser.picker(kind);
+      this.pickerChoices[kind] = result.choices;
+      const choices = result.choices.map((label, index) => `${index + 1}. ${label}`).join("\n");
+      output(`Available ${kind === "model" ? "models" : "thinking efforts"} in ChatGPT\n\n${choices}\n\nChoose with /${kind} <number> or /${kind} <name>. Use /${kind} default to keep ChatGPT's current setting.`);
+      return;
+    }
+    let requested = argument;
+    if (/^\d+$/.test(argument)) {
+      requested = this.pickerChoices[kind][Number(argument) - 1] ?? "";
+      if (!requested) throw new Error(`Use /${kind} first, then choose one of the listed numbers.`);
+    }
+    const selected = (await this.browser.picker(kind, requested)).selected;
+    if (!selected) throw new Error("ChatGPT did not confirm a selection.");
+    const previous = this.config.browser[key];
+    this.config.browser[key] = selected;
+    saveConnectionSetting(this.config, "browser", key, selected);
+    if (kind === "model" && previous !== selected) {
+      this.config.browser.effortLabel = "";
+      saveConnectionSetting(this.config, "browser", "effortLabel", "");
+      this.pickerChoices.effort = [];
+    }
+    this.browser.refreshSession();
+    output(`${kind === "model" ? "Model" : "Thinking effort"} selected in ChatGPT: ${selected}.${kind === "model" && previous !== selected ? " Use /effort to see the options for this model." : ""}`);
+  }
+
   private async handleUpdateCommand(argument: string): Promise<void> {
     const command = argument.toLowerCase();
     const output = (text: string) => this.events.emit({ type: "system-message", id: newId("system"), text });
@@ -698,6 +751,39 @@ export class Orchestrator {
       output(`Latest update log\n\n${await updateLog()}`);
       return;
     }
+    if (command === "source") {
+      output(`GitHub update source: ${this.config.updates.repository}\nAutomatic check: ${this.config.updates.autoCheck ? "on" : "off"}\nUse /update source owner/repository to change it, or /update autocheck on|off.`);
+      return;
+    }
+    if (command.startsWith("source ")) {
+      const repository = validateGithubRepository(argument.slice("source ".length));
+      saveUpdateSetting(this.config, "repository", repository);
+      this.config.updates.repository = repository;
+      output(`GitHub update source: ${repository}. Use /update check to find its latest public release.`);
+      return;
+    }
+    if (command.startsWith("autocheck ")) {
+      const setting = command.slice("autocheck ".length).trim();
+      if (setting !== "on" && setting !== "off") throw new Error("Usage: /update autocheck on|off");
+      this.config.updates.autoCheck = setting === "on";
+      saveUpdateSetting(this.config, "autoCheck", this.config.updates.autoCheck);
+      output(`Automatic GitHub update checks: ${setting}.`);
+      return;
+    }
+    if (command === "check") {
+      const release = await latestGithubRelease(this.config.updates.repository);
+      output(this.describeGithubRelease(release));
+      return;
+    }
+    if (command === "latest" || command === "download") {
+      const release = await latestGithubRelease(this.config.updates.repository);
+      this.events.emit({ type: "notice", level: "info", text: `Downloading ${release.name} from ${release.repository}…` });
+      const next = await prepareGithubUpdate(release);
+      await discardUpdate(this.pendingUpdate);
+      this.pendingUpdate = next;
+      output(`${this.describeGithubRelease(release)}\n\n${this.describePendingUpdate(next)}`);
+      return;
+    }
     let next: PendingUpdate;
     if (command === "rollback") {
       next = await prepareRollback();
@@ -717,6 +803,31 @@ export class Orchestrator {
       return `Rollback selected\n\nRunning version: ${APP_VERSION}\nPrevious version: ${pending.version}\nRelease: ${pending.targetRelease.slice(0, 8)}\n\nType /update apply to switch to this version, or /update cancel. Restart the harness afterwards.`;
     }
     return `Update selected\n\nRunning version: ${APP_VERSION}\nPackage version: ${pending.version}\nFile: ${pending.source}\nSHA-256: ${pending.sha256}\n\nOnly install a ZIP from someone you trust: update packages can run code with your account's permissions. Type /update apply to install it, or /update cancel. Installation may download dependencies and requires a restart.`;
+  }
+
+  private describeGithubRelease(release: GithubRelease): string {
+    const state = release.comparison === "current" ? "This GitHub build is already installed."
+      : release.comparison === "older" ? `This release has an older version than the running ${APP_VERSION}; installing it would be a downgrade.`
+        : release.comparison === "different" ? "A different GitHub build is available."
+          : "The installed build cannot be compared with this release; check the version before installing.";
+    return `GitHub release\n\n${release.name}\nRepository: ${release.repository}\nTag: ${release.tag}\nRunning version: ${APP_VERSION}\n${state}\nSHA-256: ${release.sha256}\n\nUse /update latest to download and review, then /update apply to install. /update still selects a local ZIP.`;
+  }
+
+  private async checkForUpdatesInBackground(): Promise<void> {
+    if (this.updateCheckInFlight || !this.config.updates.autoCheck || this.shuttingDown) return;
+    this.updateCheckInFlight = true;
+    try {
+      const release = await latestGithubRelease(this.config.updates.repository);
+      const identity = `${release.repository.toLowerCase()}:${release.tag}:${release.sha256}`;
+      if (!this.shuttingDown && this.config.updates.autoCheck && release.repository === this.config.updates.repository && release.comparison === "different" && this.lastNotifiedUpdate !== identity) {
+        this.lastNotifiedUpdate = identity;
+        this.events.emit({ type: "notice", level: "info", text: `GitHub update available: ${release.name}. Use /update check or /update latest.` });
+      }
+    } catch {
+      // Startup is usable offline; /update check reports the concrete error on demand.
+    } finally {
+      this.updateCheckInFlight = false;
+    }
   }
 
   private captureSessionRuntime(): void {

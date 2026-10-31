@@ -4,6 +4,10 @@
   "context": {
     "maxTokens": 200000
   },
+  "updates": {
+    "repository": "angyedz/chatgpt-web-coder",
+    "autoCheck": true
+  },
   "browser": {
     "headless": false,
     "baseUrl": "https://chatgpt.com/",
@@ -12,6 +16,7 @@
     "useTemporaryChat": true,
     "newChatPerTurn": false,
     "modelLabel": "",
+    "effortLabel": "",
     "connectorName": "chatgpt-coder",
     "attachConnector": true,
     "autoApproveToolCalls": true,

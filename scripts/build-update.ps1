@@ -65,6 +65,10 @@ try {
     $prebuilt = Join-Path $stage 'prebuilt'
     New-Item -ItemType Directory -Path $prebuilt | Out-Null
     Move-Item -LiteralPath (Join-Path $stage 'dist') -Destination (Join-Path $prebuilt 'dist')
+    if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_REPOSITORY -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $env:GITHUB_SHA -match '^[a-f0-9]{40}$' -and $env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
+      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"; commit = $env:GITHUB_SHA } | ConvertTo-Json -Compress
+      [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
+    }
     Write-Host '[3/4] Compiling Windows launcher...'
     & $compiler /nologo /target:exe ("/out:" + (Join-Path $prebuilt 'chatgpt-coder.exe')) (Join-Path $stage 'scripts\windows-launcher.cs')
     if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
