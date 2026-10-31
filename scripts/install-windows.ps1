@@ -20,6 +20,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# The installer can be launched from PowerShell 7, which may pass its own
+# module paths to Windows PowerShell 5.1. Prefer the matching built-in modules.
+$windowsModules = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules'
+if (Test-Path -LiteralPath $windowsModules) { $env:PSModulePath = $windowsModules + ';' + $env:PSModulePath }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $OutputEncoding = New-Object System.Text.UTF8Encoding $false
@@ -35,6 +39,14 @@ function Invoke-Checked {
 function Download-File {
   param([string]$Url, [string]$Destination)
   Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 300
+}
+
+function Get-Sha256 {
+  param([string]$Path)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  $stream = [IO.File]::OpenRead($Path)
+  try { return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+  finally { $stream.Dispose(); $sha256.Dispose() }
 }
 
 function Test-Search {
@@ -143,7 +155,7 @@ try {
   $archiveName = $Matches[2]
   $archivePath = Join-Path $downloadDir $archiveName
   Download-File ($base + $archiveName) $archivePath
-  $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $actualHash = Get-Sha256 -Path $archivePath
   if ($actualHash -ne $expectedHash) { throw 'Node.js SHA-256 verification failed.' }
   Expand-Archive -LiteralPath $archivePath -DestinationPath $downloadDir
   $nodeDir = Join-Path $downloadDir ([IO.Path]::GetFileNameWithoutExtension($archiveName))
@@ -164,7 +176,7 @@ try {
   if ($gitUri.Scheme -ne 'https' -or $gitUri.Host -ne 'github.com' -or -not $gitUri.AbsolutePath.StartsWith('/git-for-windows/git/releases/download/')) { throw 'Unexpected portable Git download URL.' }
   $gitZip = Join-Path $downloadDir $gitAsset.name
   Download-File $gitUri.AbsoluteUri $gitZip
-  if ((Get-FileHash -LiteralPath $gitZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $gitHash) { throw 'Portable Git SHA-256 verification failed.' }
+  if ((Get-Sha256 -Path $gitZip) -ne $gitHash) { throw 'Portable Git SHA-256 verification failed.' }
   $gitDir = Join-Path $release 'git'
   Expand-Archive -LiteralPath $gitZip -DestinationPath $gitDir
   if (-not (Test-Path -LiteralPath (Join-Path $gitDir 'cmd\git.exe'))) { throw 'Portable Git archive is incomplete.' }

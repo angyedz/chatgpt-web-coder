@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useState } from "react";
 import { Box, Text, useWindowSize } from "ink";
 import type { ChatMessage, ToolCallView } from "../../types.js";
 import { markdownLines } from "../markdown.js";
@@ -102,7 +102,7 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
   const hasHistory = rows.length > contentHeight && contentHeight > 1;
   const visibleHeight = Math.max(1, contentHeight - (hasHistory ? 1 : 0));
   const limit = Math.max(0, rows.length - visibleHeight);
-  useEffect(() => { onScrollLimit?.(limit); }, [limit, onScrollLimit]);
+  useLayoutEffect(() => { onScrollLimit?.(limit); }, [limit, onScrollLimit]);
   const offset = Math.min(scrollOffset, limit);
   const end = Math.max(0, rows.length - offset);
   const visible = rows.slice(Math.max(0, end - visibleHeight), end);
