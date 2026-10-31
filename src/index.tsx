@@ -100,20 +100,23 @@ async function main(): Promise<void> {
   await orchestrator.start();
 
   const app = render(<App orchestrator={orchestrator} />, {
+    alternateScreen: true,
     exitOnCtrlC: false,
     patchConsole: false,
   });
 
-  const shutdown = async () => {
-    await orchestrator.shutdown();
+  const onSigterm = () => {
+    app.unmount();
   };
+  process.once("SIGTERM", onSigterm);
 
-  process.once("SIGTERM", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-
-  await app.waitUntilExit();
-  await shutdown();
+  try {
+    await app.waitUntilExit();
+  } finally {
+    process.off("SIGTERM", onSigterm);
+    await orchestrator.shutdown();
+  }
+  process.stdout.write("Bye\n");
 }
 
 function valueOf(args: string[], flag: string): string | undefined {

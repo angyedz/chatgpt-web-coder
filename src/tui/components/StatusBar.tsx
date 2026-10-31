@@ -10,9 +10,10 @@ interface StatusBarProps {
   mcpUrl?: string;
   tunnelDetail?: string;
   approvalMode: "ask" | "never";
+  showPhase?: boolean;
 }
 
-const phaseLabel: Record<TurnPhase, string> = {
+export const phaseLabel: Record<TurnPhase, string> = {
   idle: "ready",
   sending: "sending prompt",
   thinking: "ChatGPT is thinking",
@@ -20,49 +21,22 @@ const phaseLabel: Record<TurnPhase, string> = {
   tool: "local tool running",
   "waiting-approval": "waiting for approval",
   updating: "updating application",
+  "downloading-update": "downloading update",
   cancelling: "stopping",
   "waiting-login": "waiting for ChatGPT login",
   error: "error",
 };
 
-export function StatusBar({
-  phase,
-  workspace,
-  mcpUrl,
-  tunnelDetail,
-  approvalMode,
-}: StatusBarProps) {
-  const { columns: width = 100 } = useWindowSize();
-  const maxWorkspace = Math.max(10, width - (width >= 100 ? 68 : 34));
-  const safeWorkspace = terminalText(workspace);
-  const shortWorkspace = safeWorkspace.length > maxWorkspace
-    ? `…${safeWorkspace.slice(-(maxWorkspace - 1))}`
-    : safeWorkspace;
-
+export function StatusBar({ phase, workspace, approvalMode, showPhase = true }: StatusBarProps) {
+  const { columns = 100 } = useWindowSize();
+  const safe = terminalText(workspace);
+  const available = Math.max(10, columns - (columns >= 85 ? 43 : 18));
+  const short = safe.length > available ? `…${safe.slice(-(available - 1))}` : safe;
+  const color = phase === "error" ? theme.error : phase === "cancelling" || phase === "waiting-approval" ? theme.warn : theme.ok;
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={theme.border}
-      borderTop
-      borderBottom={false}
-      borderLeft={false}
-      borderRight={false}
-      paddingX={1}
-    >
-      <Box justifyContent="space-between">
-        <Box gap={2}>
-          <Text color={phase === "error" ? theme.error : phase === "cancelling" ? theme.warn : theme.accent}>
-            {phase === "idle" ? "●" : "◌"} {phaseLabel[phase]}
-          </Text>
-          <Text dimColor>{shortWorkspace}</Text>
-        </Box>
-        {width >= 100 ? <Box gap={2}>
-          {mcpUrl ? <Text dimColor>mcp :{new URL(mcpUrl).port}</Text> : null}
-          {tunnelDetail ? <Text dimColor>tunnel {terminalText(tunnelDetail)}</Text> : null}
-          <Text dimColor>approval {approvalMode}</Text>
-        </Box> : null}
-      </Box>
+    <Box paddingX={1} justifyContent="space-between" gap={1} flexShrink={0}>
+      <Text color={theme.dim} wrap="truncate-end">{showPhase ? <><Text color={color}>{phase === "idle" ? "●" : "◌"}</Text> {phaseLabel[phase]} <Text color={theme.border}>│</Text> </> : <Text color={theme.border}>⌁ </Text>}{short}</Text>
+      {columns >= 85 ? <Text color={theme.dim} wrap="truncate-end">{approvalMode === "never" ? "approval off" : "approval ask"}  ·  /help  ·  ↑ history</Text> : null}
     </Box>
   );
 }

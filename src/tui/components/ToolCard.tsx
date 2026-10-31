@@ -11,10 +11,11 @@ interface ToolCardProps {
   call: ToolCallView;
 }
 
-export function toolDisplayLines(call: ToolCallView, width: number): { text: string; color: string }[] {
-  const color = call.status === "running" ? theme.warn : call.status === "ok" ? theme.ok : call.status === "denied" ? theme.accentAlt : theme.error;
-  const mark = call.status === "running" ? glyphs.planActive : call.status === "ok" ? glyphs.check : call.status === "denied" ? glyphs.denied : glyphs.cross;
-  const elapsed = call.endedAt ? ` · ${((call.endedAt - call.startedAt) / 1000).toFixed(1)}s` : "";
+export function toolDisplayLines(call: ToolCallView, width: number, frame = 0): { text: string; color: string }[] {
+  const color = call.status === "running" ? theme.accent : call.status === "ok" ? theme.ok : call.status === "denied" ? theme.warn : theme.error;
+  const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const mark = call.status === "running" ? spinner[frame % spinner.length] : call.status === "ok" ? glyphs.check : call.status === "denied" ? glyphs.denied : glyphs.cross;
+  const elapsed = call.endedAt ? ` · ${((call.endedAt - call.startedAt) / 1000).toFixed(1)}s` : call.status === "running" ? ` · ${Math.max(0, Math.floor((Date.now() - call.startedAt) / 1000))}s` : "";
   const args = shortArgs(call.args);
   const header = `${mark} ${terminalText(call.name)}${args ? `  ${args}` : ""}${elapsed}`;
   const lines = [{ text: wrapAnsi(header, Math.max(1, width), { hard: true }).split("\n")[0] ?? "", color }];

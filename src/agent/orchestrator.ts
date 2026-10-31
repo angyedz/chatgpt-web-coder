@@ -731,6 +731,7 @@ export class Orchestrator {
     if (command === "cancel") {
       await discardUpdate(this.pendingUpdate);
       this.pendingUpdate = undefined;
+      this.events.emit({ type: "update-selection" });
       output("Update selection cleared. The installed version was not changed.");
       return;
     }
@@ -740,6 +741,8 @@ export class Orchestrator {
       await this.sessions.flush();
       await applyUpdate(pending, (message) => this.events.emit({ type: "notice", level: "info", text: message }));
       this.pendingUpdate = undefined;
+      this.events.emit({ type: "update-selection" });
+      this.events.emit({ type: "notice", level: "info", text: `${pending.kind === "rollback" ? "Rollback" : "Update"} installed. Restart chatgpt-coder to use version ${pending.version}.` });
       output(`${pending.kind === "rollback" ? "Rollback" : "Update"} to ${pending.version} installed. Exit and restart chatgpt-coder to load it. The current process is still running the previous version.`);
       return;
     }
@@ -776,11 +779,12 @@ export class Orchestrator {
       return;
     }
     if (command === "latest" || command === "download") {
+      this.events.emit({ type: "phase", phase: "downloading-update" });
       const release = await latestGithubRelease(this.config.updates.repository);
-      this.events.emit({ type: "notice", level: "info", text: `Downloading ${release.name} from ${release.repository}…` });
       const next = await prepareGithubUpdate(release);
       await discardUpdate(this.pendingUpdate);
       this.pendingUpdate = next;
+      this.events.emit({ type: "update-selection", pending: { kind: "download", version: next.version } });
       output(`${this.describeGithubRelease(release)}\n\n${this.describePendingUpdate(next)}`);
       return;
     }
@@ -795,6 +799,7 @@ export class Orchestrator {
     }
     await discardUpdate(this.pendingUpdate);
     this.pendingUpdate = next;
+    this.events.emit({ type: "update-selection", pending: { kind: next.kind === "rollback" ? "rollback" : "local", version: next.version } });
     output(this.describePendingUpdate(next));
   }
 

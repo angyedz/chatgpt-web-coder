@@ -84,12 +84,12 @@ describe("TUI components", () => {
     expect(frame).toContain("ask");
   });
 
-  it("renders a welcome card when the transcript is empty", () => {
+  it("renders session shortcuts when the transcript is empty", () => {
     const { lastFrame } = render(
       <Transcript messages={[]} tools={[]} height={20} />,
     );
     const frame = strip(lastFrame());
-    expect(frame).toContain("Ready when you are");
+    expect(frame).toContain("session");
     expect(frame).toContain("/help");
   });
 
@@ -224,7 +224,7 @@ describe("App", () => {
     const { orchestrator, events } = fakeOrchestrator();
     const { lastFrame } = render(<App orchestrator={orchestrator} />);
 
-    expect(strip(lastFrame())).toContain("Ready when you are");
+    expect(strip(lastFrame())).toContain("/help");
     expect(strip(lastFrame())).toContain("● mcp");
 
     events.emit({ type: "session", session: { temporary: true, model: "GPT-5.5" } });

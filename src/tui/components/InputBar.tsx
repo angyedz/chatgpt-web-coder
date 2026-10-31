@@ -63,7 +63,7 @@ export function InputBar({ disabled, phase, inputKey, onSubmit, placeholder, ini
     >
       {disabled ? (
         <Text color={phase === "cancelling" ? theme.warn : theme.dim}>
-          {phase === "cancelling" ? "Stopping…" : phase === "updating" ? "Updating…  ·  please wait" : "Working…  ·  Ctrl+D status  ·  Esc to stop"}
+          {phase === "cancelling" ? "Stopping…" : phase === "downloading-update" ? "Downloading update…  ·  please wait" : phase === "updating" ? "Updating…  ·  please wait" : phase === "waiting-approval" ? "Respond to the approval above" : "Working…  ·  Ctrl+D status  ·  Esc to stop"}
         </Text>
       ) : (
         <Box gap={1}>

@@ -11,6 +11,7 @@ export type TurnPhase =
   | "tool"
   | "waiting-approval"
   | "updating"
+  | "downloading-update"
   | "cancelling"
   | "waiting-login"
   | "error";
@@ -77,6 +78,7 @@ export type HarnessEvent =
       detail?: string;
     }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
+  | { type: "update-selection"; pending?: { kind: "download" | "local" | "rollback"; version: string } }
   | { type: "approval"; request: ApprovalRequest }
   | { type: "approval-resolved"; id: string; allowed: boolean }
   | { type: "turn-start"; turnId: string }

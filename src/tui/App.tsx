@@ -10,8 +10,9 @@ import type {
   ToolCallView,
   TurnPhase,
 } from "../types.js";
-import { firstLines } from "../utils/text.js";
-import { ApprovalPrompt } from "./components/ApprovalPrompt.js";
+import { oneLine } from "../utils/text.js";
+import { ApprovalPrompt, approvalHeight } from "./components/ApprovalPrompt.js";
+import { ActivityBar } from "./components/ActivityBar.js";
 import { Header } from "./components/Header.js";
 import { InputBar } from "./components/InputBar.js";
 import { PlanPanel } from "./components/PlanPanel.js";
@@ -40,7 +41,7 @@ const emptyStatus: StatusMap = {
 
 export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const { exit } = useApp();
-  const { rows } = useWindowSize();
+  const { rows = 24, columns = 100 } = useWindowSize();
   const [initialSession] = useState(() => orchestrator.currentSession);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialSession?.messages ?? []);
@@ -55,9 +56,11 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     ...orchestrator.serviceStatuses,
   }));
   const [session, setSession] = useState<SessionInfo | undefined>();
+  const [pendingUpdate, setPendingUpdate] = useState<{ kind: "download" | "local" | "rollback"; version: string } | undefined>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const approval = approvals[0];
   const [busy, setBusy] = useState(false);
+  const [turnStartedAt, setTurnStartedAt] = useState<number | undefined>();
   const [inputKey, setInputKey] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [scrollLimit, setScrollLimit] = useState(0);
@@ -201,6 +204,10 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setPhase((current) => current === "cancelling" && event.phase !== "idle" ? current : pendingApprovals.current.size ? "waiting-approval" : event.phase);
           break;
 
+        case "update-selection":
+          setPendingUpdate(event.pending);
+          break;
+
         case "session":
           setSession(event.session);
           break;
@@ -238,17 +245,24 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
             text: event.text,
           };
           setNotices((current) => [...current.slice(-7), notice]);
+          if (event.level === "error") {
+            const order = ++eventOrder.current;
+            setScrollOffset(0);
+            setMessages((current) => [...current, { id: `notice-error-${notice.id}`, role: "system", text: event.text, createdAt: Date.now(), order }]);
+          }
           break;
         }
 
         case "turn-start":
           turnActive.current = true;
+          setTurnStartedAt(Date.now());
           setBusy(true);
           setNotices((current) => current.filter((notice) => notice.level !== "info"));
           break;
 
         case "turn-end":
           turnActive.current = false;
+          setTurnStartedAt(undefined);
           setMessages((current) => current.map((message) =>
             message.streaming ? { ...message, streaming: false, interrupted: !event.ok } : message,
           ));
@@ -334,44 +348,50 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const jobCount = processCount + taskCount;
   const showActivity = timers.length > 0 || jobCount > 0;
   const nextTimerSeconds = timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
-  const chrome =
-    12 +
-    (showActivity ? 1 : 0) +
-    (approval ? 8 : 0) +
-    (plan.length > 0 ? Math.min(plan.length + 3, 9) : 0) +
-    Math.min(notices.length * 2, 6);
-  const transcriptHeight = Math.max(6, rows - chrome);
+  const showHeader = rows >= 12;
+  const showStatus = rows >= 10;
+  const showInput = !approval || rows >= 12;
+  const showJobs = showActivity && rows >= 20 && !approval;
+  const showLive = busy && !approval && rows >= 14;
+  const showUpdate = Boolean(pendingUpdate && !busy && !approval && rows >= 8);
+  const maxPlanSteps = plan.length && !approval && rows >= 17 ? (rows < 24 ? 1 : 3) : 0;
+  const shownNotices = rows >= 20 && !approval ? notices.slice(-2) : [];
+  const chrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
+    + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + shownNotices.length
+    + (maxPlanSteps ? 2 + Math.min(plan.length, maxPlanSteps) : 0)
+    + (approval ? approvalHeight(approval, columns, rows) : 0);
+  const transcriptHeight = Math.max(0, rows - chrome);
 
   return (
     <Box flexDirection="column" height={rows}>
-      <Header
+      {showHeader ? <Header
         localSessionId={localSessionId}
         model={session?.model ?? orchestrator.config.browser.modelLabel}
         session={session}
         approvalMode={orchestrator.config.approvalMode}
         contextUsage={orchestrator.contextUsage}
         status={status}
-      />
+      /> : null}
 
-      <Transcript
+      {transcriptHeight > 0 ? <Transcript
         messages={messages}
         tools={tools}
         height={transcriptHeight}
         scrollOffset={scrollOffset}
         onScrollLimit={setScrollLimit}
-      />
+      /> : null}
 
-      {showActivity ? (
-        <Box paddingX={2} gap={2}>
-          {timers.length ? <Text color={theme.accent}>◷ {timers.length} timer{timers.length === 1 ? "" : "s"} · next {nextTimerSeconds}s</Text> : null}
-          {jobCount ? <Text color={theme.accentAlt}>◉ {jobCount} background job{jobCount === 1 ? "" : "s"}</Text> : null}
-          <Text dimColor>/timers · /jobs</Text>
+      {showJobs ? (
+        <Box paddingX={2} gap={2} flexShrink={0}>
+          {timers.length ? <Text color={theme.accent} wrap="truncate-end">◷ {timers.length} timer{timers.length === 1 ? "" : "s"} · {nextTimerSeconds}s</Text> : null}
+          {jobCount ? <Text color={theme.accentAlt} wrap="truncate-end">◉ {jobCount} background job{jobCount === 1 ? "" : "s"}</Text> : null}
+          {columns >= 70 ? <Text color={theme.dim}>/timers · /jobs</Text> : null}
         </Box>
       ) : null}
 
-      {notices.length > 0 ? (
-        <Box flexDirection="column" paddingX={2} marginBottom={1}>
-          {notices.slice(-3).map((notice) => (
+      {shownNotices.length > 0 ? (
+        <Box flexDirection="column" paddingX={2} flexShrink={0}>
+          {shownNotices.map((notice) => (
             <Box key={notice.id} gap={1}>
               <Text
                 color={
@@ -393,19 +413,28 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
                       : undefined
                 }
                 dimColor={notice.level === "info"}
+                wrap="truncate-end"
               >
-                {firstLines(terminalText(notice.text), 4, 220)}
+                {oneLine(terminalText(notice.text), Math.max(20, columns - 7))}
               </Text>
             </Box>
           ))}
         </Box>
       ) : null}
 
-      <PlanPanel steps={plan} />
+      <PlanPanel steps={plan} maxVisible={maxPlanSteps} />
 
       {approval ? <ApprovalPrompt request={approval} /> : null}
 
-      <InputBar
+      {showLive ? <ActivityBar phase={phase} startedAt={turnStartedAt} /> : null}
+
+      {showUpdate && pendingUpdate ? (
+        <Box paddingX={2} flexShrink={0}>
+          <Text color={theme.dim} wrap="truncate-end"><Text bold color={theme.warn}>◇ Approval required: /update apply</Text>{`  ·  ${pendingUpdate.kind === "download" ? "Downloaded" : pendingUpdate.kind === "rollback" ? "Rollback" : "Selected"} ${terminalText(pendingUpdate.version)}  ·  /update cancel`}</Text>
+        </Box>
+      ) : null}
+
+      {showInput ? <InputBar
         key={localSessionId}
         disabled={busy || Boolean(approval)}
         phase={phase}
@@ -415,17 +444,18 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         placeholder={
           phase === "waiting-login"
             ? "Sign in to ChatGPT in the browser window…"
-            : "Message…  /help commands · PgUp history"
+            : "Message or /command…"
         }
-      />
+      /> : null}
 
-      <StatusBar
+      {showStatus ? <StatusBar
         phase={phase}
         workspace={orchestrator.config.workspace}
         mcpUrl={orchestrator.mcpUrl}
         tunnelDetail={status.tunnel?.detail}
         approvalMode={orchestrator.config.approvalMode}
-      />
+        showPhase={!showLive}
+      /> : null}
     </Box>
   );
 }
