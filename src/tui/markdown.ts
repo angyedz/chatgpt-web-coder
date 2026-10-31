@@ -32,18 +32,23 @@ export function markdownLines(markdown: string, width: number): DisplayLine[] {
       continue;
     }
     const heading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(raw);
-    let text = heading ? heading[1]! : raw;
+    const list = !heading ? /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(raw) : null;
+    const quote = !heading && !list ? /^\s*>\s?(.*)$/.exec(raw) : null;
+    let prefix = list ? `${list[1]}${/^\d/.test(list[2]!) ? list[2] : "•"} ` : quote ? "│ " : "";
+    // Leave room for at least one character in narrow terminals.
+    if (prefix.length >= columns) prefix = "";
+    let text = heading ? heading[1]! : list ? list[3]! : quote ? quote[1]! : raw;
     text = text
       .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1 ($2)")
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => label === url ? url : `${label} (${url})`)
       .replace(/\*\*([^*]+)\*\*/g, "\u001b[1m$1\u001b[22m")
       .replace(/__([^_]+)__/g, "\u001b[1m$1\u001b[22m")
       .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "\u001b[3m$1\u001b[23m")
-      .replace(/`([^`]+)`/g, "\u001b[36m$1\u001b[39m")
-      .replace(/^(\s*)[-*+]\s+/, "$1• ")
-      .replace(/^\s*>\s?/, "│ ");
-    const wrapped = wrapAnsi(text || " ", columns, { hard: true, trim: false }).split("\n");
-    for (const line of wrapped) result.push({ text: line, tone: heading ? "heading" : "normal", bold: Boolean(heading) });
+      .replace(/`([^`]+)`/g, "\u001b[36m$1\u001b[39m");
+    const wrapped = wrapAnsi(text || " ", Math.max(1, columns - prefix.length), { hard: true, trim: false }).split("\n");
+    for (const [index, line] of wrapped.entries()) {
+      result.push({ text: `${index === 0 ? prefix : " ".repeat(prefix.length)}${line}`, tone: heading ? "heading" : "normal", bold: Boolean(heading) });
+    }
   }
   return result;
 }

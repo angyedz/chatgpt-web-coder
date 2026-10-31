@@ -165,7 +165,7 @@ describe("TUI components", () => {
       />,
     );
     const frame = strip(lastFrame());
-    expect(frame).toContain("plan");
+    expect(frame).toContain("PLAN");
     expect(frame).toContain("inspect repo");
     expect(frame).toContain("write code");
     expect(frame).toContain("run tests");

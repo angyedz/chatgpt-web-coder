@@ -45,6 +45,10 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [initialSession] = useState(() => orchestrator.currentSession);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialSession?.messages ?? []);
+  const [historicalSystemIds, setHistoricalSystemIds] = useState<Set<string>>(
+    () => new Set(initialSession?.messages.filter((message) => message.role === "system").map((message) => message.id) ?? []),
+  );
+  const [showSystemDetails, setShowSystemDetails] = useState(false);
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
@@ -218,6 +222,8 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           pendingApprovals.current.clear();
           eventOrder.current = event.session.order;
           setMessages(event.session.messages);
+          setHistoricalSystemIds(new Set(event.session.messages.filter((message) => message.role === "system").map((message) => message.id)));
+          setShowSystemDetails(false);
           setTools(event.session.tools);
           setPlan(event.session.plan);
           setNotices([]);
@@ -276,6 +282,8 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           pendingApprovals.current.clear();
           eventOrder.current = 0;
           setMessages([]);
+          setHistoricalSystemIds(new Set());
+          setShowSystemDetails(false);
           setTools([]);
           setNotices([]);
           setPlan([]);
@@ -313,6 +321,12 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     }
     if (key.pageDown) {
       setScrollOffset((current) => Math.max(0, current - Math.max(1, Math.floor(rows / 2))));
+      return;
+    }
+
+    if (key.ctrl && input === "o") {
+      setShowSystemDetails((current) => !current);
+      setScrollOffset(0);
       return;
     }
 
@@ -376,6 +390,8 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       {transcriptHeight > 0 ? <Transcript
         messages={messages}
         tools={tools}
+        historicalSystemIds={historicalSystemIds}
+        showSystemDetails={showSystemDetails}
         height={transcriptHeight}
         scrollOffset={scrollOffset}
         onScrollLimit={setScrollLimit}
