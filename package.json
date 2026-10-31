@@ -1,0 +1,49 @@
+{
+  "name": "chatgpt-coder",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "description": "Local coding harness driven by ChatGPT Web with Codex-style tools over MCP.",
+  "bin": {
+    "chatgpt-coder": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx src/index.tsx",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mcp": "tsx src/mcp/main.ts",
+    "doctor": "tsx src/index.tsx --doctor",
+    "setup:browser": "playwright install chromium",
+    "setup:tunnel": "tsx scripts/install-tunnel.ts",
+    "setup": "npm run setup:browser && npm run setup:tunnel",
+    "searxng": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/searxng.ps1"
+  },
+  "dependencies": {
+    "@inkjs/ui": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "adm-zip": "^0.6.0",
+    "dotenv": "^18.0.9",
+    "fast-glob": "^3.3.3",
+    "ink": "^8.0.0",
+    "playwright": "^1.64.1",
+    "react": "^19.3.1",
+    "wrap-ansi": "^10.0.2",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.6.0",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "approvalMode": "ask",
+  "maxOutputChars": 30000,
+  "context": {
+    "maxTokens": 200000
+  },
+  "browser": {
+    "headless": false,
+    "baseUrl": "https://chatgpt.com/",
+    "userDataDir": "~/.chatgpt-coder/browser",
+    "channel": "",
+    "useTemporaryChat": true,
+    "newChatPerTurn": false,
+    "modelLabel": "",
+    "connectorName": "chatgpt-coder",
+    "attachConnector": true,
+    "autoApproveToolCalls": true,
+    "loginTimeoutMs": 600000,
+    "responseTimeoutMs": 900000,
+    "stallRecoveryMs": 90000,
+    "navigationTimeoutMs": 60000
+  },
+  "mcp": {
+    "host": "127.0.0.1",
+    "port": 8790,
+    "path": "/mcp"
+  },
+  "mcpServers": {},
+  "skills": {
+    "paths": []
+  },
+  "tunnel": {
+    "enabled": true,
+    "tunnelId": "tunnel_...",
+    "profile": "chatgpt-coder",
+    "binary": "~/.chatgpt-coder/bin/tunnel-client.exe",
+    "apiKeyEnv": "CONTROL_PLANE_API_KEY",
+    "healthPort": 8791,
+    "extraArgs": []
+  },
+  "searxng": {
+    "url": "http://127.0.0.1:8888",
+    "categories": "general",
+    "language": "auto"
+  }
+}

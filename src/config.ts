@@ -1,0 +1,294 @@
+import "dotenv/config";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { expandHome, harnessHome } from "./utils/paths.js";
+
+export type ApprovalMode = "ask" | "never";
+
+export interface BrowserConfig {
+  headless: boolean;
+  baseUrl: string;
+  userDataDir: string;
+  channel: string;
+  useTemporaryChat: boolean;
+  newChatPerTurn: boolean;
+  modelLabel: string;
+  connectorName: string;
+  attachConnector: boolean;
+  autoApproveToolCalls: boolean;
+  loginTimeoutMs: number;
+  responseTimeoutMs: number;
+  stallRecoveryMs: number;
+  navigationTimeoutMs: number;
+}
+
+export interface McpConfig {
+  host: string;
+  port: number;
+  path: string;
+}
+
+export interface ExternalMcpServer {
+  transport?: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  disabled?: boolean;
+}
+
+export interface TunnelConfig {
+  enabled: boolean;
+  tunnelId: string;
+  profile: string;
+  binary: string;
+  apiKeyEnv: string;
+  healthPort: number;
+  extraArgs: string[];
+}
+
+export interface SearxngConfig {
+  url: string;
+  categories: string;
+  language: string;
+}
+
+export interface HarnessConfig {
+  workspace: string;
+  approvalMode: ApprovalMode;
+  maxOutputChars: number;
+  context: { maxTokens: number };
+  browser: BrowserConfig;
+  mcp: McpConfig;
+  mcpServers: Record<string, ExternalMcpServer>;
+  skills: { paths: string[] };
+  tunnel: TunnelConfig;
+  searxng: SearxngConfig;
+}
+
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+};
+
+export function defaultConfig(workspace = process.cwd()): HarnessConfig {
+  const home = harnessHome();
+  return {
+    workspace,
+    approvalMode: process.env.HARNESS_APPROVAL === "never" ? "never" : "ask",
+    maxOutputChars: 30_000,
+    context: { maxTokens: 200_000 },
+    browser: {
+      headless: process.env.HARNESS_HEADLESS === "true",
+      baseUrl: process.env.CHATGPT_URL ?? "https://chatgpt.com/",
+      userDataDir: path.join(home, "browser"),
+      channel: "",
+      useTemporaryChat: true,
+      newChatPerTurn: false,
+      modelLabel: process.env.CHATGPT_MODEL_LABEL ?? "",
+      connectorName: process.env.CHATGPT_CONNECTOR_NAME ?? "chatgpt-coder",
+      attachConnector: process.env.HARNESS_ATTACH_CONNECTOR !== "false",
+      autoApproveToolCalls: true,
+      loginTimeoutMs: 10 * 60_000,
+      responseTimeoutMs: 15 * 60_000,
+      stallRecoveryMs: 90_000,
+      navigationTimeoutMs: 60_000,
+    },
+    mcp: {
+      host: "127.0.0.1",
+      port: Number(process.env.MCP_PORT ?? 8790),
+      path: "/mcp",
+    },
+    mcpServers: {},
+    skills: { paths: [] },
+    tunnel: {
+      enabled: true,
+      tunnelId: process.env.TUNNEL_ID ?? "",
+      profile: "chatgpt-coder",
+      binary:
+        process.env.TUNNEL_BINARY ??
+        path.join(
+          home,
+          "bin",
+          process.platform === "win32" ? "tunnel-client.exe" : "tunnel-client",
+        ),
+      apiKeyEnv: "CONTROL_PLANE_API_KEY",
+      healthPort: 8791,
+      extraArgs: [],
+    },
+    searxng: {
+      url: process.env.SEARXNG_URL ?? "http://127.0.0.1:8888",
+      categories: "general",
+      language: "auto",
+    },
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function merge<T>(base: T, patch: DeepPartial<T> | undefined): T {
+  if (!patch) return base;
+  if (!isPlainObject(base) || !isPlainObject(patch)) {
+    return (patch as T) ?? base;
+  }
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    const current = result[key];
+    result[key] =
+      isPlainObject(current) && isPlainObject(value)
+        ? merge(current, value)
+        : value;
+  }
+  return result as T;
+}
+
+export function configPath(workspace: string): string {
+  return process.env.HARNESS_CONFIG
+    ? path.resolve(expandHome(process.env.HARNESS_CONFIG))
+    : path.join(workspace, "harness.config.json");
+}
+
+export function globalConfigPath(): string {
+  return path.join(harnessHome(), "config.json");
+}
+
+function readConfigFile(file: string): DeepPartial<HarnessConfig> | undefined {
+  if (!existsSync(file)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!isPlainObject(parsed)) throw new Error("Expected a JSON object.");
+    return parsed as DeepPartial<HarnessConfig>;
+  } catch (error) {
+    throw new Error(`Cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function loadConfig(workspace = process.cwd()): HarnessConfig {
+  const base = defaultConfig(workspace);
+  const file = configPath(workspace);
+  let merged = merge(base, readConfigFile(globalConfigPath()));
+  merged = merge(merged, readConfigFile(file));
+
+  merged.workspace = workspace;
+  merged.searxng.url =
+    process.env.SEARXNG_URL ?? merged.searxng.url;
+  merged.mcp.port = Number(process.env.MCP_PORT ?? merged.mcp.port);
+  merged.browser.modelLabel =
+    process.env.CHATGPT_MODEL_LABEL ?? merged.browser.modelLabel;
+  merged.browser.connectorName =
+    process.env.CHATGPT_CONNECTOR_NAME ?? merged.browser.connectorName;
+  merged.browser.attachConnector =
+    process.env.HARNESS_ATTACH_CONNECTOR === undefined
+      ? merged.browser.attachConnector
+      : process.env.HARNESS_ATTACH_CONNECTOR !== "false";
+  merged.browser.headless =
+    process.env.HARNESS_HEADLESS === undefined
+      ? merged.browser.headless
+      : process.env.HARNESS_HEADLESS === "true";
+  merged.approvalMode =
+    process.env.HARNESS_APPROVAL === "never"
+      ? "never"
+      : process.env.HARNESS_APPROVAL === "ask"
+        ? "ask"
+        : merged.approvalMode;
+  merged.tunnel.tunnelId = process.env.TUNNEL_ID ?? merged.tunnel.tunnelId;
+  merged.tunnel.binary = process.env.TUNNEL_BINARY ?? merged.tunnel.binary;
+
+  const credentialsFile = path.join(harnessHome(), "credentials.json");
+  if (!process.env[merged.tunnel.apiKeyEnv] && existsSync(credentialsFile)) {
+    try {
+      const credentials = JSON.parse(readFileSync(credentialsFile, "utf8")) as Record<string, string>;
+      const storedKey = credentials[merged.tunnel.apiKeyEnv];
+      if (storedKey) process.env[merged.tunnel.apiKeyEnv] = storedKey;
+    } catch {
+      // An invalid credential store must not prevent browser-only startup.
+    }
+  }
+
+  merged.browser.userDataDir = path.resolve(expandHome(merged.browser.userDataDir));
+  merged.tunnel.binary = path.resolve(expandHome(merged.tunnel.binary));
+
+  return merged;
+}
+
+export function saveHarnessConfig(config: HarnessConfig): void {
+  const file = configPath(config.workspace);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+// Connection identity is shared across projects. If this project already has
+// an explicit override for the same key, update it as well so the next launch
+// does not silently revert the value just chosen by the user.
+export function saveConnectionSetting(config: HarnessConfig, section: "tunnel" | "browser", key: "tunnelId" | "connectorName", value: string): void {
+  const globalFile = globalConfigPath();
+  const global = readConfigFile(globalFile) ?? {};
+  const sectionValue = (global[section] ?? {}) as Record<string, unknown>;
+  sectionValue[key] = value;
+  (global as Record<string, unknown>)[section] = sectionValue;
+  mkdirSync(path.dirname(globalFile), { recursive: true });
+  writeFileSync(globalFile, `${JSON.stringify(global, null, 2)}\n`, "utf8");
+  const localFile = configPath(config.workspace);
+  if (path.resolve(localFile) === path.resolve(globalFile)) return;
+  const local = readConfigFile(localFile);
+  const localSection = local?.[section] as Record<string, unknown> | undefined;
+  if (local && localSection && Object.hasOwn(localSection, key)) {
+    localSection[key] = value;
+    writeFileSync(localFile, `${JSON.stringify(local, null, 2)}\n`, "utf8");
+  }
+}
+
+export function saveTunnelApiKey(envName: string, apiKey: string): void {
+  const file = path.join(harnessHome(), "credentials.json");
+  let credentials: Record<string, string> = {};
+  if (existsSync(file)) {
+    try {
+      credentials = JSON.parse(readFileSync(file, "utf8")) as Record<string, string>;
+    } catch {
+      credentials = {};
+    }
+  }
+  credentials[envName] = apiKey;
+  writeFileSync(file, `${JSON.stringify(credentials, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(file, 0o600);
+  process.env[envName] = apiKey;
+}
+
+export function exampleConfig(): string {
+  return JSON.stringify(
+    {
+      approvalMode: "ask",
+      context: { maxTokens: 200_000 },
+      browser: {
+        headless: false,
+        useTemporaryChat: true,
+        newChatPerTurn: false,
+        modelLabel: "",
+        connectorName: "chatgpt-coder",
+        attachConnector: true,
+        autoApproveToolCalls: true,
+        stallRecoveryMs: 90_000,
+      },
+      mcp: { host: "127.0.0.1", port: 8790, path: "/mcp" },
+      mcpServers: {},
+      skills: { paths: [] },
+      tunnel: {
+        enabled: true,
+        tunnelId: "tunnel_...",
+        profile: "chatgpt-coder",
+        healthPort: 8791,
+      },
+      searxng: {
+        url: "http://127.0.0.1:8888",
+        categories: "general",
+        language: "auto",
+      },
+    },
+    null,
+    2,
+  );
+}

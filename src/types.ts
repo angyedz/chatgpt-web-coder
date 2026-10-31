@@ -1,0 +1,88 @@
+export type Role = "user" | "assistant" | "system";
+import type { SavedSession } from "./runtime/sessions.js";
+
+export type ConnectionState = "off" | "starting" | "up" | "error";
+
+export type TurnPhase =
+  | "idle"
+  | "sending"
+  | "thinking"
+  | "responding"
+  | "tool"
+  | "waiting-approval"
+  | "updating"
+  | "cancelling"
+  | "waiting-login"
+  | "error";
+
+export interface ChatMessage {
+  id: string;
+  role: Role;
+  text: string;
+  createdAt: number;
+  order?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+}
+
+export type ToolStatus = "running" | "ok" | "error" | "denied";
+
+export interface ToolCallView {
+  id: string;
+  name: string;
+  args: unknown;
+  status: ToolStatus;
+  startedAt: number;
+  order?: number;
+  endedAt?: number;
+  output?: string;
+  error?: string;
+}
+
+export type PlanStepStatus = "pending" | "in_progress" | "completed";
+
+export interface PlanStep {
+  step: string;
+  status: PlanStepStatus;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  tool: string;
+  summary: string;
+  args: unknown;
+  createdAt: number;
+}
+
+export interface SessionInfo {
+  url?: string;
+  temporary: boolean;
+  model?: string;
+}
+
+export type HarnessEvent =
+  | { type: "user-message"; id: string; text: string }
+  | { type: "system-message"; id: string; text: string }
+  | { type: "assistant-start"; id: string }
+  | { type: "assistant-delta"; id: string; text: string }
+  | { type: "assistant-done"; id: string; text: string; error?: string }
+  | { type: "tool-start"; call: ToolCallView }
+  | { type: "tool-end"; call: ToolCallView }
+  | { type: "plan"; steps: PlanStep[] }
+  | {
+      type: "status";
+      key: "browser" | "mcp" | "tunnel" | "searxng";
+      state: ConnectionState;
+      detail?: string;
+    }
+  | { type: "notice"; level: "info" | "warn" | "error"; text: string }
+  | { type: "approval"; request: ApprovalRequest }
+  | { type: "approval-resolved"; id: string; allowed: boolean }
+  | { type: "turn-start"; turnId: string }
+  | { type: "turn-end"; turnId: string; ok: boolean }
+  | { type: "phase"; phase: TurnPhase }
+  | { type: "session"; session: SessionInfo }
+  | { type: "session-view"; session: SavedSession }
+  | { type: "tokens"; input?: number; output?: number }
+  | { type: "clear" }
+  | { type: "quit" };
