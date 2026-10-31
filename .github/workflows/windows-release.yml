@@ -1,0 +1,105 @@
+name: Windows CI and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Check, test and build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Chromium for browser tests
+        run: npx playwright install chromium
+
+      - name: Check types
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Read version
+        id: metadata
+        shell: powershell
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          if ($package.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') { throw 'Invalid package version.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$($package.version)`n", (New-Object Text.UTF8Encoding $false))
+
+      - name: Build Windows installer and update package
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-update.ps1 -OutputPath 'dist\release\chatgpt-coder-windows.zip'
+
+      - name: Create SHA-256 checksum
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash -LiteralPath 'dist\release\chatgpt-coder-windows.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'dist\release\SHA256SUMS.txt'), "$hash  chatgpt-coder-windows.zip`n", (New-Object Text.UTF8Encoding $false))
+
+      - name: Save release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-release
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified build
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-release
+          path: release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum --check SHA256SUMS.txt)
+          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          short_sha="${GITHUB_SHA:0:7}"
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          latest_flag='--latest=false'
+          if [ "$current_main" = "$GITHUB_SHA" ]; then latest_flag='--latest'; fi
+          printf 'Автоматическая сборка версии %s для коммита %s.\n\n' "$VERSION" "$GITHUB_SHA" > release-notes.md
+          cat >> release-notes.md <<'EOF'
+          **Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.
+          **Обновление:** в установленном harness выберите тот же ZIP командой `/update`, затем выполните `/update apply` и перезапустите программу.
+
+          `SHA256SUMS.txt` содержит SHA-256 архива. Для установки зависимостей требуется интернет.
+          EOF
+          gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "chatgpt-coder ${VERSION} · ${short_sha}" --notes-file release-notes.md "$latest_flag"
