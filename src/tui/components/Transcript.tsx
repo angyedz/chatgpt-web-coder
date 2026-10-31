@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { Box, Text, useWindowSize } from "ink";
 import type { ChatMessage, ToolCallView } from "../../types.js";
+import { cleanAssistantHistory } from "../../browser/response-text.js";
 import { markdownLines } from "../markdown.js";
 import { terminalText } from "../terminal-text.js";
 import { glyphs, theme } from "../theme.js";
@@ -14,8 +15,7 @@ interface TranscriptProps {
   messages: ChatMessage[];
   tools: ToolCallView[];
   height: number;
-  historicalSystemIds?: ReadonlySet<string>;
-  showSystemDetails?: boolean;
+  systemView?: boolean;
   scrollOffset?: number;
   onScrollLimit?: (limit: number) => void;
 }
@@ -29,7 +29,7 @@ interface Row {
   railColor?: string;
 }
 
-export function Transcript({ messages, tools, height, historicalSystemIds, showSystemDetails = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
+export function Transcript({ messages, tools, height, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
   const { columns = 80 } = useWindowSize();
   const [frame, setFrame] = useState(0);
   const running = tools.some((call) => call.status === "running");
@@ -52,6 +52,7 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
   entries.sort((a, b) => hasCompleteOrder ? a.order! - b.order! : a.time - b.time);
 
   const rows: Row[] = [];
+  const cleaned = cleanAssistantHistory(entries.flatMap((entry) => entry.kind === "message" ? [entry.message] : []));
   for (const [entryIndex, entry] of entries.entries()) {
     if (entry.kind === "tool") {
       if (entryIndex > 0 && entries[entryIndex - 1]?.kind !== "tool") {
@@ -67,18 +68,18 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
     }
     const message = entry.message;
     const isUser = message.role === "user";
+    const displayText = message.role === "assistant" ? cleaned.get(message.id) ?? "" : message.text;
+    if (message.role === "assistant" && !displayText && !message.streaming) continue;
     if (entryIndex > 0) rows.push({ key: `${message.id}:space`, text: " " });
-    const systemTitle = message.role === "system" ? /^([^\n]{1,72})\n\s*\n/.exec(message.text) : null;
+    const systemTitle = message.role === "system" ? /^([^\n]{1,72})\n\s*\n/.exec(displayText) : null;
     const title = systemTitle ? terminalText(systemTitle[1]!).trim() : "";
     const label = isUser ? "you" : message.role === "assistant" ? "chatgpt" : title ? `system  ·  ${title}` : "system";
     const color = isUser ? theme.user : message.role === "assistant" ? theme.accent : theme.dim;
     const state = message.streaming ? `  ${glyphs.cursor}` : message.interrupted ? "  ·  interrupted" : "";
     rows.push({ key: `${message.id}:label`, text: `${label}${state}`, rail: "  ╭─ ", railColor: color, color, bold: true });
-    const body = systemTitle ? message.text.slice(systemTitle[0].length) : message.text;
+    const body = systemTitle ? displayText.slice(systemTitle[0].length) : displayText;
     const lines = markdownLines(body || (message.streaming ? "…" : ""), width);
-    const collapsed = message.role === "system" && historicalSystemIds?.has(message.id) && !showSystemDetails && lines.length > 5;
-    const visibleLines = collapsed ? lines.slice(0, 2) : lines;
-    visibleLines.forEach((line, index) => {
+    lines.forEach((line, index) => {
       rows.push({
         key: `${message.id}:${index}`,
         text: line.text,
@@ -88,10 +89,6 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
         bold: line.bold,
       });
     });
-    if (collapsed) rows.push({ key: `${message.id}:collapsed`, text: `${lines.length - visibleLines.length} more lines  ·  Ctrl+O to expand`, rail: "  │  ", railColor: color, color: theme.dim });
-    else if (message.role === "system" && historicalSystemIds?.has(message.id) && showSystemDetails && lines.length > 5) {
-      rows.push({ key: `${message.id}:expanded`, text: "Ctrl+O to collapse", rail: "  │  ", railColor: color, color: theme.dim });
-    }
     rows.push({ key: `${message.id}:end`, text: "", rail: "  ╰─", railColor: color });
   }
 
@@ -108,9 +105,9 @@ export function Transcript({ messages, tools, height, historicalSystemIds, showS
   const visible = rows.slice(Math.max(0, end - visibleHeight), end);
   return (
     <Box flexDirection="column" flexGrow={1} flexShrink={0} height={height} overflow="hidden" paddingX={1}>
-      {showSection ? <Text color={theme.border} wrap="truncate-end">  ── <Text bold color={theme.dim}>CONVERSATION</Text> {"─".repeat(Math.max(0, Math.min(24, columns - 22)))}</Text> : null}
+      {showSection ? <Text color={theme.border} wrap="truncate-end">  ── <Text bold color={theme.dim}>{systemView ? "SYSTEM LOG" : "CONVERSATION"}</Text> {"─".repeat(Math.max(0, Math.min(24, columns - 22)))} <Text color={theme.dim}>Ctrl+O {systemView ? "chat" : "system log"}</Text></Text> : null}
       {hasHistory ? <Text color={theme.dim}>{offset > 0 ? "↑ history · PgUp / PgDn to scroll" : "↑ earlier messages · PgUp to scroll"}</Text> : null}
-      {entries.length === 0 ? <Welcome height={height} /> : visible.map((row) => (
+      {entries.length === 0 ? systemView ? <Text color={theme.dim}>  No system messages.</Text> : <Welcome height={height} /> : visible.map((row) => (
         <Text key={row.key} wrap="truncate-end"><Text color={row.railColor}>{row.rail ?? ""}</Text><Text color={row.color} bold={row.bold}>{row.text || (row.rail ? "" : " ")}</Text></Text>
       ))}
     </Box>

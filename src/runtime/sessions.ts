@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, readdir, rename, unlink, writeFile } from "node
 import path from "node:path";
 import type { ChatMessage, HarnessEvent, PlanStep, ToolCallView } from "../types.js";
 import type { TimerInfo } from "./timers.js";
+import { cleanAssistantHistory } from "../browser/response-text.js";
 import { harnessHome } from "../utils/paths.js";
 
 export interface SessionJob {
@@ -227,10 +228,16 @@ export class SessionStore {
 }
 
 export function sessionHandoff(session: SavedSession): string {
+  const orderedMessages = [...session.messages];
+  const completeMessageOrder = orderedMessages.every((message) => Number.isFinite(message.order));
+  orderedMessages.sort((a, b) => completeMessageOrder ? a.order! - b.order! : a.createdAt - b.createdAt);
+  const cleaned = cleanAssistantHistory(orderedMessages);
   const items = [
-    ...session.messages.filter((message) => message.role !== "system").map((message) => ({ order: message.order ?? message.createdAt, text: `${message.role}${message.interrupted ? " (interrupted)" : ""}: ${message.text.slice(0, 5000)}` })),
-    ...session.tools.map((tool) => ({ order: tool.order ?? tool.startedAt, text: `tool ${tool.name} (${tool.status})\narguments: ${JSON.stringify(tool.args ?? {}).slice(0, 800)}\nresult: ${String(tool.output ?? tool.error ?? "").slice(0, 1200)}` })),
-  ].sort((a, b) => a.order - b.order);
+    ...orderedMessages.filter((message) => message.role !== "system").map((message) => ({ order: message.order, time: message.createdAt, text: message.role === "assistant" ? cleaned.get(message.id) ?? "" : message.text, role: message.role, interrupted: message.interrupted })).filter((message) => message.text.trim()).map((message) => ({ order: message.order, time: message.time, text: `${message.role}${message.interrupted ? " (interrupted)" : ""}: ${message.text.slice(0, 5000)}` })),
+    ...session.tools.map((tool) => ({ order: tool.order, time: tool.startedAt, text: `tool ${tool.name} (${tool.status})\narguments: ${JSON.stringify(tool.args ?? {}).slice(0, 800)}\nresult: ${String(tool.output ?? tool.error ?? "").slice(0, 1200)}` })),
+  ];
+  const completeOrder = items.every((item) => Number.isFinite(item.order));
+  items.sort((a, b) => completeOrder ? a.order! - b.order! : a.time - b.time);
   const history = items.slice(-40).map((item) => item.text).join("\n\n").slice(-36_000);
   const plan = session.plan.map((step) => `${step.status}: ${step.step}`).join("\n");
   const jobs = (session.previousRuntime?.jobs ?? session.jobs).map((job) => `${job.id} ${job.kind} ${job.status}: ${job.description}`).join("\n");

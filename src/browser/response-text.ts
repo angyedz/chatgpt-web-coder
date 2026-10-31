@@ -1,3 +1,5 @@
+import type { ChatMessage } from "../types.js";
+
 // Match a whitespace-normalized prompt while returning a slice of the original
 // page text, so paragraph breaks in the answer survive the fallback path.
 export function extractResponse(pageText: string, submittedPrompt: string): string {
@@ -42,15 +44,61 @@ export function extractResponse(pageText: string, submittedPrompt: string): stri
   }
   if (end === undefined) return "";
   let answer = pageText.slice(end + 1).trim();
-  const label = /ChatGPT\s+(?:said|ответил|сказал)\s*:/i.exec(answer);
-  if (label?.index !== undefined) {
-    answer = answer.slice(label.index + label[0].length);
-  } else {
-    answer = answer.replace(/^(?:[…\.\s]*Show (?:more|less)\s*)+/i, "");
-  }
+  answer = answer.replace(/^(?:[…\.\s]*Show (?:more|less)\s*)+/i, "");
   const footer = /(?:ChatGPT can make mistakes|ChatGPT may make mistakes|ChatGPT может ошибаться|Latest response|Thinking effort|Последний ответ|Уровень рассуждений)/i.exec(answer);
   if (footer?.index !== undefined) answer = answer.slice(0, footer.index);
-  return removeResponseStatus(answer.replace(/\s+(?:Copy|Good response|Bad response|Read aloud|Regenerate response)\s*$/i, ""));
+  return cleanBrowserFallback(answer.replace(/\s+(?:Copy|Good response|Bad response|Read aloud|Regenerate response)\s*$/i, ""));
+}
+
+// Only use this for page-level/innerText fallback and old saved responses.
+// Those sources can include web chrome between real assistant paragraphs.
+export function cleanBrowserFallback(text: string): string {
+  const normalized = removeResponseStatus(text);
+  const lines = normalized.split("\n");
+  const label = /^\s*(?:\*\*)?ChatGPT\s+(?:said|ответил|сказал)\s*:(?:\*\*)?\s*$/i;
+  const hasLabel = lines.some((line) => label.test(line));
+  const progress = /^(?:Inspecting|Checking|Listing|Searching|Reading|Reviewing|Analyzing|Creating|Building|Writing|Updating|Running|Verifying|Preparing|Exploring|Investigating)\s+(?:[A-Z][\w'-]*\s*){1,9}$/;
+  const activity = /^(?:Created|Verified|Inspected|Checked|Listed|Searched|Read|Reviewed|Analyzed|Built|Updated|Ran|Prepared|Explored|Investigated)\s+.{3,170}$/;
+  const significant = lines.map((line) => line.trim()).filter(Boolean);
+  if (significant.length && significant.every((line) => line === significant[0]) && progress.test(significant[0]!)) return "";
+  const result: string[] = [];
+  let inCode = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) { inCode = !inCode; result.push(line); continue; }
+    if (!inCode && label.test(line)) {
+      let previous = result.length - 1;
+      while (previous >= 0 && !result[previous]!.trim()) previous -= 1;
+      const candidate = previous >= 0 ? result[previous]!.trim() : "";
+      if (candidate && !/[.!?]$/.test(candidate) && (activity.test(candidate) || progress.test(candidate))) result.splice(previous, 1);
+      continue;
+    }
+    if (!inCode && hasLabel && /^\s*(?:Skip|Пропустить)\s*$/i.test(line)) continue;
+    result.push(line);
+  }
+  return result.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Old sessions may contain a whole turn again after a tool. Compute a clean
+// view without modifying the saved messages or the user's own text.
+export function cleanAssistantHistory(messages: ChatMessage[]): Map<string, string> {
+  const result = new Map<string, string>();
+  const parts: string[] = [];
+  for (const message of messages) {
+    if (message.role === "user") { parts.length = 0; continue; }
+    if (message.role !== "assistant") continue;
+    let text = cleanBrowserFallback(message.text);
+    if (text && parts.length && parts[0]!.length >= 20 && text.startsWith(parts[0]!)) {
+      for (let index = parts.length - 1; index >= 0; index -= 1) {
+        const previous = parts[index]!;
+        if (previous.length < 20) continue;
+        const position = text.lastIndexOf(previous);
+        if (position >= 0) { text = text.slice(position + previous.length).trimStart(); break; }
+      }
+    }
+    result.set(message.id, text);
+    if (text && !message.streaming) parts.push(text);
+  }
+  return result;
 }
 // ChatGPT may expose its progress label inside an assistant message before it
 // renders any actual answer. Do not treat that label as model output.

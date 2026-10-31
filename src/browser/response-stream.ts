@@ -10,6 +10,7 @@ export class ResponseStream {
   private waitingAfterTool = false;
   private id?: string;
   private current = "";
+  private readonly completed: string[] = [];
 
   constructor(private readonly events: HarnessEvents, private readonly prefix: string) {}
 
@@ -31,6 +32,20 @@ export class ResponseStream {
     let segment = this.anchor && text.startsWith(this.anchor)
       ? text.slice(this.anchor.length).trimStart()
       : text;
+    // A fallback can change from a single message to the complete turn after
+    // a tool. Recover the boundary from already emitted messages instead of
+    // replaying the entire conversation into a new assistant message.
+    if (segment === text && this.completed.length && this.completed[0]!.length >= 20 && text.startsWith(this.completed[0]!)) {
+      for (let index = this.completed.length - 1; index >= 0; index -= 1) {
+        const previous = this.completed[index]!;
+        if (previous.length < 20) continue;
+        const at = text.lastIndexOf(previous);
+        if (at >= 0) {
+          segment = text.slice(at + previous.length).trimStart();
+          break;
+        }
+      }
+    }
     if (!segment.trim()) return;
     if (!this.id) {
       this.id = `${this.prefix}_${this.sequence++}`;
@@ -59,6 +74,7 @@ export class ResponseStream {
   private finishSegment(error?: string): void {
     if (this.id) {
       this.events.emit({ type: "assistant-done", id: this.id, text: this.current, ...(error ? { error } : {}) });
+      if (this.current) this.completed.push(this.current);
       this.id = undefined;
       this.current = "";
     }

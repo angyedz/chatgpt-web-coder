@@ -45,10 +45,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [initialSession] = useState(() => orchestrator.currentSession);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialSession?.messages ?? []);
-  const [historicalSystemIds, setHistoricalSystemIds] = useState<Set<string>>(
-    () => new Set(initialSession?.messages.filter((message) => message.role === "system").map((message) => message.id) ?? []),
-  );
-  const [showSystemDetails, setShowSystemDetails] = useState(false);
+  const [showSystemLog, setShowSystemLog] = useState(false);
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
@@ -86,6 +83,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         case "user-message":
         case "system-message":
           setScrollOffset(0);
+          setShowSystemLog(event.type === "system-message");
           eventOrder.current += 1;
           {
           const order = eventOrder.current;
@@ -222,8 +220,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           pendingApprovals.current.clear();
           eventOrder.current = event.session.order;
           setMessages(event.session.messages);
-          setHistoricalSystemIds(new Set(event.session.messages.filter((message) => message.role === "system").map((message) => message.id)));
-          setShowSystemDetails(false);
+          setShowSystemLog(false);
           setTools(event.session.tools);
           setPlan(event.session.plan);
           setNotices([]);
@@ -282,8 +279,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           pendingApprovals.current.clear();
           eventOrder.current = 0;
           setMessages([]);
-          setHistoricalSystemIds(new Set());
-          setShowSystemDetails(false);
+          setShowSystemLog(false);
           setTools([]);
           setNotices([]);
           setPlan([]);
@@ -325,7 +321,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     }
 
     if (key.ctrl && input === "o") {
-      setShowSystemDetails((current) => !current);
+      setShowSystemLog((current) => !current);
       setScrollOffset(0);
       return;
     }
@@ -388,10 +384,9 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       /> : null}
 
       {transcriptHeight > 0 ? <Transcript
-        messages={messages}
-        tools={tools}
-        historicalSystemIds={historicalSystemIds}
-        showSystemDetails={showSystemDetails}
+        messages={messages.filter((message) => showSystemLog ? message.role === "system" : message.role !== "system")}
+        tools={showSystemLog ? [] : tools}
+        systemView={showSystemLog}
         height={transcriptHeight}
         scrollOffset={scrollOffset}
         onScrollLimit={setScrollLimit}

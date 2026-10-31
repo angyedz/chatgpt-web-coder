@@ -204,13 +204,10 @@ export class Orchestrator {
     const result = await runDoctor(this.config, this.mcp.url, {
       browserOpen: this.browser.isOpen,
     });
-    for (const line of result.lines) {
-      this.events.emit({ type: "notice", level: "info", text: line });
-    }
     this.events.emit({
-      type: "notice",
-      level: result.ok ? "info" : "warn",
-      text: result.ok ? "Doctor: all critical checks passed." : "Doctor: some checks failed.",
+      type: "system-message",
+      id: newId("system"),
+      text: `Doctor\n\n${result.lines.join("\n")}\n\n${result.ok ? "All critical checks passed." : "Some checks failed."}`,
     });
   }
 
@@ -360,9 +357,10 @@ export class Orchestrator {
       case "help":
       case "?":
         this.events.emit({
-          type: "notice",
-          level: "info",
+          type: "system-message",
+          id: newId("system"),
           text: [
+            "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
@@ -388,7 +386,8 @@ export class Orchestrator {
       }
 
       case "clear":
-        this.events.emit({ type: "clear" });
+        try { await this.switchSession("new"); }
+        catch (error) { this.events.emit({ type: "notice", level: "error", text: `Session: ${error instanceof Error ? error.message : String(error)}` }); }
         return;
 
       case "model":

@@ -3,7 +3,7 @@ import type { BrowserConfig } from "../config.js";
 import type { HarnessEvents } from "../events.js";
 import { selectors, type SelectorGroup } from "./selectors.js";
 import { ResponseStream } from "./response-stream.js";
-import { extractResponse, removeResponseStatus } from "./response-text.js";
+import { cleanBrowserFallback, extractResponse, removeResponseStatus } from "./response-text.js";
 import { readMarkdown } from "./markdown.js";
 import { newId } from "../utils/ids.js";
 import { readPicker, type PickerKind } from "./picker.js";
@@ -829,20 +829,23 @@ export class ChatGptBrowser {
         }
         if (parts.length > 0) {
           answers.push(parts.join("\n\n"));
-          continue;
         }
+        // An empty Markdown node is often a still-loading tool/status card.
+        // Its parent innerText includes web UI labels, not an answer.
+        continue;
       }
-      const content = removeResponseStatus(await message.innerText().catch(() => ""));
+      const content = cleanBrowserFallback(await message.innerText().catch(() => ""));
       if (content) answers.push(content);
     }
     if (answers.length > 0) return answers.join("\n\n");
+    if (count > this.baseline) return "";
 
     // ChatGPT's web UI can briefly render a completed answer outside the
     // message-role container. Only inspect markdown nodes added this turn.
     const allMarkdown = page.locator(selectors.markdown.join(", "));
     const markdownCount = await allMarkdown.count();
     for (let index = this.baselineMarkdown; index < markdownCount; index += 1) {
-      const content = removeResponseStatus(await readMarkdown(allMarkdown.nth(index)));
+      const content = cleanBrowserFallback(await readMarkdown(allMarkdown.nth(index)));
       if (content) answers.push(content);
     }
     if (answers.length > 0) return answers.join("\n\n");
