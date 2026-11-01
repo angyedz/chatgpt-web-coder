@@ -61,6 +61,27 @@ export class ChatGptBrowser {
     return this.page;
   }
 
+  async openSideChat(events: HarnessEvents): Promise<ChatGptBrowser> {
+    if (!this.isOpen || !this.context) throw new Error("The main ChatGPT browser is not connected.");
+    const side = new ChatGptBrowser({ ...this.config, attachConnector: false, newChatPerTurn: true, useTemporaryChat: true }, events);
+    side.context = this.context;
+    side.page = await this.context.newPage();
+    try {
+      await side.preparePage();
+      return side;
+    } catch (error) {
+      await side.page?.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async closeSideChat(): Promise<void> {
+    this.closing = true;
+    await this.page?.close().catch(() => undefined);
+    this.page = undefined;
+    this.context = undefined;
+  }
+
   get responseEndedAfterTool(): boolean {
     return this.endedAfterTool;
   }

@@ -27,6 +27,7 @@ export interface ChatMessage {
   order?: number;
   streaming?: boolean;
   interrupted?: boolean;
+  channel?: "btw";
 }
 
 export type ToolStatus = "running" | "ok" | "error" | "denied";
@@ -66,11 +67,11 @@ export interface SessionInfo {
 }
 
 export type HarnessEvent =
-  | { type: "user-message"; id: string; text: string }
+  | { type: "user-message"; id: string; text: string; channel?: "btw" }
   | { type: "system-message"; id: string; text: string }
-  | { type: "assistant-start"; id: string }
-  | { type: "assistant-delta"; id: string; text: string }
-  | { type: "assistant-done"; id: string; text: string; error?: string }
+  | { type: "assistant-start"; id: string; channel?: "btw" }
+  | { type: "assistant-delta"; id: string; text: string; channel?: "btw" }
+  | { type: "assistant-done"; id: string; text: string; error?: string; channel?: "btw" }
   | { type: "tool-start"; call: ToolCallView }
   | { type: "tool-end"; call: ToolCallView }
   | { type: "plan"; steps: PlanStep[] }

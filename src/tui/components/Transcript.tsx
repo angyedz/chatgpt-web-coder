@@ -96,7 +96,7 @@ export const Transcript = React.memo(function Transcript({ messages, tools, heig
     if (entryIndex > 0) rows.push({ key: `${message.id}:space`, text: " " });
     const systemTitle = message.role === "system" ? /^([^\n]{1,72})\n\s*\n/.exec(displayText) : null;
     const title = systemTitle ? terminalText(systemTitle[1]!).trim() : "";
-    const label = isUser ? "you" : message.role === "assistant" ? "chatgpt" : title ? `system  ·  ${title}` : "system";
+    const label = message.channel === "btw" ? isUser ? "you · btw" : "chatgpt · btw" : isUser ? "you" : message.role === "assistant" ? "chatgpt" : title ? `system  ·  ${title}` : "system";
     const color = isUser ? theme.user : message.role === "assistant" ? theme.accent : theme.dim;
     const state = message.streaming ? `  ${glyphs.cursor}` : message.interrupted ? "  ·  interrupted" : "";
     rows.push({ key: `${message.id}:label`, text: `${label}${state}`, rail: "  ╭─ ", railColor: color, color, bold: true });

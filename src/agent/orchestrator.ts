@@ -49,8 +49,8 @@ export class Orchestrator {
   private phaseState: TurnPhase = "idle";
   private pendingUpdate?: PendingUpdate;
   private updateOperation?: Promise<void>;
-  private readonly pendingBtw: { id: string; text: string }[] = [];
-  private currentTurnIsGoal = false;
+  private btwController?: AbortController;
+  private btwBrowser?: ChatGptBrowser;
   private updateCheckTimer?: NodeJS.Timeout;
   private updateCheckInFlight = false;
   private lastNotifiedUpdate?: string;
@@ -58,7 +58,6 @@ export class Orchestrator {
 
   constructor(public readonly config: HarnessConfig) {
     this.runtime = createRuntime(config, this.events);
-    this.runtime.context.hasPendingUserUpdates = () => this.pendingBtw.length > 0;
     this.sessions = new SessionStore(config.workspace, (error) => {
       this.events.emit({ type: "notice", level: "error", text: `Session save failed: ${error.message}. Check disk access; the latest changes may not be saved.` });
     });
@@ -99,7 +98,7 @@ export class Orchestrator {
     return Boolean(this.busy && this.currentTurn && !this.currentTurn.signal.aborted);
   }
 
-  get btwQueueSize(): number { return this.pendingBtw.length; }
+  get btwActive(): boolean { return Boolean(this.btwController); }
 
   get mcpUrl(): string {
     return this.mcp.url;
@@ -162,15 +161,23 @@ export class Orchestrator {
     const btw = /^\s*\/btw(?:\s+([\s\S]*))?$/i.exec(text);
     if (btw) {
       const message = btw[1]?.trim() ?? "";
-      if (!message) { this.events.emit({ type: "notice", level: "warn", text: "Usage: /btw <message>" }); return; }
+      if (!message) { this.events.emit({ type: "notice", level: "warn", text: "Usage: /btw <question> · /btw cancel" }); return; }
+      if (message.toLowerCase() === "cancel") {
+        if (!this.btwController) { this.events.emit({ type: "notice", level: "warn", text: "There is no active /btw question." }); return; }
+        this.btwController.abort();
+        void this.btwBrowser?.stop();
+        this.events.emit({ type: "notice", level: "info", text: "Stopping the /btw question; the main task continues." });
+        return;
+      }
       if (message.length > LARGE_MESSAGE_CHARS) { this.events.emit({ type: "notice", level: "warn", text: `A /btw message can contain at most ${LARGE_MESSAGE_CHARS.toLocaleString()} characters.` }); return; }
-      if (!this.busy) { await this.runTurn(message); return; }
-      if (!this.canSendBtw) { this.events.emit({ type: "notice", level: "warn", text: "A chat turn is not available for /btw right now." }); return; }
-      if (this.pendingBtw.length >= 20) { this.events.emit({ type: "notice", level: "warn", text: "The /btw queue is full; wait for queued messages to be sent." }); return; }
-      this.pendingBtw.push({ id: newId("btw"), text: message });
-      if (this.currentTurnIsGoal && this.runtime.goal.current?.status === "complete") this.runtime.goal.setStatus("active", "A new user message is queued; review it before finishing the goal.");
-      this.events.emit({ type: "user-message", id: newId("user"), text: `/btw ${message}` });
-      this.events.emit({ type: "notice", level: "info", text: "Message queued; it will be sent when ChatGPT finishes its current response." });
+      if (this.btwController) { this.events.emit({ type: "notice", level: "warn", text: "A /btw question is already running. Wait or use /btw cancel." }); return; }
+      if (!this.browser.isOpen) { this.events.emit({ type: "notice", level: "warn", text: "The browser is not connected yet; wait before using /btw." }); return; }
+      const snapshot = this.sessions.snapshot;
+      const controller = new AbortController();
+      this.btwController = controller;
+      this.events.emit({ type: "user-message", id: newId("user"), text: message, channel: "btw" });
+      this.events.emit({ type: "notice", level: "info", text: "Opening a separate ChatGPT tab for /btw. The main task continues." });
+      void this.runBtw(message, snapshot, controller);
       return;
     }
 
@@ -230,6 +237,8 @@ export class Orchestrator {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.btwController?.abort();
+    await this.btwBrowser?.closeSideChat();
     if (this.updateCheckTimer) clearInterval(this.updateCheckTimer);
     await this.updateOperation?.catch(() => undefined);
     await discardUpdate(this.pendingUpdate);
@@ -292,10 +301,36 @@ export class Orchestrator {
     }
   }
 
+  private async runBtw(question: string, snapshot: SavedSession, controller: AbortController): Promise<void> {
+    const sideEvents = new HarnessEvents();
+    const unsubscribe = sideEvents.on((event) => {
+      if (this.shuttingDown) return;
+      if (event.type === "assistant-start" || event.type === "assistant-delta" || event.type === "assistant-done") this.events.emit({ ...event, channel: "btw" });
+      else if (event.type === "notice" && event.level !== "info") this.events.emit({ type: "notice", level: event.level, text: `/btw: ${event.text}` });
+    });
+    let side: ChatGptBrowser | undefined;
+    try {
+      const context = sessionHandoff(snapshot).replace(/^Restored local session\.[\s\S]*?\n\n/, "");
+      const goal = snapshot.goal ? `${snapshot.goal.status}: ${snapshot.goal.objective}` : "(none)";
+      const prompt = `You are answering a side question while another agent continues the user's main task. Answer the question directly from the following bounded snapshot. The snapshot may be incomplete or stale; say when you do not know. Do not use tools, take actions, change the project or instruct the other agent. Your answer is separate and is not sent to the main agent.\n\nCURRENT GOAL\n${goal}\n\nTASK SNAPSHOT\n${context}\n\nUSER'S SIDE QUESTION\n${question}`;
+      controller.signal.throwIfAborted();
+      side = await this.browser.openSideChat(sideEvents);
+      this.btwBrowser = side;
+      controller.signal.throwIfAborted();
+      await side.send(prompt, controller.signal);
+    } catch (error) {
+      if (!this.shuttingDown) this.events.emit({ type: "notice", level: controller.signal.aborted ? "info" : "error", text: controller.signal.aborted ? "/btw question stopped." : `/btw failed: ${error instanceof Error ? error.message : String(error)}` });
+    } finally {
+      unsubscribe();
+      await side?.closeSideChat();
+      if (this.btwController === controller) { this.btwController = undefined; this.btwBrowser = undefined; }
+      if (!this.shuttingDown) this.events.emit({ type: "notice", level: "info", text: "/btw tab closed." });
+    }
+  }
+
   private async runTurn(text: string): Promise<void> {
     this.busy = true;
     const goalTurn = this.runtime.goal.current?.status === "active";
-    this.currentTurnIsGoal = goalTurn;
     const previousSession = this.sessions.snapshot;
     if ((!this.browser.isOpen || this.config.browser.newChatPerTurn) && previousSession.messages.some((message) => message.role === "user")) {
       this.contextSummary = sessionHandoff(previousSession);
@@ -370,38 +405,11 @@ export class Orchestrator {
         this.runtime.approvals.pendingRequests.length === 0 &&
         !this.runtime.tasks.list().some((task) => task.status === "running");
       const goalRecoveryIsSafe = () => this.runtime.goal.current?.status === "active" && this.runtime.approvals.pendingRequests.length === 0 && !this.runtime.tasks.list().some((task) => task.status === "running");
-      let btwDeliveryRevision = 0;
-      const deliverBtw = async (initialAnswer: string): Promise<string> => {
-        let latestAnswer = initialAnswer;
-        while (this.pendingBtw.length) {
-          controller.signal.throwIfAborted();
-          const pending = this.pendingBtw[0]!;
-          const message = `The user sent this additional message while you were working. Take it into account in the current task and respond appropriately. If an active goal remains, complete all its requirements and call update_goal when finished:\n\n${pending.text}`;
-          let submitted = false;
-          const markSubmitted = () => {
-            if (submitted) return;
-            submitted = true;
-            btwDeliveryRevision += 1;
-            const index = this.pendingBtw.findIndex((item) => item.id === pending.id);
-            if (index >= 0) this.pendingBtw.splice(index, 1);
-            this.events.emit({ type: "notice", level: "info", text: "Queued /btw message sent to ChatGPT." });
-          };
-          this.contextTokens += estimateTokens(message);
-          this.turnCount += 1;
-          latestAnswer = await this.browser.send(message, controller.signal, { continueChat: true, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, onSubmitted: markSubmitted });
-          markSubmitted();
-          controller.signal.throwIfAborted();
-          this.contextTokens += estimateTokens(latestAnswer);
-        }
-        return latestAnswer;
-      };
       let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => this.runtime.attachments.markSent(uploads.map((item) => item.id)) } : {}) });
       controller.signal.throwIfAborted();
       this.contextTokens += estimateTokens(answer);
-      answer = await deliverBtw(answer);
       let noProgress = 0;
       let lastGoalActionRevision = this.goalActionRevision;
-      let lastBtwDeliveryRevision = btwDeliveryRevision;
       while (this.runtime.goal.current?.status === "active") {
         while (this.runtime.goal.current?.status === "active" && (this.runtime.approvals.pendingRequests.length || this.runtime.tasks.list().some((task) => task.status === "running"))) await delay(1000, undefined, { signal: controller.signal });
         if (this.runtime.goal.current?.status !== "active") break;
@@ -422,11 +430,9 @@ export class Orchestrator {
         answer = await this.browser.send(nextPrompt, controller.signal, { continueChat: true, canRecoverStall: goalRecoveryIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
-        answer = await deliverBtw(answer);
-        if (this.goalActionRevision === lastGoalActionRevision && btwDeliveryRevision === lastBtwDeliveryRevision) noProgress += 1;
+        if (this.goalActionRevision === lastGoalActionRevision) noProgress += 1;
         else noProgress = 0;
         lastGoalActionRevision = this.goalActionRevision;
-        lastBtwDeliveryRevision = btwDeliveryRevision;
       }
       let continuations = 0;
       while (!goalTurn && this.browser.responseEndedAfterTool && continuationIsSafe() && continuations < 2) {
@@ -437,7 +443,6 @@ export class Orchestrator {
         answer = await this.browser.send(continuation, controller.signal, { continueChat: true, canRecoverStall: continuationIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
-        answer = await deliverBtw(answer);
       }
       if (!goalTurn && this.browser.responseEndedAfterTool && unfinishedPlan()) {
         const reason = continuationIsSafe()
@@ -475,14 +480,8 @@ export class Orchestrator {
       }
     } finally {
       await this.cancellation;
-      if (this.pendingBtw.length) {
-        const count = this.pendingBtw.length;
-        this.pendingBtw.length = 0;
-        this.events.emit({ type: "notice", level: "warn", text: `${count} queued /btw message${count === 1 ? " was" : "s were"} not sent. Copy from the chat and resend.` });
-      }
       this.cancellation = undefined;
       this.currentTurn = undefined;
-      this.currentTurnIsGoal = false;
       if (this.runtime.context.turnSignal === controller.signal) this.runtime.context.turnSignal = undefined;
       this.busy = false;
       this.events.emit({ type: "turn-end", turnId, ok });
@@ -505,10 +504,10 @@ export class Orchestrator {
           text: [
             "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
-            "Selection: /copy or Ctrl+Y · select in the terminal · Ctrl+Y or Esc to return",
+            "Selection: drag normally to select · PgUp/PgDn scroll · /mouse toggles wheel scrolling · Ctrl+Y freezes display",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
-            "While working: /btw <message> queues a message for the next response boundary",
+            "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
@@ -1064,6 +1063,7 @@ export class Orchestrator {
   }
 
   private async switchSession(id: string): Promise<void> {
+    if (this.btwController) throw new Error("Wait for the /btw answer or use /btw cancel before switching sessions.");
     if (this.currentSession.tools.some((tool) => tool.status === "running") || this.runtime.tasks.list().some((task) => task.status === "running") || this.runtime.approvals.pendingRequests.length) {
       throw new Error("Wait for active tool calls, background tool tasks and approvals before switching sessions. Background command processes can keep running.");
     }

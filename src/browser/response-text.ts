@@ -104,8 +104,9 @@ export function cleanBrowserFallback(text: string): string {
 // view without modifying the saved messages or the user's own text.
 export function cleanAssistantHistory(messages: ChatMessage[]): Map<string, string> {
   const result = new Map<string, string>();
-  const parts: string[] = [];
+  const partsByChannel: Record<"main" | "btw", string[]> = { main: [], btw: [] };
   for (const message of messages) {
+    const parts = partsByChannel[message.channel === "btw" ? "btw" : "main"];
     if (message.role === "user") { parts.length = 0; continue; }
     if (message.role !== "assistant") continue;
     let cached = cleanedMessages.get(message);

@@ -49,6 +49,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialSession?.messages ?? []);
   const [showSystemLog, setShowSystemLog] = useState(false);
   const [copyMode, setCopyMode] = useState(false);
+  const [mouseScroll, setMouseScroll] = useState(false);
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
@@ -108,6 +109,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
               id: event.id,
               role: event.type === "user-message" ? "user" : "system",
               text: event.text,
+              ...(event.type === "user-message" && event.channel ? { channel: event.channel } : {}),
               createdAt: Date.now(),
               order,
             },
@@ -124,6 +126,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
             {
               id: event.id,
               role: "assistant",
+              ...(event.channel ? { channel: event.channel } : {}),
               text: "",
               createdAt: Date.now(),
               order,
@@ -144,6 +147,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
                 {
                   id: event.id,
                   role: "assistant",
+                  ...(event.channel ? { channel: event.channel } : {}),
                   text: event.text,
                   createdAt: Date.now(),
                   order,
@@ -171,6 +175,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
                 {
                   id: event.id,
                   role: "assistant",
+                  ...(event.channel ? { channel: event.channel } : {}),
                   text: event.text,
                   createdAt: Date.now(),
                   order,
@@ -292,7 +297,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           turnActive.current = false;
           setTurnStartedAt(undefined);
           setMessages((current) => current.map((message) =>
-            message.streaming ? { ...message, streaming: false, interrupted: !event.ok } : message,
+            message.streaming && message.channel !== "btw" ? { ...message, streaming: false, interrupted: !event.ok } : message,
           ));
           setBusy(false);
           setPhase(pendingApprovals.current.size ? "waiting-approval" : "idle");
@@ -389,16 +394,22 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
   const handleSubmit = (value: string) => {
     if (!value.trim() && !attachments.some((item) => item.pending)) return false;
-    if (busy && !/^\s*\/(?:btw|copy)(?:\s|$)/i.test(value)) {
+    if (busy && !/^\s*\/(?:btw|copy|mouse)(?:\s|$)/i.test(value)) {
       void orchestrator.submit(value);
       return false;
     }
-    if (/^\s*\/btw(?:\s|$)/i.test(value) && (!value.replace(/^\s*\/btw\s*/i, "").trim() || value.replace(/^\s*\/btw\s*/i, "").trim().length > 12_000 || (busy && orchestrator.btwQueueSize >= 20))) {
+    if (/^\s*\/btw(?:\s|$)/i.test(value) && (!value.replace(/^\s*\/btw\s*/i, "").trim() || value.replace(/^\s*\/btw\s*/i, "").trim().length > 12_000 || (orchestrator.btwActive && value.replace(/^\s*\/btw\s*/i, "").trim().toLowerCase() !== "cancel"))) {
       void orchestrator.submit(value);
       return false;
     }
     setInputKey((current) => current + 1);
     if (value.trim().toLowerCase() === "/copy") { selectMode(true); return true; }
+    if (value.trim().toLowerCase() === "/mouse") {
+      const next = !mouseScroll;
+      setMouseScroll(next);
+      orchestrator.events.emit({ type: "notice", level: "info", text: next ? "Mouse wheel scrolling enabled. Hold Shift to select text in Windows Terminal; /mouse restores normal selection." : "Normal mouse selection enabled. Use PgUp/PgDn to scroll, or /mouse for wheel scrolling." });
+      return true;
+    }
     void orchestrator.submit(value);
     return true;
   };
@@ -430,7 +441,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const transcriptHeight = Math.max(0, rows - chrome);
   useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
     setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
-  }, !copyMode);
+  }, mouseScroll && !copyMode);
 
   return (
     <Box flexDirection="column" height={rows}>
@@ -536,6 +547,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         approvalMode={orchestrator.config.approvalMode}
         showPhase={!showLive}
         copyMode={copyMode}
+        mouseScroll={mouseScroll}
       /> : null}
     </Box>
   );

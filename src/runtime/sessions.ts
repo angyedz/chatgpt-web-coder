@@ -118,17 +118,17 @@ export class SessionStore {
     switch (event.type) {
       case "user-message":
       case "system-message":
-        session.messages.push({ id: event.id, role: event.type === "user-message" ? "user" : "system", text: event.text, createdAt: Date.now(), order: ++session.order });
+        session.messages.push({ id: event.id, role: event.type === "user-message" ? "user" : "system", text: event.text, createdAt: Date.now(), order: ++session.order, ...(event.type === "user-message" && event.channel ? { channel: event.channel } : {}) });
         if (event.type === "user-message" && session.title === "New session") session.title = event.text.replace(/\s+/g, " ").slice(0, 80);
         break;
       case "assistant-start":
-        session.messages.push({ id: event.id, role: "assistant", text: "", createdAt: Date.now(), order: ++session.order, streaming: true });
+        session.messages.push({ id: event.id, role: "assistant", text: "", createdAt: Date.now(), order: ++session.order, streaming: true, ...(event.channel ? { channel: event.channel } : {}) });
         break;
       case "assistant-delta":
       case "assistant-done": {
         let item = message(event.id);
         if (!item) {
-          item = { id: event.id, role: "assistant", text: "", createdAt: Date.now(), order: ++session.order };
+          item = { id: event.id, role: "assistant", text: "", createdAt: Date.now(), order: ++session.order, ...(event.channel ? { channel: event.channel } : {}) };
           session.messages.push(item);
         }
         item.text = event.text;
@@ -155,7 +155,7 @@ export class SessionStore {
         session.attachments = structuredClone(event.attachments);
         break;
       case "turn-end":
-        for (const item of session.messages) if (item.streaming) { item.streaming = false; item.interrupted = !event.ok; }
+        for (const item of session.messages) if (item.streaming && item.channel !== "btw") { item.streaming = false; item.interrupted = !event.ok; }
         break;
       default:
         return;
@@ -239,7 +239,7 @@ export class SessionStore {
 }
 
 export function sessionHandoff(session: SavedSession): string {
-  const orderedMessages = [...session.messages];
+  const orderedMessages = session.messages.filter((message) => message.channel !== "btw");
   const completeMessageOrder = orderedMessages.every((message) => Number.isFinite(message.order));
   orderedMessages.sort((a, b) => completeMessageOrder ? a.order! - b.order! : a.createdAt - b.createdAt);
   const cleaned = cleanAssistantHistory(orderedMessages);
