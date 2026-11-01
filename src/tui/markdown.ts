@@ -56,9 +56,13 @@ export function markdownLines(markdown: string, width: number): DisplayLine[] {
       continue;
     }
     const heading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(raw);
-    const list = !heading ? /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(raw) : null;
+    // ChatGPT sometimes escapes the period in ordered-list markers (`1\.`).
+    // Treat that form like a normal Markdown list marker instead of showing
+    // the backslash literally in the terminal.
+    const list = !heading ? /^(\s*)([-*+]|\d+(?:\\\.|[.)]))\s+(.+)$/.exec(raw) : null;
     const quote = !heading && !list ? /^\s*>\s?(.*)$/.exec(raw) : null;
-    let prefix = list ? `${list[1]}${/^\d/.test(list[2]!) ? list[2] : "•"} ` : quote ? "│ " : "";
+    const marker = list?.[2]?.replace("\\.", ".");
+    let prefix = list ? `${list[1]}${/^\d/.test(marker!) ? marker : "•"} ` : quote ? "│ " : "";
     // Leave room for at least one character in narrow terminals.
     if (prefix.length >= columns) prefix = "";
     const text = renderInline(heading ? heading[1]! : list ? list[3]! : quote ? quote[1]! : raw);
