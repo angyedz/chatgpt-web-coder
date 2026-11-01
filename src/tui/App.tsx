@@ -436,7 +436,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   const chrome = baseChrome + (showSidebar ? 0 : (showJobs ? 1 : 0) + (showGoal ? 1 : 0) + shownNotices.length
     + (maxPlanSteps ? 2 + Math.min(displayedPlan.length, maxPlanSteps) : 0));
   const transcriptHeight = Math.max(0, rows - chrome);
-  useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
+  useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: chatWidth }, (direction) => {
     setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
   }, selection, (text) => {
     noticeId.current += 1;
@@ -464,6 +464,8 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
             height={transcriptHeight}
             scrollOffset={scrollOffset}
             onScrollLimit={setScrollLimit}
+            selection={selection}
+            screenTop={showHeader ? 3 : 0}
           />
         </Box>
         {showSidebar ? <TaskSidebar

@@ -1,16 +1,20 @@
 import { spawn } from "node:child_process";
 import xterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
+import stringWidth from "string-width";
 
 interface Point { x: number; y: number }
 interface Selection { start: Point; end: Point }
+export interface SelectableTextRow { y: number; startColumn: number; text: string }
 
-// Ink does not expose its rendered cells. Mirror its output in a terminal
-// buffer so mouse selection works across the whole screen, including panels.
+// Ink does not expose its rendered cells. Mirror output for selection
+// highlighting, while copying from the transcript's semantic message rows.
 export class ScreenSelection {
   private terminal: InstanceType<typeof xterm.Terminal>;
   private originalWrite: typeof process.stdout.write;
   private selected?: Selection;
+  private selectableRows = new Map<number, SelectableTextRow>();
+  private writeVersion = 0;
   private readonly resize: () => void;
   private closed = false;
 
@@ -20,7 +24,12 @@ export class ScreenSelection {
     const original = this.originalWrite.bind(stdout);
     const self = this;
     stdout.write = function (chunk: string | Uint8Array, encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean {
-      if (!self.closed) self.terminal.write(typeof chunk === "string" ? chunk : new Uint8Array(chunk), () => { if (self.selected && !self.closed) self.paint(self.selected); });
+      if (!self.closed) {
+        const version = ++self.writeVersion;
+        self.terminal.write(typeof chunk === "string" ? chunk : new Uint8Array(chunk), () => {
+          if (self.selected && !self.closed && version === self.writeVersion) self.paint(self.selected);
+        });
+      }
       return original(chunk as never, encodingOrCallback as never, callback as never);
     } as typeof stdout.write;
     this.resize = () => {
@@ -33,10 +42,21 @@ export class ScreenSelection {
   private clamp(point: Point): Point {
     return { x: Math.max(0, Math.min(this.terminal.cols - 1, point.x - 1)), y: Math.max(0, Math.min(this.terminal.rows - 1, point.y - 1)) };
   }
-  start(point: Point): void {
+  setSelectableRows(rows: SelectableTextRow[]): void {
+    if (rows.length === this.selectableRows.size && rows.every((row) => {
+      const existing = this.selectableRows.get(row.y);
+      return existing?.startColumn === row.startColumn && existing.text === row.text;
+    })) return;
+    this.clear();
+    this.selectableRows = new Map(rows.map((row) => [row.y, row]));
+  }
+  start(point: Point): boolean {
     this.clear();
     const p = this.clamp(point);
+    const row = this.selectableRows.get(p.y);
+    if (!row || p.x < row.startColumn || p.x >= row.startColumn + stringWidth(row.text)) return false;
     this.selected = { start: p, end: p };
+    return true;
   }
   move(point: Point): void {
     if (!this.selected) return;
@@ -52,12 +72,15 @@ export class ScreenSelection {
     if (start.x === end.x && start.y === end.y) { this.clear(); return ""; }
     const lines: string[] = [];
     for (let y = start.y; y <= end.y; y++) {
-      const line = this.terminal.buffer.active.getLine(this.terminal.buffer.active.viewportY + y);
-      let text = line?.translateToString(true, y === start.y ? start.x : 0, y === end.y ? end.x + 1 : this.terminal.cols) ?? "";
-      // The conversation rail is decoration, not part of the message.
-      if (y !== start.y || start.x === 0) text = text.replace(/^ {0,4}│ {0,2}/, "");
-      lines.push(text);
+      const row = this.selectableRows.get(y);
+      if (!row) continue;
+      const first = Math.max(row.startColumn, y === start.y ? start.x : row.startColumn);
+      const last = Math.min(row.startColumn + stringWidth(row.text) - 1, y === end.y ? end.x : this.terminal.cols - 1);
+      if (first > last) continue;
+      const text = sliceByColumns(row.text, first - row.startColumn, last - row.startColumn + 1);
+      if (text) lines.push(text);
     }
+    this.clear();
     return lines.join("\n");
   }
   clear(): void {
@@ -80,12 +103,15 @@ export class ScreenSelection {
     const { start, end } = this.ordered(selection);
     let output = "\u001b7\u001b[?7l";
     for (let y = start.y; y <= end.y; y++) {
+      const selectable = this.selectableRows.get(y);
+      if (!selectable) continue;
       const line = this.terminal.buffer.active.getLine(this.terminal.buffer.active.viewportY + y);
       if (!line) continue;
-      let first = y === start.y ? start.x : 0;
-      let last = y === end.y ? end.x : this.terminal.cols - 1;
-      if (line.getCell(first)?.getWidth() === 0 && first > 0) first--;
-      if (line.getCell(last)?.getWidth() === 2 && last + 1 < this.terminal.cols) last++;
+      let first = Math.max(selectable.startColumn, y === start.y ? start.x : selectable.startColumn);
+      let last = Math.min(selectable.startColumn + stringWidth(selectable.text) - 1, y === end.y ? end.x : this.terminal.cols - 1);
+      if (first > last) continue;
+      if (line.getCell(first)?.getWidth() === 0 && first > selectable.startColumn) first--;
+      if (line.getCell(last)?.getWidth() === 0 && last > first) last--;
       output += `\u001b[${y + 1};${first + 1}H`;
       let previousStyle = "";
       for (let x = first; x <= last; x++) {
@@ -99,6 +125,18 @@ export class ScreenSelection {
     output += "\u001b[0m\u001b[?7h\u001b8";
     this.originalWrite.call(this.stdout, output);
   }
+}
+
+function sliceByColumns(text: string, start: number, end: number): string {
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  let column = 0;
+  let result = "";
+  for (const { segment } of segmenter.segment(text)) {
+    const width = stringWidth(segment);
+    if (width > 0 && column < end && column + width > start) result += segment;
+    column += width;
+  }
+  return result;
 }
 
 function cellStyle(cell: IBufferCell, selected: boolean): string {

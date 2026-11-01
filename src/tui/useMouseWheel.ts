@@ -47,7 +47,7 @@ export function useMouseWheel(area: WheelArea, onWheel: (direction: 1 | -1) => v
               screen?.clear();
               scroll((code & 0x03) === 0 ? 1 : -1);
             } else if (!inPaste && screen && (code & 0xc0) === 0 && (code & 3) === 0) {
-              if (event[4] === "M" && (code & 32) === 0) { dragging = true; screen.start({ x, y }); }
+              if (event[4] === "M" && (code & 32) === 0) dragging = screen.start({ x, y });
               else if (event[4] === "M" && dragging && (code & 32) !== 0) screen.move({ x, y });
               else if (event[4] === "m" && dragging) {
                 dragging = false;

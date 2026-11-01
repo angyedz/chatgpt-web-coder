@@ -579,7 +579,7 @@ export class Orchestrator {
           text: [
             "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
-            "Navigation: mouse wheel or PgUp/PgDn scroll · in Windows Terminal hold Shift to select text",
+            "Navigation: mouse wheel or PgUp/PgDn scroll · drag over a message with the left mouse button to copy its text",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",

@@ -1,11 +1,13 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useWindowSize } from "ink";
+import stringWidth from "string-width";
 import type { ChatMessage, ToolCallView } from "../../types.js";
 import { cleanAssistantHistory } from "../../browser/response-text.js";
 import { markdownLines } from "../markdown.js";
 import { terminalText } from "../terminal-text.js";
 import { glyphs, theme } from "../theme.js";
 import { toolDisplayLines } from "./ToolCard.js";
+import type { ScreenSelection } from "../screen-selection.js";
 
 type Entry =
   | { kind: "message"; time: number; order?: number; message: ChatMessage }
@@ -19,6 +21,8 @@ interface TranscriptProps {
   systemView?: boolean;
   scrollOffset?: number;
   onScrollLimit?: (limit: number) => void;
+  selection?: ScreenSelection;
+  screenTop?: number;
 }
 
 interface Row {
@@ -28,9 +32,10 @@ interface Row {
   bold?: boolean;
   rail?: string;
   railColor?: string;
+  selectable?: boolean;
 }
 
-export const Transcript = React.memo(function Transcript({ messages, tools, height, width: viewportWidth, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
+export const Transcript = React.memo(function Transcript({ messages, tools, height, width: viewportWidth, systemView = false, scrollOffset = 0, onScrollLimit, selection, screenTop = 0 }: TranscriptProps) {
   const { columns: terminalColumns = 80 } = useWindowSize();
   const columns = viewportWidth ?? terminalColumns;
   const [frame, setFrame] = useState(0);
@@ -111,6 +116,7 @@ export const Transcript = React.memo(function Transcript({ messages, tools, heig
         railColor: color,
         color: line.tone === "heading" ? theme.accent : line.tone === "code" ? theme.accentAlt : line.tone === "muted" ? theme.dim : isUser ? theme.user : theme.assistant,
         bold: line.bold,
+        selectable: true,
       });
     });
     rows.push({ key: `${message.id}:end`, text: "", rail: "  ╰─", railColor: color });
@@ -128,6 +134,12 @@ export const Transcript = React.memo(function Transcript({ messages, tools, heig
   const offset = Math.min(scrollOffset, limit);
   const end = Math.max(0, rows.length - offset);
   const visible = rows.slice(Math.max(0, end - visibleHeight), end);
+  const transcriptRowsTop = screenTop + (showSection ? 1 : 0) + (hasHistory ? 1 : 0);
+  useLayoutEffect(() => {
+    selection?.setSelectableRows(visible.flatMap((row, index) => row.selectable
+      ? [{ y: transcriptRowsTop + index, startColumn: 1 + stringWidth(row.rail ?? ""), text: terminalText(row.text) }]
+      : []));
+  }, [selection, transcriptRowsTop, visible]);
   return (
     <Box flexDirection="column" flexGrow={1} flexShrink={0} height={height} overflow="hidden" paddingX={1}>
       {showSection ? <Text color={theme.border} wrap="truncate-end">  ── <Text bold color={theme.dim}>{systemView ? "SYSTEM LOG" : "CONVERSATION"}</Text> {"─".repeat(Math.max(0, Math.min(24, columns - 22)))} <Text color={theme.dim}>Ctrl+O {systemView ? "chat" : "system log"}</Text></Text> : null}
