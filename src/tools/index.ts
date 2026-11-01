@@ -173,7 +173,7 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: false },
     handler: async (_args, ctx) => {
-      const result = await ctx.exec.run("git status --short --branch", { workdir: ctx.workspace });
+      const result = await ctx.exec.run("git status --short --branch", { workdir: ctx.workspace, turnId: ctx.turnId, signal: ctx.turnSignal });
       return text(formatExecResult(result, ctx.config.maxOutputChars));
     },
   },
@@ -187,7 +187,7 @@ export const toolDefinitions: ToolDefinition[] = [
     annotations: { readOnlyHint: true, openWorldHint: false },
     handler: async (args, ctx) => {
       const maxChars = Math.min(numberArg(args, "max_output_chars", ctx.config.maxOutputChars), ctx.config.maxOutputChars);
-      const result = await ctx.exec.run("git diff --no-ext-diff HEAD", { workdir: ctx.workspace });
+      const result = await ctx.exec.run("git diff --no-ext-diff HEAD", { workdir: ctx.workspace, turnId: ctx.turnId, signal: ctx.turnSignal });
       return text(formatExecResult(result, maxChars));
     },
   },
@@ -201,7 +201,7 @@ export const toolDefinitions: ToolDefinition[] = [
     annotations: { readOnlyHint: true, openWorldHint: false },
     handler: async (args, ctx) => {
       const count = numberArg(args, "count", 10);
-      const result = await ctx.exec.run(`git log -${count} --oneline --decorate`, { workdir: ctx.workspace });
+      const result = await ctx.exec.run(`git log -${count} --oneline --decorate`, { workdir: ctx.workspace, turnId: ctx.turnId, signal: ctx.turnSignal });
       return text(formatExecResult(result, ctx.config.maxOutputChars));
     },
   },
@@ -236,7 +236,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: "exec_command",
     title: "Run a shell command",
     description:
-      "Run a shell command in the workspace. In approval mode never (YOLO) harness approval is automatic. In ask mode the user is prompted. Set background=true for long-running servers and jobs; the returned session survives cancellation of the current turn. Use timeout_ms for an optional execution deadline. Poll with write_stdin or inspect_exec_session; never start a duplicate. On Windows the shell is PowerShell.",
+      "Run a shell command in the workspace. In approval mode never (YOLO) harness approval is automatic. In ask mode the user is prompted. Set background=true for long-running servers and jobs; the process survives normal turn completion but is stopped if the user cancels the turn that started it. Use timeout_ms for an optional execution deadline. Poll with write_stdin or inspect_exec_session; never start a duplicate. On Windows the shell is PowerShell.",
     inputSchema: {
       cmd: z.string().min(1).describe("Command line to execute."),
       workdir: z
@@ -250,7 +250,7 @@ export const toolDefinitions: ToolDefinition[] = [
         .max(60_000)
         .optional()
         .describe("How long to wait before returning a session id. Default 10000."),
-      background: z.boolean().optional().describe("Run as a background job; return quickly and keep it running after the turn."),
+      background: z.boolean().optional().describe("Run as a background job; return quickly and keep it running after a normal turn completion. It is stopped if the user cancels the turn that started it."),
       require_approval: z.boolean().optional().describe("Legacy field; approval always follows the current mode, and never (YOLO) never prompts."),
       timeout_ms: z.number().int().min(100).max(2_147_000_000).optional().describe("Stop the process tree after this many milliseconds. Omit for no deadline."),
       max_output_chars: z
@@ -292,6 +292,8 @@ export const toolDefinitions: ToolDefinition[] = [
         workdir,
         yieldTimeMs: yieldTime,
         background,
+        turnId: ctx.turnId,
+        signal: ctx.turnSignal,
         timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
       });
       ctx.events.emit({
@@ -358,7 +360,11 @@ export const toolDefinitions: ToolDefinition[] = [
       const toolArgs = parsed.data as Record<string, unknown>;
       if (name === "exec_command") toolArgs.background = true;
       if (name === "write_stdin" && typeof toolArgs.session_id === "string") ctx.exec.background(toolArgs.session_id);
-      const task = ctx.tasks.start(name, (id) => def.handler(toolArgs, { ...ctx, exec: backgroundExec(ctx.exec), approvalScope: id, turnSignal: undefined }));
+      const task = ctx.tasks.start(name, ctx.turnId, (id, signal) => def.handler(toolArgs, { ...ctx, exec: backgroundExec(ctx.exec), approvalScope: id, turnSignal: signal }));
+      const originalTurnSignal = ctx.turnSignal;
+      originalTurnSignal?.addEventListener("abort", () => {
+        ctx.approvals.denyScope(task.id);
+      }, { once: true });
       return text(`Started background task ${task.id}: ${name}. Use get_background_task to inspect the result.`);
     },
   },
@@ -386,7 +392,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: "background_exec_session",
     title: "Move a command to the background",
-    description: "Keep an existing running exec_command session in the background when the current turn is cancelled.",
+    description: "Mark an existing command as background so it can continue after a normal answer. It remains owned by the current turn and is stopped if that turn is cancelled.",
     inputSchema: { session_id: z.string().min(1).describe("Running command session ID.") },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     handler: async (args, ctx) => {
@@ -827,6 +833,12 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
 ];
+
+// MCP clients cache tool metadata. Include the turn-scoped guard in the
+// fingerprinted description so upgrades prompt users to refresh cached tools.
+for (const tool of toolDefinitions) {
+  tool.description = `${tool.description}\nRequired MCP argument: turn_id must exactly match the active Turn ID in the current harness prompt.`;
+}
 
 function mimeForPath(filePath: string): string | undefined {
   const ext = path.extname(filePath).toLowerCase();

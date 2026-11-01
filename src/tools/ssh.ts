@@ -79,6 +79,8 @@ export const sshTools: ToolDefinition[] = [
       const result = await ctx.exec.runExecutable("ssh", [...target.sshArgs, target.host, command], {
         workdir: ctx.workspace,
         background,
+        turnId: ctx.turnId,
+        signal: ctx.turnSignal,
         yieldTimeMs: typeof args.yield_time_ms === "number" ? args.yield_time_ms : background ? 250 : 10000,
         timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
         displayCommand: `ssh ${target.label}: ${oneLine(command, 240)}`,
@@ -119,6 +121,8 @@ export const sshTools: ToolDefinition[] = [
         workdir: ctx.workspace,
         stdin: `${operation}\n`,
         background: Boolean(ctx.approvalScope),
+        turnId: ctx.turnId,
+        signal: ctx.turnSignal,
         yieldTimeMs: ctx.approvalScope ? 250 : 10000,
         timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
         displayCommand: `sftp ${direction} ${target.label}: ${localArg} ↔ ${remote}`,

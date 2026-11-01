@@ -12,6 +12,18 @@ export interface ExecResult {
   timedOut?: boolean;
 }
 
+export interface ExecOptions {
+  workdir?: string;
+  yieldTimeMs?: number;
+  env?: NodeJS.ProcessEnv;
+  background?: boolean;
+  timeoutMs?: number;
+  stdin?: string;
+  displayCommand?: string;
+  turnId?: string;
+  signal?: AbortSignal;
+}
+
 interface ExecSession {
   id: string;
   child: ChildProcessWithoutNullStreams;
@@ -25,6 +37,8 @@ interface ExecSession {
   command: string;
   workdir?: string;
   background: boolean;
+  turnId?: string;
+  killPromise?: Promise<boolean>;
   timedOut: boolean;
   endedAt?: number;
   timeout?: NodeJS.Timeout;
@@ -68,8 +82,9 @@ export class ExecSessionManager {
 
   async run(
     command: string,
-    options: { workdir?: string; yieldTimeMs?: number; env?: NodeJS.ProcessEnv; background?: boolean; timeoutMs?: number } = {},
+    options: ExecOptions = {},
   ): Promise<ExecResult> {
+    options.signal?.throwIfAborted();
     const invocation = shellInvocation(command);
     return this.runInvocation(invocation.file, invocation.args, command, options);
   }
@@ -77,8 +92,9 @@ export class ExecSessionManager {
   async runExecutable(
     file: string,
     args: string[],
-    options: { workdir?: string; yieldTimeMs?: number; env?: NodeJS.ProcessEnv; background?: boolean; timeoutMs?: number; stdin?: string; displayCommand?: string } = {},
+    options: ExecOptions = {},
   ): Promise<ExecResult> {
+    options.signal?.throwIfAborted();
     return this.runInvocation(file, args, options.displayCommand ?? file, options);
   }
 
@@ -86,8 +102,9 @@ export class ExecSessionManager {
     file: string,
     args: string[],
     command: string,
-    options: { workdir?: string; yieldTimeMs?: number; env?: NodeJS.ProcessEnv; background?: boolean; timeoutMs?: number; stdin?: string },
+    options: ExecOptions,
   ): Promise<ExecResult> {
+    options.signal?.throwIfAborted();
     const startedAt = Date.now();
     if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > 2_147_000_000)) {
       throw new Error("Command timeout must be between 100 ms and 24 days.");
@@ -118,15 +135,18 @@ export class ExecSessionManager {
       command,
       workdir: options.workdir,
       background: options.background ?? false,
+      turnId: options.turnId,
       timedOut: false,
       exitPromise: Promise.resolve(),
     };
 
+    let onAbort = () => {};
     session.exitPromise = new Promise<void>((resolve) => {
       const finish = (code: number | null, signal: NodeJS.Signals | null) => {
         if (!session.running) return;
         session.running = false;
         session.endedAt = Date.now();
+        options.signal?.removeEventListener("abort", onAbort);
         if (session.timeout) clearTimeout(session.timeout);
         session.exitCode = code ?? (signal ? 128 : -1);
         if (signal) {
@@ -144,8 +164,16 @@ export class ExecSessionManager {
       child.on("close", (code, signal) => finish(code, signal));
     });
 
+    onAbort = () => {
+      void this.kill(id).then((stopped) => {
+        if (!stopped && session.running) this.events?.emit({ type: "notice", level: "error", text: `Could not confirm termination of cancelled command ${id} and its child processes.` });
+      });
+    };
+
     this.append(session, "");
     this.sessions.set(id, session);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
 
     if (options.timeoutMs !== undefined) {
       session.timeout = setTimeout(() => {
@@ -228,11 +256,18 @@ export class ExecSessionManager {
   async kill(sessionId: string): Promise<boolean> {
     const session = this.sessions.get(sessionId);
     if (!session || !session.running) return false;
-    const stopped = await killTree(session.child);
-    await Promise.race([session.exitPromise, sleep(1500)]);
-    if (!stopped || session.running) return false;
-    if (!session.background) this.sessions.delete(sessionId);
-    return true;
+    if (session.killPromise) return session.killPromise;
+    session.killPromise = (async () => {
+      const stopped = await killTree(session.child);
+      await Promise.race([session.exitPromise, sleep(1500)]);
+      if (!stopped || session.running) {
+        session.killPromise = undefined;
+        return false;
+      }
+      if (!session.background) this.sessions.delete(sessionId);
+      return true;
+    })();
+    return session.killPromise;
   }
 
   background(sessionId: string): boolean {
@@ -265,6 +300,14 @@ export class ExecSessionManager {
     await Promise.all([...this.sessions.values()].filter((session) => !session.background && session.running).map(async (session) => {
       if (!(await this.kill(session.id))) {
         this.events?.emit({ type: "notice", level: "error", text: `Could not confirm termination of command ${session.id} and its child processes.` });
+      }
+    }));
+  }
+
+  async stopTurn(turnId: string): Promise<void> {
+    await Promise.all([...this.sessions.values()].filter((session) => session.turnId === turnId && session.running).map(async (session) => {
+      if (!(await this.kill(session.id))) {
+        this.events?.emit({ type: "notice", level: "error", text: `Could not confirm termination of command ${session.id} from the cancelled turn.` });
       }
     }));
   }

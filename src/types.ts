@@ -69,7 +69,7 @@ export interface SessionInfo {
 
 export type TelegramSetupState =
   | { stage: "token"; error?: string }
-  | { stage: "pairing"; botUsername: string; code: string };
+  | { stage: "pairing"; botUsername: string; words: string[] };
 
 export type HarnessEvent =
   | { type: "user-message"; id: string; text: string; channel?: "btw" | "telegram" }

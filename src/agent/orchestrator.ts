@@ -1,5 +1,4 @@
 import { saveConnectionSetting, saveHarnessConfig, saveTunnelApiKey, saveUpdateSetting, readCredential, removeCredential, saveCredential, saveTelegramProfile, type ExternalMcpServer, type HarnessConfig } from "../config.js";
-import { randomInt } from "node:crypto";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
 import { HarnessEvents } from "../events.js";
 import { McpHost } from "../mcp/server.js";
@@ -25,6 +24,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { chooseAttachment, imagePathFromPaste } from "../runtime/attachments.js";
 import { stat } from "node:fs/promises";
 import { TelegramBot } from "../telegram/bot.js";
+import { createTelegramPairingWords } from "../telegram/pairing.js";
 
 const LARGE_MESSAGE_CHARS = 12_000;
 
@@ -37,7 +37,10 @@ export class Orchestrator {
   tunnel!: TunnelSupervisor;
 
   private currentTurn?: AbortController;
+  private currentTurnId?: string;
   private cancellation?: Promise<void>;
+  private readonly followupStopTurns = new Set<string>();
+  private readonly activeToolCalls = new Set<string>();
   private busy = false;
   private turnCount = 0;
   private contextTokens = 0;
@@ -73,6 +76,8 @@ export class Orchestrator {
     this.runtime.context.beforeToolStart = () => this.browser.snapshotBeforeTool();
     this.mcp = new McpHost(this.runtime.context, config.mcp);
     this.events.on((event) => {
+      if (event.type === "tool-start") this.activeToolCalls.add(event.call.id);
+      if (event.type === "tool-end") this.activeToolCalls.delete(event.call.id);
       if (event.type === "status") this.serviceState[event.key] = { state: event.state, detail: event.detail };
       if (event.type === "phase") this.phaseState = event.phase;
       if (event.type === "tool-end") {
@@ -258,9 +263,9 @@ export class Orchestrator {
       return;
     }
     try {
-      const code = String(randomInt(10_000_000, 100_000_000));
-      await this.startTelegramBot(value, undefined, code);
-      this.events.emit({ type: "telegram-setup", state: { stage: "pairing", botUsername: this.telegramBot?.botUsername ?? "your bot", code } });
+      const words = createTelegramPairingWords();
+      await this.startTelegramBot(value, undefined, words);
+      this.events.emit({ type: "telegram-setup", state: { stage: "pairing", botUsername: this.telegramBot?.botUsername ?? "your bot", words } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.events.emit({ type: "telegram-setup", state: { stage: "token", error: `Could not connect to Telegram: ${message.replaceAll(value, "[redacted]")}` } });
@@ -285,14 +290,14 @@ export class Orchestrator {
     }
   }
 
-  private async startTelegramBot(token: string, identity?: HarnessConfig["telegram"], pairingCode?: string): Promise<void> {
+  private async startTelegramBot(token: string, identity?: HarnessConfig["telegram"], pairingWords?: string[]): Promise<void> {
     if (this.telegramBot) {
       const previous = this.telegramBot;
       this.telegramBot = undefined;
       await previous.stop();
     }
     let bot: TelegramBot;
-    bot = new TelegramBot(token, identity, pairingCode, {
+    bot = new TelegramBot(token, identity, pairingWords, {
       events: this.events,
       workspace: this.config.workspace,
       getBusy: () => this.busy,
@@ -356,13 +361,16 @@ export class Orchestrator {
 
   cancel(): void {
     if (!this.currentTurn || this.currentTurn.signal.aborted) return;
+    const turnId = this.currentTurnId ?? this.runtime.context.turnId;
+    if (this.browser.hasActiveResponse || this.activeToolCalls.size > 0) this.followupStopTurns.add(turnId);
     if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", "Stopped by the user. Use /goal resume to continue.");
     this.currentTurn.abort();
     this.runtime.approvals.denyForeground();
+    for (const taskId of this.runtime.tasks.cancelTurn(turnId)) this.runtime.approvals.denyScope(taskId);
     this.events.emit({ type: "phase", phase: "cancelling" });
     this.cancellation = Promise.allSettled([
       this.browser.stop(),
-      this.runtime.exec.stopForeground(),
+      this.runtime.exec.stopTurn(turnId),
     ]).then(() => undefined);
   }
 
@@ -495,6 +503,7 @@ export class Orchestrator {
     const controller = new AbortController();
     const startingPlanRevision = this.planRevision;
     this.currentTurn = controller;
+    this.currentTurnId = turnId;
     this.runtime.context.turnId = turnId;
     this.runtime.context.turnSignal = controller.signal;
 
@@ -559,7 +568,7 @@ export class Orchestrator {
         this.runtime.approvals.pendingRequests.length === 0 &&
         !this.runtime.tasks.list().some((task) => task.status === "running");
       const goalRecoveryIsSafe = () => this.runtime.goal.current?.status === "active" && this.runtime.approvals.pendingRequests.length === 0 && !this.runtime.tasks.list().some((task) => task.status === "running");
-      let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => this.runtime.attachments.markSent(uploads.map((item) => item.id)) } : {}) });
+      let answer = await this.browser.send(prompt, controller.signal, { turnId, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => this.runtime.attachments.markSent(uploads.map((item) => item.id)) } : {}) });
       controller.signal.throwIfAborted();
       this.contextTokens += estimateTokens(answer);
       if (await this.browser.hasInteractiveControls()) {
@@ -574,7 +583,7 @@ export class Orchestrator {
         }
         this.contextTokens += estimateTokens(nextPrompt);
         this.turnCount += 1;
-        answer = await this.browser.send(nextPrompt, controller.signal, { continueChat: true, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe });
+        answer = await this.browser.send(nextPrompt, controller.signal, { turnId, continueChat: true, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
         if (this.browser.interactionRevision === revision && await this.browser.hasInteractiveControls()) {
@@ -600,7 +609,7 @@ export class Orchestrator {
         }
         this.contextTokens += estimateTokens(nextPrompt);
         this.turnCount += 1;
-        answer = await this.browser.send(nextPrompt, controller.signal, { continueChat: true, canRecoverStall: goalRecoveryIsSafe });
+        answer = await this.browser.send(nextPrompt, controller.signal, { turnId, continueChat: true, canRecoverStall: goalRecoveryIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
         if (this.goalActionRevision === lastGoalActionRevision) noProgress += 1;
@@ -613,7 +622,7 @@ export class Orchestrator {
         this.events.emit({ type: "notice", level: "info", text: `ChatGPT stopped after a tool call with the plan unfinished. Continuing the same task (${continuations}/2)…` });
         const continuation = "Your previous response stopped immediately after a tool call while the task plan is unfinished. Continue the same user request using the tool results already obtained. Do not repeat completed work or retry a denied action unless the user explicitly asks to reconsider it; follow the current approval mode. If you are blocked or need user input, explain that instead. Update the plan and summarize the result when finished.";
         this.contextTokens += estimateTokens(continuation);
-        answer = await this.browser.send(continuation, controller.signal, { continueChat: true, canRecoverStall: continuationIsSafe });
+        answer = await this.browser.send(continuation, controller.signal, { turnId, continueChat: true, canRecoverStall: continuationIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
       }
@@ -654,9 +663,16 @@ export class Orchestrator {
     } finally {
       await this.cancellation;
       this.cancellation = undefined;
-      this.currentTurn = undefined;
-      this.browser.setResponseChannel(undefined);
+      if (controller.signal.aborted && this.followupStopTurns.delete(turnId)) {
+        // A tool result can make ChatGPT resume after the first Stop click.
+        // Wait briefly for that resumed generation and stop it before another
+        // turn is allowed to use the shared browser/MCP connection.
+        await this.browser.stop({ waitForResponse: true, waitMs: 5_000 });
+      }
       if (this.runtime.context.turnSignal === controller.signal) this.runtime.context.turnSignal = undefined;
+      this.currentTurn = undefined;
+      this.currentTurnId = undefined;
+      this.browser.setResponseChannel(undefined);
       this.busy = false;
       this.events.emit({ type: "turn-end", turnId, ok });
       this.events.emit({ type: "phase", phase: "idle" });
@@ -718,7 +734,7 @@ export class Orchestrator {
         if (action === "status") {
           const state = this.serviceState.telegram;
           this.events.emit({ type: "notice", level: "info", text: this.config.telegram.ownerUserId
-            ? `Telegram ${this.telegramBot?.isRunning ? "connected" : "stopped"}${this.config.telegram.botUsername ? ` · @${this.config.telegram.botUsername}` : ""}${state?.detail ? ` · ${state.detail}` : ""}.`
+            ? `Telegram ${this.telegramBot?.isRunning ? "connected" : "stopped"}${this.config.telegram.botUsername ? ` · @${this.config.telegram.botUsername}` : ""} · linked user ID ${this.config.telegram.ownerUserId}${state?.detail ? ` · ${state.detail}` : ""}.`
             : "Telegram is not configured. Run /telegram setup." });
           return;
         }
@@ -1457,7 +1473,7 @@ export class Orchestrator {
       const summary = await this.browser.send(
         "Create a compact, high fidelity handoff summary of this conversation for a fresh chat. Include the user's overall goal, requirements and preferences; confirmed facts; decisions and their reasons; files changed and important current code state; commands and checks already run with outcomes; unresolved tasks and next steps. Preserve names, paths, values and constraints. Omit chit chat. Do not call any tools or make changes. Reply only with the summary. The harness separately preserves the authoritative goal and plan state.",
         operationSignal,
-        { continueChat: true },
+        { continueChat: true, turnId: this.currentTurnId ?? compactId },
       );
       operationSignal.throwIfAborted();
       if (!summary.trim()) throw new Error("The model returned an empty context summary.");

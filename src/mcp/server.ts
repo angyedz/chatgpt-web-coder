@@ -8,6 +8,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import type { McpConfig } from "../config.js";
 import { APP_VERSION } from "../runtime/version.js";
 import { toolDefinitions, errorText } from "../tools/index.js";
@@ -210,7 +211,7 @@ export function createMcpServer(ctx: ToolContext): McpServer {
       { name: "chatgpt-coder", version: APP_VERSION },
     {
       instructions:
-        "Local coding harness tools. Use exec_command/write_stdin for terminal work, read_file/list_dir/glob/grep to inspect the workspace, apply_patch for edits, and web_search/web_fetch for the internet. Always verify results with real tool output.",
+        "Local coding harness tools. Every tool call requires turn_id copied exactly from the active Turn in the prompt; stale calls are rejected. Use exec_command/write_stdin for terminal work, read_file/list_dir/glob/grep to inspect the workspace, apply_patch for edits, and web_search/web_fetch for the internet. Always verify results with real tool output.",
     },
   );
 
@@ -220,19 +221,29 @@ export function createMcpServer(ctx: ToolContext): McpServer {
       {
         title: def.title,
         description: def.description,
-        inputSchema: def.inputSchema,
+        inputSchema: {
+          ...def.inputSchema,
+          turn_id: z.string().min(1).describe("Required current harness turn ID. Copy the exact Turn value from the active task prompt. Calls with an old or missing ID are rejected."),
+        },
         annotations: def.annotations,
       },
       async (args: Record<string, unknown>): Promise<CallToolResult> => {
-        // Capture the turn at request arrival; a later turn must not replace the
-        // signal while this request is waiting for a browser snapshot.
-        const callContext = { ...ctx, turnSignal: ctx.turnSignal };
+        const callTurnId = typeof args.turn_id === "string" ? args.turn_id : "";
+        const { turn_id: _turnId, ...toolArgs } = args;
+        // Bind each tool request to the exact active turn that created it.
+        // This blocks delayed calls from another ChatGPT tab/session.
+        const callSignal = ctx.turnSignal;
+        const validTurn = () => Boolean(callSignal && !callSignal.aborted && ctx.turnSignal === callSignal && ctx.turnId === callTurnId);
+        if (!callTurnId || callTurnId !== ctx.turnId || !callSignal || callSignal.aborted) {
+          return errorText("Rejected stale tool call: start a new request in the active chatgpt-coder session.") as CallToolResult;
+        }
+        const callContext = { ...ctx, turnId: callTurnId, turnSignal: callSignal };
         await ctx.beforeToolStart?.().catch(() => undefined);
-        if (callContext.turnSignal?.aborted) return errorText("The turn was cancelled before this tool started.") as CallToolResult;
+        if (!validTurn()) return errorText("The turn was cancelled or replaced before this tool started.") as CallToolResult;
         const call = {
           id: newId("call"),
           name: def.name,
-          args,
+          args: toolArgs,
           status: "running" as const,
           startedAt: Date.now(),
         };
@@ -240,8 +251,11 @@ export function createMcpServer(ctx: ToolContext): McpServer {
         ctx.events.emit({ type: "phase", phase: "tool" });
 
         try {
-          const result = await def.handler(args, callContext);
-          const output = result.content
+          const result = await def.handler(toolArgs, callContext);
+          const finalResult = validTurn()
+            ? result
+            : errorText("The harness turn was cancelled or replaced while this tool was running; do not continue or start more actions.");
+          const output = finalResult.content
             .map((item) =>
               item.type === "text"
                 ? item.text
@@ -252,12 +266,12 @@ export function createMcpServer(ctx: ToolContext): McpServer {
             type: "tool-end",
             call: {
               ...call,
-              status: result.isError ? "error" : "ok",
+              status: finalResult.isError ? "error" : "ok",
               endedAt: Date.now(),
               output: truncate(output, 4000),
             },
           });
-          return result as CallToolResult;
+          return finalResult as CallToolResult;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           ctx.events.emit({

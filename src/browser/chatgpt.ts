@@ -61,6 +61,10 @@ export class ChatGptBrowser {
     return Boolean(this.context && this.page && !this.page.isClosed());
   }
 
+  get hasActiveResponse(): boolean {
+    return Boolean(this.responseStream);
+  }
+
   get currentPage(): Page | undefined {
     return this.page;
   }
@@ -294,8 +298,9 @@ export class ChatGptBrowser {
 
   setResponseChannel(channel?: "telegram"): void { this.responseChannel = channel; }
 
-  async send(prompt: string, signal: AbortSignal, options: { continueChat?: boolean; canRecoverStall?: () => boolean; files?: { id: string; name: string; path: string }[]; onSubmitted?: () => void } = {}): Promise<string> {
+  async send(prompt: string, signal: AbortSignal, options: { continueChat?: boolean; canRecoverStall?: () => boolean; files?: { id: string; name: string; path: string }[]; onSubmitted?: () => void; turnId?: string } = {}): Promise<string> {
     signal.throwIfAborted();
+    const outgoingPrompt = options.turnId ? `${prompt}\n\nCurrent harness turn_id (required for tool calls): ${options.turnId}` : prompt;
     await this.ensureLoggedIn();
     const page = this.requirePage();
     signal.throwIfAborted();
@@ -309,10 +314,10 @@ export class ChatGptBrowser {
 
     this.endedAfterTool = false;
     this.sawStopButton = false;
-    this.submittedPrompt = prompt;
+    this.submittedPrompt = outgoingPrompt;
     this.baseline = await this.count("assistantMessage");
     this.baselineMarkdown = await this.requirePage().locator(selectors.markdown.join(", ")).count();
-    await this.fillComposer(prompt, options.files ?? [], signal);
+    await this.fillComposer(outgoingPrompt, options.files ?? [], signal);
     signal.throwIfAborted();
     const responseStream = new ResponseStream(this.events, newId("assistant"), this.responseChannel);
     this.responseStream = responseStream;
@@ -454,10 +459,10 @@ export class ChatGptBrowser {
     }
   }
 
-  async stop(): Promise<void> {
-    const wasActive = Boolean(this.responseStream);
+  async stop(options: { waitForResponse?: boolean; waitMs?: number } = {}): Promise<void> {
+    const wasActive = Boolean(this.responseStream) || options.waitForResponse === true;
     try {
-      const stop = await this.firstVisible("stopButton");
+      const stop = await this.firstVisible("stopButton") ?? (options.waitForResponse ? await this.waitForAny("stopButton", options.waitMs ?? 5_000) : undefined);
       if (!stop) {
         if (wasActive) this.events.emit({ type: "notice", level: "warn", text: "Could not confirm that ChatGPT stopped. Check the browser before retrying; local cancellation does not undo completed actions." });
         return;

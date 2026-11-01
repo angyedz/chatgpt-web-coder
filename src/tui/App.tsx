@@ -576,9 +576,9 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
           {telegramSetup.error ? <Text color={theme.error} wrap="truncate-end">{terminalText(telegramSetup.error)}</Text> : null}
         </> : <>
           <Text>Open <Text color={theme.accent}>@{terminalText(telegramSetup.botUsername)}</Text> in Telegram and press Start.</Text>
-          <Text>Then send this one-time pairing code in that private chat:</Text>
-          <Text bold color={theme.warn}>/pair {telegramSetup.code}</Text>
-          <Text color={theme.dim}>The code expires in 10 minutes. Press Esc to cancel.</Text>
+          <Text>Send these three words in that private chat to link its Telegram account:</Text>
+          <Text bold color={theme.warn}>{telegramSetup.words.join(" ")}</Text>
+          <Text color={theme.dim}>This one-time phrase expires in 10 minutes and allows at most 5 tries per account / 20 total. Only the first account paired by phrase can control the harness. Press Esc to cancel.</Text>
         </>}
       </Box> : null}
 

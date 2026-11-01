@@ -35,7 +35,7 @@ export interface TelegramBotCallbacks {
 
 export class TelegramBot {
   private identity?: TelegramConfig;
-  private readonly pairingCode?: string;
+  private readonly pairingWords?: readonly string[];
   private readonly pairExpiresAt?: number;
   private readonly pairFailures = new Map<number, number>();
   private readonly abort = new AbortController();
@@ -63,11 +63,11 @@ export class TelegramBot {
   private editRevision = 0;
   private editing = false;
 
-  constructor(token: string, identity: TelegramConfig | undefined, pairingCode: string | undefined, private readonly callbacks: TelegramBotCallbacks) {
+  constructor(token: string, identity: TelegramConfig | undefined, pairingWords: readonly string[] | undefined, private readonly callbacks: TelegramBotCallbacks) {
     this.token = token;
     this.identity = identity?.enabled ? identity : undefined;
-    this.pairingCode = pairingCode;
-    this.pairExpiresAt = pairingCode ? Date.now() + 10 * 60_000 : undefined;
+    this.pairingWords = pairingWords;
+    this.pairExpiresAt = pairingWords ? Date.now() + 10 * 60_000 : undefined;
     this.offset = identity?.updateOffset ?? 0;
     if (callbacks.getBusy()) this.phase = `Local · ${phaseName(callbacks.getPhase())}`;
     this.dashboardMessageId = identity?.dashboardMessageId ?? 0;
@@ -231,13 +231,14 @@ export class TelegramBot {
   }
 
   private async tryPair(message: TelegramMessage, text: string, updateId: number): Promise<void> {
-    const match = /^\/pair(?:@\w+)?\s+(\d{8})$/.exec(text);
-    if (!match || !this.pairingCode || !this.pairExpiresAt || Date.now() > this.pairExpiresAt) return;
+    const command = /^\/pair(?:@\w+)?(?:\s+([\s\S]+))?$/i.exec(text);
+    const candidate = (command ? command[1] ?? "" : text).trim().toLowerCase().replace(/\s+/g, " ");
+    if (!this.pairingWords || !this.pairExpiresAt || Date.now() > this.pairExpiresAt || !/^[a-z]+(?: [a-z]+){2}$/.test(candidate)) return;
     const attempts = (this.pairFailures.get(message.from!.id) ?? 0) + 1;
+    if (attempts > 5 || this.pairTotalFailures >= 20) return;
     this.pairFailures.set(message.from!.id, attempts);
     this.pairTotalFailures += 1;
-    if (attempts > 5 || this.pairTotalFailures > 20) return;
-    if (match[1] !== this.pairingCode) return;
+    if (candidate !== this.pairingWords.join(" ")) return;
     const profile: TelegramConfig = {
       enabled: true,
       ownerUserId: String(message.from!.id),
@@ -249,7 +250,7 @@ export class TelegramBot {
     await this.callbacks.onPaired(profile);
     this.identity = profile;
     this.offset = updateId + 1;
-    this.lastNotice = "Private chat paired. Send a message to start a task.";
+    this.lastNotice = `Private chat paired to Telegram user ID ${profile.ownerUserId}. Only this account can control the harness.`;
     await this.updateDashboard(true);
   }
 

@@ -100,4 +100,14 @@ export class ApprovalManager {
       this.pending.delete(id);
     }
   }
+
+  denyScope(scope: string, reason = "Turn cancelled"): void {
+    for (const [id, entry] of this.pending) {
+      if (entry.scope !== scope) continue;
+      clearTimeout(entry.timer);
+      this.pending.delete(id);
+      entry.resolve(false, reason);
+      this.events.emit({ type: "approval-resolved", id, allowed: false });
+    }
+  }
 }
