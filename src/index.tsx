@@ -13,6 +13,7 @@ import { terminalText } from "./tui/terminal-text.js";
 import { installTunnelClient } from "./runtime/install-tunnel.js";
 import { APP_VERSION } from "./runtime/version.js";
 import { disableMouse } from "./tui/terminal-modes.js";
+import { ScreenSelection } from "./tui/screen-selection.js";
 
 const HELP = `chatgpt-coder — ChatGPT Web drives Codex-style local tools over MCP.
 
@@ -103,7 +104,8 @@ async function main(): Promise<void> {
   // A previous full-screen program may have left mouse reporting enabled.
   // Restore native terminal selection before mounting the UI.
   if (process.stdout.isTTY && process.env.TERM !== "dumb") process.stdout.write(disableMouse);
-  const app = render(<App orchestrator={orchestrator} />, {
+  const selection = process.stdout.isTTY && process.env.TERM !== "dumb" ? new ScreenSelection(process.stdout) : undefined;
+  const app = render(<App orchestrator={orchestrator} selection={selection} />, {
     alternateScreen: true,
     // Redrawing the whole screen destroys terminal selections on every frame.
     incrementalRendering: true,
@@ -120,6 +122,7 @@ async function main(): Promise<void> {
     await app.waitUntilExit();
   } finally {
     process.off("SIGTERM", onSigterm);
+    selection?.dispose();
     if (process.stdout.isTTY && process.env.TERM !== "dumb") process.stdout.write(disableMouse);
     await orchestrator.shutdown();
   }

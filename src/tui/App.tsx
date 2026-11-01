@@ -22,6 +22,7 @@ import { Transcript } from "./components/Transcript.js";
 import { theme } from "./theme.js";
 import { terminalText } from "./terminal-text.js";
 import { useMouseWheel } from "./useMouseWheel.js";
+import type { ScreenSelection } from "./screen-selection.js";
 
 interface Notice {
   id: number;
@@ -42,7 +43,7 @@ const emptyStatus: StatusMap = {
 };
 const noTools: ToolCallView[] = [];
 
-export function App({ orchestrator }: { orchestrator: Orchestrator }) {
+export function App({ orchestrator, selection }: { orchestrator: Orchestrator; selection?: ScreenSelection }) {
   const { exit } = useApp();
   const { rows = 24, columns = 100 } = useWindowSize();
   const [initialSession] = useState(() => orchestrator.currentSession);
@@ -431,6 +432,9 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const transcriptHeight = Math.max(0, rows - chrome);
   useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
     setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
+  }, selection, (text) => {
+    noticeId.current += 1;
+    setNotices((current) => [...current.slice(-7), { id: noticeId.current, level: "error", text }]);
   });
 
   return (
