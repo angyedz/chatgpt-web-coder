@@ -40,6 +40,10 @@ export interface ToolContext {
   timers: TimerManager;
   tasks: BackgroundTaskManager;
   externalMcp: ExternalMcpManager;
+  browser?: {
+    listInteractiveControls(): Promise<string>;
+    interactWithControl(controlId: string, action: "click" | "fill" | "select" | "check" | "uncheck", value?: string): Promise<string>;
+  };
   turnSignal?: AbortSignal;
   turnId: string;
   approvalScope?: string;

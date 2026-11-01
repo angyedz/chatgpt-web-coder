@@ -27,6 +27,9 @@ export class ChatGptBrowser {
   private endedAfterTool = false;
   private sawStopButton = false;
   private readonly pendingApprovals = new Set<string>();
+  private interactiveControls = new Map<string, Locator>();
+  private interactiveAnchor?: Locator;
+  private lastInteraction = 0;
   private lastProgressAt?: number;
   private readonly appliedPicker: Partial<Record<PickerKind, string>> = {};
 
@@ -84,6 +87,10 @@ export class ChatGptBrowser {
 
   get responseEndedAfterTool(): boolean {
     return this.endedAfterTool;
+  }
+
+  get interactionRevision(): number {
+    return this.lastInteraction;
   }
 
   async connect(): Promise<void> {
@@ -896,6 +903,142 @@ export class ChatGptBrowser {
     const approval = await this.hasBrowserApproval();
     const age = this.lastProgressAt ? `${Math.floor((Date.now() - this.lastProgressAt) / 1000)}s ago` : "none recorded";
     return `Browser: connected\nStop button: ${stop ? "visible" : "not visible"}\nComposer: ${composer ? "visible" : "not visible"}\nBrowser approval: ${approval ? "waiting" : "none detected"}\nLocal tools: ${this.activeToolCalls.size} running, ${this.preparingToolCalls} preparing\nLocal approvals: ${this.pendingApprovals.size}\nLast response progress: ${age}\nThese are observations of the Web UI; they do not guarantee that a remote action stopped.`;
+  }
+
+  async listInteractiveControls(): Promise<string> {
+    const controls = await this.collectInteractiveControls(true);
+    if (!controls.length) return "No visible interactive controls were found in the latest ChatGPT response.";
+    return `Visible controls in the latest ChatGPT response (IDs expire after the next page change):\n${controls.map(({ id, description }) => `- ${id}: ${description}`).join("\n")}\n\nUse interact_with_chatgpt with a listed ID. The original user's request and harness approval mode still apply.`;
+  }
+
+  async hasInteractiveControls(): Promise<boolean> {
+    return (await this.collectInteractiveControls(false)).length > 0;
+  }
+
+  async interactWithControl(controlId: string, action: "click" | "fill" | "select" | "check" | "uncheck", value?: string): Promise<string> {
+    const control = this.interactiveControls.get(controlId);
+    if (!control) throw new Error("That control ID has expired. Call list_chatgpt_controls again.");
+    if (!(await control.isVisible().catch(() => false)) || !(await control.isEnabled().catch(() => false))) {
+      this.interactiveControls.clear();
+      throw new Error("That control is no longer available or enabled. Call list_chatgpt_controls again.");
+    }
+    const details = await control.evaluate((element) => {
+      const node = element as HTMLElement;
+      const input = node instanceof HTMLInputElement ? node : undefined;
+      return {
+        tag: node.tagName.toLowerCase(),
+        role: node.getAttribute("role") ?? "",
+        type: input?.type ?? "",
+        editable: node.isContentEditable,
+        checked: input?.checked ?? node.getAttribute("aria-checked") === "true",
+      };
+    });
+    if (action === "click") {
+      if (details.tag !== "button" && details.role !== "button" && details.role !== "option" && details.role !== "menuitem" && !(details.tag === "input" && ["button", "submit", "reset"].includes(details.type))) throw new Error("Only a button, menu item or option can be clicked.");
+      await control.click();
+    } else if (action === "fill") {
+      if (details.type === "password" || (details.tag === "input" && !["text", "search", "email", "url", "tel", "number"].includes(details.type)) || !(details.tag === "textarea" || details.tag === "input" || details.role === "textbox" || details.editable)) throw new Error("Only a visible text field can be filled; password fields are not supported.");
+      await control.fill(value ?? "");
+    } else if (action === "select") {
+      if (details.tag !== "select") throw new Error("Select requires a visible native select field.");
+      await control.selectOption(value ?? "");
+    } else {
+      if (details.type !== "checkbox" && details.type !== "radio" && details.role !== "checkbox" && details.role !== "radio") throw new Error("Check and uncheck require a checkbox or radio button.");
+      if (action === "check") await control.check();
+      else await control.uncheck();
+    }
+    this.interactiveControls.clear();
+    this.lastInteraction += 1;
+    await this.page?.waitForTimeout(200).catch(() => undefined);
+    return `${action} completed for ${controlId}. Inspect the page again to confirm the result.`;
+  }
+
+  private async collectInteractiveControls(assignIds: boolean): Promise<Array<{ id: string; description: string }>> {
+    const page = this.page;
+    if (!page || page.isClosed()) return [];
+    if (assignIds) this.interactiveControls.clear();
+    const selector = 'button, input:not([type="hidden"]), textarea, select, [role="button"], [role="menuitem"], [role="option"], [role="textbox"], [role="combobox"], [role="checkbox"], [role="radio"], [contenteditable="true"]';
+    const scopes: Array<{ root: Locator; frameName: string; responseRoot?: Locator }> = [];
+    if (this.interactiveAnchor && await this.interactiveAnchor.count().catch(() => 0)) scopes.push({ root: this.interactiveAnchor, frameName: "page", responseRoot: this.interactiveAnchor });
+    else {
+      this.interactiveAnchor = undefined;
+      const messages = page.locator(selectors.assistantMessage.join(", "));
+      const count = await messages.count().catch(() => 0);
+      for (let index = this.baseline; index < count; index += 1) {
+        const root = messages.nth(index);
+        scopes.push({ root, frameName: "page", responseRoot: root });
+      }
+    }
+    if (!scopes.length) return [];
+    for (const frame of page.frames()) {
+      if (frame === page.mainFrame()) continue;
+      try {
+        const element = await frame.frameElement();
+        let responseRoot = this.interactiveAnchor;
+        let belongsToResponse = false;
+        if (responseRoot) {
+          const anchor = await responseRoot.elementHandle().catch(() => undefined);
+          belongsToResponse = Boolean(anchor && await element.evaluate((node, root) => root instanceof Element && root.contains(node), anchor));
+        } else {
+          for (const scope of scopes.filter((item) => item.frameName === "page")) {
+            const anchor = await scope.root.elementHandle().catch(() => undefined);
+            if (anchor && await element.evaluate((node, root) => root instanceof Element && root.contains(node), anchor)) {
+              responseRoot = scope.root;
+              belongsToResponse = true;
+              break;
+            }
+          }
+        }
+        if (belongsToResponse) scopes.push({ root: frame.locator("body"), frameName: frame.name() || "embedded app", responseRoot });
+      } catch { /* Ignore detached or cross-origin frames. */ }
+    }
+    const found: Array<{ locator: Locator; description: string }> = [];
+    for (const { root, frameName } of scopes) {
+      const controls = root.locator(selector);
+      const size = await controls.count().catch(() => 0);
+      let foundInScope = false;
+      for (let index = 0; index < size && found.length < 80; index += 1) {
+        const locator = controls.nth(index);
+        if (!(await locator.isVisible().catch(() => false))) continue;
+        const info = await locator.evaluate((element) => {
+          const node = element as HTMLElement;
+          if (node.closest('[hidden], [aria-hidden="true"], [inert]')) return null;
+          const input = node instanceof HTMLInputElement ? node : undefined;
+          const select = node instanceof HTMLSelectElement ? node : undefined;
+          if (input?.type === "password" || input?.type === "hidden") return null;
+          const label = node.getAttribute("aria-label") || node.getAttribute("placeholder") || node.getAttribute("title") || input?.labels?.[0]?.innerText || node.innerText || node.textContent || "";
+          if (node.tagName === "BUTTON" && /^(?:copy|copy message|good response|bad response|read aloud|regenerate|share|more actions|undo|redo|fullscreen|expand|collapse|show more|show less|копировать|хороший ответ|плохой ответ|прочитать вслух|повторить|поделиться|отменить|вернуть|развернуть|свернуть|показать больше|показать меньше)$/i.test(label.trim())) return null;
+          if (node.tagName === "BUTTON" && /(?:message-actions|feedback|copy-button|read-aloud|regenerate-button)/i.test(`${node.getAttribute("data-testid") ?? ""} ${node.className}`)) return null;
+          const value = input?.value ?? (node instanceof HTMLTextAreaElement ? node.value : select ? select.selectedOptions[0]?.label ?? select.value : node.isContentEditable ? node.innerText : "");
+          const checked = input?.checked ?? node.getAttribute("aria-checked") === "true";
+          return {
+            tag: node.tagName.toLowerCase(),
+            role: node.getAttribute("role") || "",
+            type: input?.type || "",
+            label: label.trim().replace(/\s+/g, " ").slice(0, 160),
+            value: value.trim().replace(/\s+/g, " ").slice(0, 240),
+            checked,
+            disabled: (node as HTMLButtonElement).disabled || node.getAttribute("aria-disabled") === "true",
+          };
+        }).catch(() => null);
+        if (!info) continue;
+        const id = `c${found.length + 1}`;
+        const kind = info.role || info.type || info.tag;
+        const label = info.label || "unlabelled control";
+        const state = info.disabled ? "disabled" : "enabled";
+        const value = info.value ? `; current value: ${JSON.stringify(info.value)}` : "";
+        const checked = info.type === "checkbox" || info.type === "radio" || info.role === "checkbox" || info.role === "radio" ? `; ${info.checked ? "checked" : "not checked"}` : "";
+        found.push({ locator, description: `${kind} ${JSON.stringify(label)} (${state}${checked}${value})${frameName === "page" ? "" : ` [${frameName}]`}` });
+        if (assignIds) this.interactiveControls.set(id, locator);
+        foundInScope = true;
+      }
+      if (foundInScope && !this.interactiveAnchor) this.interactiveAnchor = frameName === "page" ? root : scopes.find((item) => item.root === root)?.responseRoot;
+    }
+    if (this.interactiveAnchor && !found.length) {
+      this.interactiveAnchor = undefined;
+      return this.collectInteractiveControls(assignIds);
+    }
+    return found.map(({ description }, index) => ({ id: `c${index + 1}`, description }));
   }
 
   private async lastAssistantText(): Promise<string> {
