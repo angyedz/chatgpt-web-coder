@@ -11,8 +11,6 @@ interface StatusBarProps {
   tunnelDetail?: string;
   approvalMode: "ask" | "never";
   showPhase?: boolean;
-  copyMode?: boolean;
-  mouseScroll?: boolean;
 }
 
 export const phaseLabel: Record<TurnPhase, string> = {
@@ -30,7 +28,7 @@ export const phaseLabel: Record<TurnPhase, string> = {
   error: "error",
 };
 
-export function StatusBar({ phase, workspace, approvalMode, showPhase = true, copyMode = false, mouseScroll = false }: StatusBarProps) {
+export function StatusBar({ phase, workspace, approvalMode, showPhase = true }: StatusBarProps) {
   const { columns = 100 } = useWindowSize();
   const safe = terminalText(workspace);
   const available = Math.max(10, columns - (columns >= 85 ? 43 : 18));
@@ -38,8 +36,8 @@ export function StatusBar({ phase, workspace, approvalMode, showPhase = true, co
   const color = phase === "error" ? theme.error : phase === "cancelling" || phase === "waiting-approval" ? theme.warn : theme.ok;
   return (
     <Box paddingX={1} justifyContent="space-between" gap={1} flexShrink={0}>
-      <Text color={theme.dim} wrap="truncate-end">{copyMode ? <><Text color={theme.warn}>● select text · Ctrl+Y to return</Text> <Text color={theme.border}>│</Text> </> : showPhase ? <><Text color={color}>{phase === "idle" ? "●" : "◌"}</Text> {phaseLabel[phase]} <Text color={theme.border}>│</Text> </> : <Text color={theme.border}>⌁ </Text>}{short}</Text>
-      {columns >= 85 ? <Text color={theme.dim} wrap="truncate-end">{approvalMode === "never" ? "approval off" : "approval ask"}  ·  {mouseScroll ? "wheel" : "select"} /mouse  ·  ↑ history</Text> : null}
+      <Text color={theme.dim} wrap="truncate-end">{showPhase ? <><Text color={color}>{phase === "idle" ? "●" : "◌"}</Text> {phaseLabel[phase]} <Text color={theme.border}>│</Text> </> : <Text color={theme.border}>⌁ </Text>}{short}</Text>
+      {columns >= 85 ? <Text color={theme.dim} wrap="truncate-end">{approvalMode === "never" ? "approval off" : "approval ask"}  ·  /help  ·  ↑ history</Text> : null}
     </Box>
   );
 }

@@ -20,7 +20,6 @@ import { StatusBar } from "./components/StatusBar.js";
 import { Transcript } from "./components/Transcript.js";
 import { theme } from "./theme.js";
 import { terminalText } from "./terminal-text.js";
-import { useMouseWheel } from "./useMouseWheel.js";
 
 interface Notice {
   id: number;
@@ -48,8 +47,6 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialSession?.messages ?? []);
   const [showSystemLog, setShowSystemLog] = useState(false);
-  const [copyMode, setCopyMode] = useState(false);
-  const [mouseScroll, setMouseScroll] = useState(false);
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
@@ -74,9 +71,6 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [now, setNow] = useState(Date.now());
   const noticeId = useRef(0);
   const visibleMessages = useMemo(() => messages.filter((message) => showSystemLog ? message.role === "system" : message.role !== "system"), [messages, showSystemLog]);
-  const frozenTranscript = useRef<{ messages: ChatMessage[]; tools: ToolCallView[]; systemView: boolean; phase: TurnPhase; startedAt?: number; busy: boolean; plan: PlanStep[]; goal: typeof goal; attachments: typeof attachments; notices: Notice[]; timerCount: number; nextTimerSeconds: number; jobCount: number; pendingUpdate: typeof pendingUpdate } | undefined>(undefined);
-  const copyModeRef = useRef(false);
-  copyModeRef.current = copyMode;
   const activeTools = useRef(new Set<string>());
   const pendingApprovals = useRef(new Set<string>());
   const turnActive = useRef(false);
@@ -98,7 +92,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       switch (event.type) {
         case "user-message":
         case "system-message":
-          if (!copyModeRef.current) setScrollOffset(0);
+          setScrollOffset(0);
           setShowSystemLog(event.type === "system-message");
           eventOrder.current += 1;
           {
@@ -280,7 +274,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setNotices((current) => [...current.slice(-7), notice]);
           if (event.level === "error") {
             const order = ++eventOrder.current;
-            if (!copyModeRef.current) setScrollOffset(0);
+            setScrollOffset(0);
             setMessages((current) => [...current, { id: `notice-error-${notice.id}`, role: "system", text: event.text, createdAt: Date.now(), order }]);
           }
           break;
@@ -331,22 +325,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     return unsubscribe;
   }, [orchestrator, exit]);
 
-  const selectMode = (enabled: boolean) => {
-    frozenTranscript.current = enabled ? { messages: visibleMessages, tools: showSystemLog ? noTools : tools, systemView: showSystemLog, phase, startedAt: turnStartedAt, busy, plan, goal, attachments, notices, timerCount: timers.length, nextTimerSeconds: timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0, jobCount, pendingUpdate } : undefined;
-    setCopyMode(enabled);
-  };
-
   useInput((input, key) => {
-    if (key.ctrl && input === "y") {
-      selectMode(!copyMode);
-      return;
-    }
-    if (copyMode) {
-      if (key.escape) selectMode(false);
-      else if (key.pageUp) setScrollOffset((current) => Math.min(scrollLimit, current + Math.max(1, Math.floor(rows / 2))));
-      else if (key.pageDown) setScrollOffset((current) => Math.max(0, current - Math.max(1, Math.floor(rows / 2))));
-      return;
-    }
     if (approval) {
       if (input.toLowerCase() === "y") {
         orchestrator.approve(approval.id, true);
@@ -394,7 +373,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
   const handleSubmit = (value: string) => {
     if (!value.trim() && !attachments.some((item) => item.pending)) return false;
-    if (busy && !/^\s*\/(?:btw|copy|mouse)(?:\s|$)/i.test(value)) {
+    if (busy && !/^\s*\/btw(?:\s|$)/i.test(value)) {
       void orchestrator.submit(value);
       return false;
     }
@@ -403,32 +382,24 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       return false;
     }
     setInputKey((current) => current + 1);
-    if (value.trim().toLowerCase() === "/copy") { selectMode(true); return true; }
-    if (value.trim().toLowerCase() === "/mouse") {
-      const next = !mouseScroll;
-      setMouseScroll(next);
-      orchestrator.events.emit({ type: "notice", level: "info", text: next ? "Mouse wheel scrolling enabled. Hold Shift to select text in Windows Terminal; /mouse restores normal selection." : "Normal mouse selection enabled. Use PgUp/PgDn to scroll, or /mouse for wheel scrolling." });
-      return true;
-    }
     void orchestrator.submit(value);
     return true;
   };
 
-  const snapshot = copyMode ? frozenTranscript.current : undefined;
-  const displayedPlan = snapshot ? snapshot.plan : plan;
-  const displayedGoal = snapshot ? snapshot.goal : goal;
-  const displayedAttachments = snapshot ? snapshot.attachments : attachments;
-  const displayedNotices = snapshot ? snapshot.notices : notices;
-  const displayedUpdate = snapshot ? snapshot.pendingUpdate : pendingUpdate;
-  const timerCount = snapshot ? snapshot.timerCount : timers.length;
-  const displayedJobCount = snapshot ? snapshot.jobCount : jobCount;
-  const nextTimerSeconds = snapshot ? snapshot.nextTimerSeconds : timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
+  const displayedPlan = plan;
+  const displayedGoal = goal;
+  const displayedAttachments = attachments;
+  const displayedNotices = notices;
+  const displayedUpdate = pendingUpdate;
+  const timerCount = timers.length;
+  const displayedJobCount = jobCount;
+  const nextTimerSeconds = timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
   const showHeader = rows >= 12;
   const showStatus = rows >= 10;
   const showInput = !approval || rows >= 12;
   const showJobs = Boolean((timerCount || displayedJobCount) && rows >= 20 && !approval);
-  const showLive = (copyMode ? frozenTranscript.current?.busy : busy) && !approval && rows >= 14;
-  const showUpdate = Boolean(displayedUpdate && !(snapshot ? snapshot.busy : busy) && !approval && rows >= 8);
+  const showLive = busy && !approval && rows >= 14;
+  const showUpdate = Boolean(displayedUpdate && !busy && !approval && rows >= 8);
   const showGoal = Boolean(displayedGoal && rows >= 16 && !approval);
   const pendingAttachments = displayedAttachments.filter((item) => item.pending);
   const showAttachments = pendingAttachments.length > 0 && rows >= 12 && !approval;
@@ -439,9 +410,6 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     + (maxPlanSteps ? 2 + Math.min(displayedPlan.length, maxPlanSteps) : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0);
   const transcriptHeight = Math.max(0, rows - chrome);
-  useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
-    setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
-  }, mouseScroll && !copyMode);
 
   return (
     <Box flexDirection="column" height={rows}>
@@ -455,13 +423,12 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       /> : null}
 
       {transcriptHeight > 0 ? <Transcript
-        messages={copyMode ? frozenTranscript.current?.messages ?? visibleMessages : visibleMessages}
-        tools={copyMode ? frozenTranscript.current?.tools ?? noTools : showSystemLog ? noTools : tools}
-        systemView={copyMode ? frozenTranscript.current?.systemView ?? false : showSystemLog}
+        messages={visibleMessages}
+        tools={showSystemLog ? noTools : tools}
+        systemView={showSystemLog}
         height={transcriptHeight}
         scrollOffset={scrollOffset}
         onScrollLimit={setScrollLimit}
-        paused={copyMode}
       /> : null}
 
       {showJobs ? (
@@ -513,7 +480,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
       {approval ? <ApprovalPrompt request={approval} /> : null}
 
-      {showLive ? <ActivityBar phase={copyMode ? frozenTranscript.current?.phase ?? phase : phase} startedAt={copyMode ? frozenTranscript.current?.startedAt : turnStartedAt} paused={copyMode} /> : null}
+      {showLive ? <ActivityBar phase={phase} startedAt={turnStartedAt} /> : null}
 
       {showUpdate && displayedUpdate ? (
         <Box paddingX={2} flexShrink={0}>
@@ -523,8 +490,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
       {showInput ? <InputBar
         key={localSessionId}
-        disabled={copyMode || (busy && !orchestrator.canSendBtw) || Boolean(approval)}
-        copyMode={copyMode}
+        disabled={(busy && !orchestrator.canSendBtw) || Boolean(approval)}
         phase={phase}
         inputKey={inputKey}
         onSubmit={handleSubmit}
@@ -546,8 +512,6 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         tunnelDetail={status.tunnel?.detail}
         approvalMode={orchestrator.config.approvalMode}
         showPhase={!showLive}
-        copyMode={copyMode}
-        mouseScroll={mouseScroll}
       /> : null}
     </Box>
   );

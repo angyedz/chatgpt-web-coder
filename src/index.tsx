@@ -12,7 +12,7 @@ import { App } from "./tui/App.js";
 import { terminalText } from "./tui/terminal-text.js";
 import { installTunnelClient } from "./runtime/install-tunnel.js";
 import { APP_VERSION } from "./runtime/version.js";
-import { disableMouse } from "./tui/useMouseWheel.js";
+import { disableMouse } from "./tui/terminal-modes.js";
 
 const HELP = `chatgpt-coder — ChatGPT Web drives Codex-style local tools over MCP.
 

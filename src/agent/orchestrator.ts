@@ -504,7 +504,7 @@ export class Orchestrator {
           text: [
             "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
-            "Selection: drag normally to select · PgUp/PgDn scroll · /mouse toggles wheel scrolling · Ctrl+Y freezes display",
+            "Selection: drag to select text · PgUp/PgDn scroll the conversation",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
