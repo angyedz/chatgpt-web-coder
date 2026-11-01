@@ -3,8 +3,8 @@ import type { BrowserConfig } from "../config.js";
 import type { HarnessEvents } from "../events.js";
 import { selectors, type SelectorGroup } from "./selectors.js";
 import { ResponseStream } from "./response-stream.js";
-import { cleanBrowserFallback, extractResponse, removeResponseStatus } from "./response-text.js";
-import { readMarkdown } from "./markdown.js";
+import { cleanBrowserFallback, extractResponse, removeObservedActivity, removeResponseStatus } from "./response-text.js";
+import { readFallbackText, readMarkdown } from "./markdown.js";
 import { newId } from "../utils/ids.js";
 import { readPicker, type PickerKind } from "./picker.js";
 
@@ -844,7 +844,8 @@ export class ChatGptBrowser {
         // Its parent innerText includes web UI labels, not an answer.
         continue;
       }
-      const content = cleanBrowserFallback(await message.innerText().catch(() => ""));
+      const fallback = await readFallbackText(message);
+      const content = cleanBrowserFallback(removeObservedActivity(fallback.text, fallback.activityLabels));
       if (content) answers.push(content);
     }
     if (answers.length > 0) return answers.join("\n\n");
@@ -869,7 +870,8 @@ export class ChatGptBrowser {
     const mains = page.locator("main");
     if ((await mains.count().catch(() => 0)) === 0) return "";
     const main = mains.last();
-    return extractResponse(await main.innerText().catch(() => ""), this.submittedPrompt);
+    const fallback = await readFallbackText(main);
+    return removeObservedActivity(extractResponse(fallback.text, this.submittedPrompt), fallback.activityLabels).trim();
   }
 
   private async isStreaming(): Promise<boolean> {

@@ -33,12 +33,22 @@ export async function readMarkdown(locator: Locator): Promise<string> {
     const parent = root.parentElement?.closest(containerSelector);
     if (parent && parent.closest('[data-message-author-role="assistant"], [data-message-author="assistant"]') === root.closest('[data-message-author-role="assistant"], [data-message-author="assistant"]')) return "";
     if (root.closest('[data-markdown-copy="exclude"]')) return "";
-    // Activity uses tertiary Markdown for tool summaries; real commentary and
-    // final answer units can use the same renderer and must remain visible.
-    const activity = Array.from(document.querySelectorAll("[data-chatgpt-agent-turn-start]"))
-      .some((marker) => marker.parentElement?.contains(root));
-    if (activity && root.closest('[data-markdown-text-tone="tertiary"]') && !root.closest("[data-content-search-unit-key]")) return "";
+    // Activity summaries can be nested in an answer container; classify each
+    // original DOM node, before flattening to Markdown, so commentary remains.
+    const markers = Array.from(document.querySelectorAll("[data-chatgpt-agent-turn-start]"));
+    const isActivitySummary = (node: Element): boolean => {
+      if (node.closest("pre, code") || node.closest("[data-content-search-unit-key]")) return false;
+      if (node.closest('[class~="group/activity-header"]')) return true;
+      return Boolean(node.closest('[data-markdown-text-tone="tertiary"]') && markers.some((marker) => marker.parentElement?.contains(node)));
+    };
+    if (isActivitySummary(root)) return "";
     const clone = root.cloneNode(true) as HTMLElement;
+    const statusSelector = '[data-markdown-text-tone="tertiary"], [class~="group/activity-header"]';
+    const originalStatuses = root.querySelectorAll(statusSelector);
+    const clonedStatuses = clone.querySelectorAll(statusSelector);
+    for (let index = 0; index < originalStatuses.length; index += 1) {
+      if (isActivitySummary(originalStatuses[index]!)) clonedStatuses[index]?.remove();
+    }
     for (const card of clone.querySelectorAll('[data-markdown-copy="rich-block"]')) {
       const bodies = Array.from(card.querySelectorAll('[data-markdown-copy-content="true"]')).filter((body) => body.closest('[data-markdown-copy="rich-block"]') === card);
       if (bodies.length === 1) card.replaceChildren(...Array.from(bodies[0]!.childNodes));
@@ -79,4 +89,21 @@ export async function readMarkdown(locator: Locator): Promise<string> {
   }).catch(() => "");
   if (!html) return "";
   try { return converter.turndown(html).trim(); } catch { return ""; }
+}
+
+// The text fallback may include activity headers alongside the answer. Return
+// their observed labels separately so only actual UI nodes can be removed.
+export async function readFallbackText(locator: Locator): Promise<{ text: string; activityLabels: string[] }> {
+  return locator.evaluate((root) => {
+    const markers = Array.from(document.querySelectorAll("[data-chatgpt-agent-turn-start]"));
+    const labels = new Set<string>();
+    for (const node of root.querySelectorAll<HTMLElement>('[data-markdown-text-tone="tertiary"], [class~="group/activity-header"]')) {
+      if (node.closest('pre, code, [data-content-search-unit-key]')) continue;
+      const header = node.closest('[class~="group/activity-header"]');
+      const activity = markers.some((marker) => marker.parentElement?.contains(node));
+      if (!header && !(node.matches('[data-markdown-text-tone="tertiary"]') && activity)) continue;
+      for (const line of (node.innerText || "").split("\n")) if (line.trim()) labels.add(line.trim());
+    }
+    return { text: (root as HTMLElement).innerText ?? "", activityLabels: [...labels] };
+  }).catch(() => ({ text: "", activityLabels: [] }));
 }

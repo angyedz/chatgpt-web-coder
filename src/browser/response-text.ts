@@ -1,5 +1,22 @@
 import type { ChatMessage } from "../types.js";
 
+// Remove only labels observed in activity DOM, not English prose in general.
+export function removeObservedActivity(text: string, labels: string[]): string {
+  if (!labels.length) return text;
+  const normalize = (line: string) => line.trim().replace(/^@\s*/, "").replace(/\s+/g, " ");
+  const known = new Set(labels.map(normalize).filter(Boolean));
+  let fenceLength = 0;
+  return text.split("\n").filter((line) => {
+    const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (!fenceLength) fenceLength = fence[1]!.length;
+      else if (fence[1]!.length >= fenceLength) fenceLength = 0;
+      return true;
+    }
+    return Boolean(fenceLength) || !known.has(normalize(line));
+  }).join("\n");
+}
+
 // Match a whitespace-normalized prompt while returning a slice of the original
 // page text, so paragraph breaks in the answer survive the fallback path.
 export function extractResponse(pageText: string, submittedPrompt: string): string {
