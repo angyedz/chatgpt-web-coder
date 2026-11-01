@@ -246,14 +246,15 @@ export const toolDefinitions: ToolDefinition[] = [
         ctx.config.maxOutputChars,
       );
 
-      const allowed = await requireApproval(
-        ctx,
+      const approval = await ctx.approvals.request(
         "exec_command",
-        `Run in ${relativePath(ctx.workspace, workdir)}:\n${oneLine(cmd, 240)}`,
         args,
+        `Run in ${relativePath(ctx.workspace, workdir)}:\n${oneLine(cmd, 240)}`,
+        70_000,
+        ctx.approvalScope,
       );
-      if (!allowed) {
-        return errorText("The user denied this command.");
+      if (!approval.allowed) {
+        return errorText(`Command was not started. Approval outcome: ${approval.reason ?? "denied by the user"}.`);
       }
 
       const result = await ctx.exec.run(cmd, {

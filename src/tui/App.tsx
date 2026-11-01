@@ -524,6 +524,12 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
         phase={phase}
         inputKey={inputKey}
         onSubmit={handleSubmit}
+        onPasteImage={(value) => orchestrator.attachPastedImage(value)}
+        onPasteClipboardImage={() => orchestrator.attachPastedClipboardImage()}
+        onPasteError={(text) => {
+          noticeId.current += 1;
+          setNotices((current) => [...current.slice(-7), { id: noticeId.current, level: "error", text: `Paste: ${text}` }]);
+        }}
         hasAttachments={pendingAttachments.length > 0}
         initialHistory={messages.filter((message) => message.role === "user").map((message) => message.text)}
         placeholder={

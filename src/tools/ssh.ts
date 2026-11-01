@@ -41,11 +41,11 @@ function sftpQuote(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-async function approved(ctx: ToolContext, tool: string, args: Record<string, unknown>, summary: string): Promise<boolean> {
+async function approved(ctx: ToolContext, tool: string, args: Record<string, unknown>, summary: string): Promise<{ allowed: boolean; reason?: string }> {
   ctx.turnSignal?.throwIfAborted();
   const result = await ctx.approvals.request(tool, args, summary, 70_000, ctx.approvalScope);
-  ctx.turnSignal?.throwIfAborted();
-  return result.allowed;
+  if (result.allowed) ctx.turnSignal?.throwIfAborted();
+  return result;
 }
 
 function format(result: Awaited<ReturnType<ToolContext["exec"]["runExecutable"]>>, ctx: ToolContext): ToolResult {
@@ -72,7 +72,8 @@ export const sshTools: ToolDefinition[] = [
       const target = connection(args);
       const command = String(args.command);
       if (command.includes("\0")) return errorText("SSH command contains an invalid character.");
-      if (!(await approved(ctx, "ssh_exec", args, `SSH: ${target.label}\nRemote command:\n${oneLine(command, 500)}`))) return errorText("The user denied this SSH command.");
+      const approval = await approved(ctx, "ssh_exec", args, `SSH: ${target.label}\nRemote command:\n${oneLine(command, 500)}`);
+      if (!approval.allowed) return errorText(`SSH command was not started. Approval outcome: ${approval.reason ?? "denied by the user"}.`);
       const background = typeof args.background === "boolean" ? args.background : Boolean(ctx.approvalScope);
       const result = await ctx.exec.runExecutable("ssh", [...target.sshArgs, target.host, command], {
         workdir: ctx.workspace,
@@ -108,7 +109,8 @@ export const sshTools: ToolDefinition[] = [
       if (direction === "download" && localInfo && !localInfo.isFile()) return errorText(`Local destination is not a regular file: ${localArg}`);
       if (direction === "download" && !(await stat(path.dirname(local))).isDirectory()) return errorText("Local destination directory does not exist.");
       const summary = `SFTP ${direction}: ${target.label}\nLocal: ${localArg}\nRemote: ${remote}${direction === "download" && localInfo ? "\nExisting local file will be overwritten." : ""}${direction === "upload" ? "\nAn existing remote file may be overwritten." : ""}`;
-      if (!(await approved(ctx, `ssh_${direction}`, args, summary))) return errorText(`The user denied this SFTP ${direction}.`);
+      const approval = await approved(ctx, `ssh_${direction}`, args, summary);
+      if (!approval.allowed) return errorText(`SFTP ${direction} was not started. Approval outcome: ${approval.reason ?? "denied by the user"}.`);
       resolveInside(ctx.workspace, localArg);
       const operation = direction === "upload" ? `put ${sftpQuote(local)} ${sftpQuote(remote)}` : `get ${sftpQuote(remote)} ${sftpQuote(local)}`;
       const result = await ctx.exec.runExecutable("sftp", [...target.sftpArgs, target.host], {

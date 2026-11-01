@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, open, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { HarnessEvents } from "../events.js";
 import { expandHome, harnessHome, isInside, resolveInside } from "../utils/paths.js";
 
@@ -12,6 +13,31 @@ export interface Attachment {
   path: string;
   size?: number;
   pending: boolean;
+}
+
+// A terminal sends a dropped file as a path, not a drag-and-drop event.
+export function imagePathFromPaste(value: string): string | undefined {
+  let raw = value.trim();
+  if (raw.startsWith("& ")) raw = raw.slice(2).trim();
+  if (/^(["'])[\s\S]*\1$/.test(raw)) raw = raw.slice(1, -1);
+  if (/^file:\/\//i.test(raw)) {
+    try { raw = fileURLToPath(raw); } catch { return undefined; }
+  }
+  if (!(path.isAbsolute(raw) || path.win32.isAbsolute(raw)) || !/\.(?:png|jpe?g|gif|webp|bmp|svg|avif|heic)$/i.test(raw)) return undefined;
+  return raw;
+}
+
+export async function readWindowsClipboardText(): Promise<string> {
+  if (process.platform !== "win32") return "";
+  const script = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; Add-Type -AssemblyName System.Windows.Forms; if ([System.Windows.Forms.Clipboard]::ContainsText()) { [Console]::Out.Write([System.Windows.Forms.Clipboard]::GetText()) }";
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { output += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve(output) : reject(new Error(`Could not read clipboard text (exit ${code}).`)));
+  });
 }
 
 export class AttachmentStore {
@@ -26,10 +52,12 @@ export class AttachmentStore {
     this.emit();
   }
   async attach(input: string, workspace: string): Promise<Attachment> {
+    const sessionId = this.sessionId;
     const raw = input.trim().replace(/^(["'])([\s\S]*)\1$/, "$2");
     if (!raw) throw new Error("Choose a file or folder to attach.");
     const absolute = await realpath(path.resolve(workspace, expandHome(raw)));
     const info = await stat(absolute);
+    if (this.sessionId !== sessionId) throw new Error("Session changed while attaching the file. Attach it again.");
     if (!info.isFile() && !info.isDirectory()) throw new Error("Only regular files and folders can be attached.");
     if (info.isFile() && info.size > 50 * 1024 * 1024) throw new Error("A file attachment cannot exceed 50 MB.");
     if (this.pending.filter((item) => item.kind === "file").length >= 10 && info.isFile()) throw new Error("At most 10 files may be attached to one message.");
@@ -57,7 +85,8 @@ export class AttachmentStore {
   async attachClipboardImage(): Promise<Attachment> {
     if (process.platform !== "win32") throw new Error("Clipboard images are currently supported on Windows. Use /attach <image path> instead.");
     if (!this.sessionId) throw new Error("The local session is not ready.");
-    const dir = path.join(harnessHome(), "attachments", this.sessionId);
+    const sessionId = this.sessionId;
+    const dir = path.join(harnessHome(), "attachments", sessionId);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const file = path.join(dir, `clipboard-${randomUUID()}.png`);
     const script = "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { exit 2 }; $image=[System.Windows.Forms.Clipboard]::GetImage(); if (-not $image) { exit 2 }; try { $image.Save($env:CHATGPT_CODER_CLIPBOARD_IMAGE, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $image.Dispose() }";
@@ -67,7 +96,10 @@ export class AttachmentStore {
       child.once("close", resolve);
     });
     if (code !== 0) { await unlink(file).catch(() => undefined); throw new Error(code === 2 ? "There is no image in the clipboard." : `Could not read the clipboard image (exit ${code}).`); }
-    try { return await this.attach(file, dir); }
+    try {
+      if (this.sessionId !== sessionId) throw new Error("Session changed while reading the clipboard. Paste the image again.");
+      return await this.attach(file, dir);
+    }
     catch (error) { await unlink(file).catch(() => undefined); throw error; }
   }
   remove(id: string): boolean {

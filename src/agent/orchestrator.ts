@@ -20,7 +20,8 @@ import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, 
 import { APP_VERSION } from "../runtime/version.js";
 import { latestGithubRelease, prepareGithubUpdate, validateGithubRepository, type GithubRelease } from "../runtime/github-updates.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { chooseAttachment } from "../runtime/attachments.js";
+import { chooseAttachment, imagePathFromPaste } from "../runtime/attachments.js";
+import { stat } from "node:fs/promises";
 
 const LARGE_MESSAGE_CHARS = 12_000;
 
@@ -227,6 +228,34 @@ export class Orchestrator {
     }
 
     await this.runTurn(text.trim() ? text : "Please examine the attached files and folders.");
+  }
+
+  async attachPastedImage(value: string): Promise<boolean> {
+    const file = imagePathFromPaste(value);
+    if (!file) return false;
+    const info = await stat(file).catch(() => undefined);
+    if (!info?.isFile()) return false;
+    try {
+      const item = await this.runtime.attachments.attach(file, this.config.workspace);
+      this.events.emit({ type: "notice", level: "info", text: `Image attached: ${item.name}. It will be sent with your next message.` });
+      return true;
+    } catch (error) {
+      this.events.emit({ type: "notice", level: "error", text: `Attach image: ${error instanceof Error ? error.message : String(error)}` });
+      return false;
+    }
+  }
+
+  async attachPastedClipboardImage(): Promise<boolean> {
+    if (process.platform !== "win32") return false;
+    try {
+      const item = await this.runtime.attachments.attachClipboardImage();
+      this.events.emit({ type: "notice", level: "info", text: `Clipboard image attached: ${item.name}. It will be sent with your next message.` });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== "There is no image in the clipboard.") this.events.emit({ type: "notice", level: "error", text: `Clipboard image: ${message}` });
+      return false;
+    }
   }
 
   cancel(): void {
