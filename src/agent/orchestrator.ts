@@ -1008,11 +1008,12 @@ export class Orchestrator {
       const pending = this.pendingUpdate;
       if (!pending) throw new Error("No update selected. Use /update to choose a ZIP first.");
       await this.sessions.flush();
-      await applyUpdate(pending, (message) => this.events.emit({ type: "notice", level: "info", text: message }));
+      await applyUpdate(pending, (message) => {
+        if (message.startsWith("[cleanup] New version activated.")) this.events.emit({ type: "phase", phase: "cleaning-update" });
+        this.events.emit({ type: "notice", level: "info", text: message });
+      });
       this.pendingUpdate = undefined;
       this.events.emit({ type: "update-selection" });
-      this.events.emit({ type: "notice", level: "info", text: `${pending.kind === "rollback" ? "Rollback" : "Update"} installed. Restart chatgpt-coder to use version ${pending.version}.` });
-      output(`${pending.kind === "rollback" ? "Rollback" : "Update"} to ${pending.version} installed. Exit and restart chatgpt-coder to load it. The current process is still running the previous version.`);
       if (this.config.browser.attachConnector) {
         const scan = ++this.mcpRefreshScan;
         try {
@@ -1025,6 +1026,8 @@ export class Orchestrator {
           this.events.emit({ type: "notice", level: "warn", text: "Update installed, but MCP tools could not be compared. Check the connector's Refresh tools setting after restarting." });
         }
       }
+      this.events.emit({ type: "notice", level: "info", text: `${pending.kind === "rollback" ? "Rollback" : "Update"} installed. Restart chatgpt-coder to use version ${pending.version}.` });
+      output(`${pending.kind === "rollback" ? "Rollback" : "Update"} to ${pending.version} installed. Exit and restart chatgpt-coder to load it. The current process is still running the previous version.`);
       return;
     }
     if (command === "status") {

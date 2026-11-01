@@ -355,7 +355,7 @@ try {
   $activated = $true
 
   if ($Update) {
-    Write-Host "Update installed: $($package.version). Restart chatgpt-coder to use it."
+    Write-Host '[cleanup] New version activated. Cleaning old releases; please wait before restarting.'
     try { Remove-OldReleases -Root $target -Current $releaseId -Previous $previousRelease }
     catch { Write-Warning ("Old release cleanup was skipped: " + $_.Exception.Message) }
     exit 0

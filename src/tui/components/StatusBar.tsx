@@ -22,6 +22,7 @@ export const phaseLabel: Record<TurnPhase, string> = {
   tool: "local tool running",
   "waiting-approval": "waiting for approval",
   updating: "updating application",
+  "cleaning-update": "cleaning old releases",
   "downloading-update": "downloading update",
   cancelling: "stopping",
   "waiting-login": "waiting for ChatGPT login",

@@ -305,12 +305,21 @@ async function runChild(executable: string, args: string[], report?: (message: s
     let stderrText = "";
     const stdout = new StringDecoder("utf8");
     const stderr = new StringDecoder("utf8");
+    const pendingLines = { stdout: "", stderr: "" };
+    const reportLines = (text: string, stream: "stdout" | "stderr", flush = false) => {
+      const lines = (pendingLines[stream] + text).split(/\r?\n/);
+      pendingLines[stream] = flush ? "" : (lines.pop() ?? "");
+      if (flush && lines.length === 0 && !text) return;
+      for (const line of lines) {
+        if (report && /\[\d\/\d\]|\[cleanup\]|Update installed|cleanup.*skipped|failed|error/i.test(line)) report(line.trim().slice(-300));
+      }
+    };
     const record = (decoder: StringDecoder, chunk: Buffer, stream: "stdout" | "stderr") => {
       const text = decoder.write(chunk);
       output = (output + text).slice(-40_000);
       if (stream === "stdout") stdoutText = (stdoutText + text).slice(-40_000);
       else stderrText = (stderrText + text).slice(-40_000);
-      if (report && /\[\d\/\d\]|\[cleanup\]|Update installed|cleanup.*skipped|failed|error/i.test(text)) report(text.trim().slice(-300));
+      reportLines(text, stream);
     };
     child.stdout.on("data", (chunk: Buffer) => record(stdout, chunk, "stdout"));
     child.stderr.on("data", (chunk: Buffer) => record(stderr, chunk, "stderr"));
@@ -318,6 +327,8 @@ async function runChild(executable: string, args: string[], report?: (message: s
     child.once("close", (code) => {
       const stdoutEnd = stdout.end();
       const stderrEnd = stderr.end();
+      reportLines(stdoutEnd, "stdout", true);
+      reportLines(stderrEnd, "stderr", true);
       resolve({ code, output: output + stdoutEnd + stderrEnd, stdout: stdoutText + stdoutEnd, stderr: stderrText + stderrEnd });
     });
   });

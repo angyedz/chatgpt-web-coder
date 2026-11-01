@@ -28,7 +28,7 @@ export function ActivityBar({ phase, startedAt }: { phase: TurnPhase; startedAt?
       <Text color={color}>{phaseLabel[phase]}</Text>
       {columns >= 70 && !stationary && !reducedMotion ? <Text color={theme.border}>{track}</Text> : null}
       {startedAt ? <Text color={theme.dim}>{elapsed}s</Text> : null}
-      {columns >= 72 && phase !== "updating" && phase !== "downloading-update" && phase !== "cancelling" ? <Text color={theme.dim}>· Esc stop</Text> : null}
+      {columns >= 72 && phase !== "updating" && phase !== "cleaning-update" && phase !== "downloading-update" && phase !== "cancelling" ? <Text color={theme.dim}>· Esc stop</Text> : null}
     </Box>
   );
 }

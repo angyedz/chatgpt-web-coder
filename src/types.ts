@@ -14,6 +14,7 @@ export type TurnPhase =
   | "tool"
   | "waiting-approval"
   | "updating"
+  | "cleaning-update"
   | "downloading-update"
   | "cancelling"
   | "waiting-login"
