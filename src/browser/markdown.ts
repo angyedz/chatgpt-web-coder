@@ -76,10 +76,21 @@ converter.addRule("safeTableRow", { filter: "tr", replacement: (content) => cont
 export function convertStoredHtmlTables(input: string): string {
   if (!/<table(?:\s|>)/i.test(input)) return input;
   const convert = (text: string): string => {
-    const tags = /<\/?table(?=\s|>)(?:\s+(?:"[^"]*"|'[^']*'|[^'">])*)?\s*>/gi;
-    let depth = 0, start = -1, offset = 0, output = "";
+    const tags = /`+|<\/?table(?=\s|>)(?:\s+(?:"[^"]*"|'[^']*'|[^'">])*)?\s*>/gi;
+    let depth = 0, start = -1, offset = 0, output = "", inlineTicks = 0;
     for (const match of text.matchAll(tags)) {
       const index = match.index;
+      if (match[0].startsWith("`")) {
+        if (depth) continue;
+        let escapes = 0;
+        while (index - escapes - 1 >= 0 && text[index - escapes - 1] === "\\") escapes++;
+        if (escapes % 2 === 0) {
+          if (!inlineTicks) inlineTicks = match[0].length;
+          else if (inlineTicks === match[0].length) inlineTicks = 0;
+        }
+        continue;
+      }
+      if (!depth && inlineTicks) continue;
       if (match[0].startsWith("</")) {
         if (!depth) continue;
         if (--depth === 0 && start >= 0) {
