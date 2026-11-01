@@ -44,6 +44,7 @@ export interface ToolContext {
   turnId: string;
   approvalScope?: string;
   beforeToolStart?: () => Promise<void>;
+  hasPendingUserUpdates?: () => boolean;
 }
 
 export interface ToolDefinition {

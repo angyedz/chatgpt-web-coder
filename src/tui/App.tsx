@@ -388,10 +388,19 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   });
 
   const handleSubmit = (value: string) => {
-    if (!value.trim() && !attachments.some((item) => item.pending)) return;
+    if (!value.trim() && !attachments.some((item) => item.pending)) return false;
+    if (busy && !/^\s*\/(?:btw|copy)(?:\s|$)/i.test(value)) {
+      void orchestrator.submit(value);
+      return false;
+    }
+    if (/^\s*\/btw(?:\s|$)/i.test(value) && (!value.replace(/^\s*\/btw\s*/i, "").trim() || value.replace(/^\s*\/btw\s*/i, "").trim().length > 12_000 || (busy && orchestrator.btwQueueSize >= 20))) {
+      void orchestrator.submit(value);
+      return false;
+    }
     setInputKey((current) => current + 1);
-    if (value.trim().toLowerCase() === "/copy") { selectMode(true); return; }
+    if (value.trim().toLowerCase() === "/copy") { selectMode(true); return true; }
     void orchestrator.submit(value);
+    return true;
   };
 
   const snapshot = copyMode ? frozenTranscript.current : undefined;
@@ -503,7 +512,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
       {showInput ? <InputBar
         key={localSessionId}
-        disabled={copyMode || busy || Boolean(approval)}
+        disabled={copyMode || (busy && !orchestrator.canSendBtw) || Boolean(approval)}
         copyMode={copyMode}
         phase={phase}
         inputKey={inputKey}
@@ -511,7 +520,9 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         hasAttachments={pendingAttachments.length > 0}
         initialHistory={messages.filter((message) => message.role === "user").map((message) => message.text)}
         placeholder={
-          phase === "waiting-login"
+          busy
+            ? "Working…  /btw <message>  ·  Esc to stop"
+            : phase === "waiting-login"
             ? "Sign in to ChatGPT in the browser window…"
             : "Message or /command…  ·  /attach"
         }

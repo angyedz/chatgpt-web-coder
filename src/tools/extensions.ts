@@ -20,6 +20,7 @@ export const extensionTools: ToolDefinition[] = [
     annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
     handler: async (args, ctx) => {
       if (ctx.goal.current?.status !== "active") return errorText("There is no active goal. Only the user can start or resume one.");
+      if (args.status === "complete" && ctx.hasPendingUserUpdates?.()) return errorText("The user sent an additional message that is still queued. Finish the current response so the harness can deliver it, then consider it before completing the goal.");
       if (args.status === "complete" && (ctx.plan.current.some((step) => step.status !== "completed") || ctx.tasks.list().some((task) => task.status === "running") || ctx.approvals.pendingRequests.length)) return errorText("Cannot complete a goal while its plan, background tool tasks, or approvals are unfinished.");
       ctx.goal.setStatus(args.status as "complete" | "blocked", String(args.detail));
       return text(`Goal ${String(args.status)}: ${String(args.detail)}`);

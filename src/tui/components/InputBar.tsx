@@ -8,7 +8,7 @@ interface InputBarProps {
   disabled: boolean;
   phase: TurnPhase;
   inputKey: number;
-  onSubmit: (value: string) => void;
+  onSubmit: (value: string) => void | boolean;
   placeholder: string;
   initialHistory?: string[];
   hasAttachments?: boolean;
@@ -68,11 +68,11 @@ export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistor
     if (key.return && key.shift) { insert("\n"); return; }
     if (key.return) {
       if (!state.value.trim() && !hasAttachments) return;
-      if (state.value.trim() && (!state.value.trimStart().startsWith("/") || state.value.length > 12_000 && !/^\s*\/goal(?:\s|$)/i.test(state.value))) history.current = [...history.current.slice(-199), state.value];
+      if (onSubmit(state.value) === false) return;
+      if (state.value.trim() && (!state.value.trimStart().startsWith("/") || /^\s*\/btw\s/i.test(state.value) || state.value.length > 12_000 && !/^\s*\/goal(?:\s|$)/i.test(state.value))) history.current = [...history.current.slice(-199), state.value];
       historyIndex.current = null;
       savedDraft.current = { value: "", cursor: 0 };
       update({ value: "", cursor: 0 });
-      onSubmit(state.value);
       return;
     }
     if (key.leftArrow) { update({ ...state, cursor: previousCharacter(state.value, state.cursor) }); return; }

@@ -49,6 +49,8 @@ export class Orchestrator {
   private phaseState: TurnPhase = "idle";
   private pendingUpdate?: PendingUpdate;
   private updateOperation?: Promise<void>;
+  private readonly pendingBtw: { id: string; text: string }[] = [];
+  private currentTurnIsGoal = false;
   private updateCheckTimer?: NodeJS.Timeout;
   private updateCheckInFlight = false;
   private lastNotifiedUpdate?: string;
@@ -56,6 +58,7 @@ export class Orchestrator {
 
   constructor(public readonly config: HarnessConfig) {
     this.runtime = createRuntime(config, this.events);
+    this.runtime.context.hasPendingUserUpdates = () => this.pendingBtw.length > 0;
     this.sessions = new SessionStore(config.workspace, (error) => {
       this.events.emit({ type: "notice", level: "error", text: `Session save failed: ${error.message}. Check disk access; the latest changes may not be saved.` });
     });
@@ -91,6 +94,12 @@ export class Orchestrator {
   get isBusy(): boolean {
     return this.busy;
   }
+
+  get canSendBtw(): boolean {
+    return Boolean(this.busy && this.currentTurn && !this.currentTurn.signal.aborted);
+  }
+
+  get btwQueueSize(): number { return this.pendingBtw.length; }
 
   get mcpUrl(): string {
     return this.mcp.url;
@@ -149,6 +158,21 @@ export class Orchestrator {
   async submit(input: string): Promise<void> {
     const text = input;
     if (!text.trim() && !this.runtime.attachments.pending.length) return;
+
+    const btw = /^\s*\/btw(?:\s+([\s\S]*))?$/i.exec(text);
+    if (btw) {
+      const message = btw[1]?.trim() ?? "";
+      if (!message) { this.events.emit({ type: "notice", level: "warn", text: "Usage: /btw <message>" }); return; }
+      if (message.length > LARGE_MESSAGE_CHARS) { this.events.emit({ type: "notice", level: "warn", text: `A /btw message can contain at most ${LARGE_MESSAGE_CHARS.toLocaleString()} characters.` }); return; }
+      if (!this.busy) { await this.runTurn(message); return; }
+      if (!this.canSendBtw) { this.events.emit({ type: "notice", level: "warn", text: "A chat turn is not available for /btw right now." }); return; }
+      if (this.pendingBtw.length >= 20) { this.events.emit({ type: "notice", level: "warn", text: "The /btw queue is full; wait for queued messages to be sent." }); return; }
+      this.pendingBtw.push({ id: newId("btw"), text: message });
+      if (this.currentTurnIsGoal && this.runtime.goal.current?.status === "complete") this.runtime.goal.setStatus("active", "A new user message is queued; review it before finishing the goal.");
+      this.events.emit({ type: "user-message", id: newId("user"), text: `/btw ${message}` });
+      this.events.emit({ type: "notice", level: "info", text: "Message queued; it will be sent when ChatGPT finishes its current response." });
+      return;
+    }
 
     if (text.trimStart().startsWith("/") && (text.length <= LARGE_MESSAGE_CHARS || /^\s*\/goal(?:\s|$)/i.test(text))) {
       const command = text.trimStart().slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase();
@@ -271,6 +295,7 @@ export class Orchestrator {
   private async runTurn(text: string): Promise<void> {
     this.busy = true;
     const goalTurn = this.runtime.goal.current?.status === "active";
+    this.currentTurnIsGoal = goalTurn;
     const previousSession = this.sessions.snapshot;
     if ((!this.browser.isOpen || this.config.browser.newChatPerTurn) && previousSession.messages.some((message) => message.role === "user")) {
       this.contextSummary = sessionHandoff(previousSession);
@@ -345,11 +370,38 @@ export class Orchestrator {
         this.runtime.approvals.pendingRequests.length === 0 &&
         !this.runtime.tasks.list().some((task) => task.status === "running");
       const goalRecoveryIsSafe = () => this.runtime.goal.current?.status === "active" && this.runtime.approvals.pendingRequests.length === 0 && !this.runtime.tasks.list().some((task) => task.status === "running");
+      let btwDeliveryRevision = 0;
+      const deliverBtw = async (initialAnswer: string): Promise<string> => {
+        let latestAnswer = initialAnswer;
+        while (this.pendingBtw.length) {
+          controller.signal.throwIfAborted();
+          const pending = this.pendingBtw[0]!;
+          const message = `The user sent this additional message while you were working. Take it into account in the current task and respond appropriately. If an active goal remains, complete all its requirements and call update_goal when finished:\n\n${pending.text}`;
+          let submitted = false;
+          const markSubmitted = () => {
+            if (submitted) return;
+            submitted = true;
+            btwDeliveryRevision += 1;
+            const index = this.pendingBtw.findIndex((item) => item.id === pending.id);
+            if (index >= 0) this.pendingBtw.splice(index, 1);
+            this.events.emit({ type: "notice", level: "info", text: "Queued /btw message sent to ChatGPT." });
+          };
+          this.contextTokens += estimateTokens(message);
+          this.turnCount += 1;
+          latestAnswer = await this.browser.send(message, controller.signal, { continueChat: true, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, onSubmitted: markSubmitted });
+          markSubmitted();
+          controller.signal.throwIfAborted();
+          this.contextTokens += estimateTokens(latestAnswer);
+        }
+        return latestAnswer;
+      };
       let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => this.runtime.attachments.markSent(uploads.map((item) => item.id)) } : {}) });
       controller.signal.throwIfAborted();
       this.contextTokens += estimateTokens(answer);
+      answer = await deliverBtw(answer);
       let noProgress = 0;
       let lastGoalActionRevision = this.goalActionRevision;
+      let lastBtwDeliveryRevision = btwDeliveryRevision;
       while (this.runtime.goal.current?.status === "active") {
         while (this.runtime.goal.current?.status === "active" && (this.runtime.approvals.pendingRequests.length || this.runtime.tasks.list().some((task) => task.status === "running"))) await delay(1000, undefined, { signal: controller.signal });
         if (this.runtime.goal.current?.status !== "active") break;
@@ -370,9 +422,11 @@ export class Orchestrator {
         answer = await this.browser.send(nextPrompt, controller.signal, { continueChat: true, canRecoverStall: goalRecoveryIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
-        if (this.goalActionRevision === lastGoalActionRevision) noProgress += 1;
+        answer = await deliverBtw(answer);
+        if (this.goalActionRevision === lastGoalActionRevision && btwDeliveryRevision === lastBtwDeliveryRevision) noProgress += 1;
         else noProgress = 0;
         lastGoalActionRevision = this.goalActionRevision;
+        lastBtwDeliveryRevision = btwDeliveryRevision;
       }
       let continuations = 0;
       while (!goalTurn && this.browser.responseEndedAfterTool && continuationIsSafe() && continuations < 2) {
@@ -383,6 +437,7 @@ export class Orchestrator {
         answer = await this.browser.send(continuation, controller.signal, { continueChat: true, canRecoverStall: continuationIsSafe });
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
+        answer = await deliverBtw(answer);
       }
       if (!goalTurn && this.browser.responseEndedAfterTool && unfinishedPlan()) {
         const reason = continuationIsSafe()
@@ -420,8 +475,14 @@ export class Orchestrator {
       }
     } finally {
       await this.cancellation;
+      if (this.pendingBtw.length) {
+        const count = this.pendingBtw.length;
+        this.pendingBtw.length = 0;
+        this.events.emit({ type: "notice", level: "warn", text: `${count} queued /btw message${count === 1 ? " was" : "s were"} not sent. Copy from the chat and resend.` });
+      }
       this.cancellation = undefined;
       this.currentTurn = undefined;
+      this.currentTurnIsGoal = false;
       if (this.runtime.context.turnSignal === controller.signal) this.runtime.context.turnSignal = undefined;
       this.busy = false;
       this.events.emit({ type: "turn-end", turnId, ok });
@@ -447,6 +508,7 @@ export class Orchestrator {
             "Selection: /copy or Ctrl+Y · select in the terminal · Ctrl+Y or Esc to return",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
+            "While working: /btw <message> queues a message for the next response boundary",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
