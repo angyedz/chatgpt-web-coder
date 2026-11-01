@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../types.js";
+import { convertStoredHtmlTables } from "./markdown.js";
 
 // Remove only labels observed in activity DOM, not English prose in general.
 export function removeObservedActivity(text: string, labels: string[]): string {
@@ -111,7 +112,7 @@ export function cleanAssistantHistory(messages: ChatMessage[]): Map<string, stri
     if (message.role !== "assistant") continue;
     let cached = cleanedMessages.get(message);
     if (!cached || cached.original !== message.text) {
-      cached = { original: message.text, cleaned: cleanBrowserFallback(message.text) };
+      cached = { original: message.text, cleaned: convertStoredHtmlTables(cleanBrowserFallback(message.text)) };
       cleanedMessages.set(message, cached);
     }
     let text = cached.cleaned;

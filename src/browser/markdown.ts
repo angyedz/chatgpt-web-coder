@@ -27,6 +27,87 @@ converter.addRule("chatgptMath", {
   },
 });
 
+// The GFM plugin deliberately keeps headerless tables as raw HTML. ChatGPT
+// uses those tables for rich cards, so convert both kinds to Markdown. An
+// empty header is structural and is not presented as a row in the TUI.
+converter.addRule("chatgptTable", {
+  filter: "table",
+  replacement: (_content, node) => {
+    const table = node as HTMLElement;
+    const tableRows = Array.from(table.querySelectorAll("tr")).filter((row) => row.closest("table") === table);
+    const rows: string[][] = [];
+    const remaining: number[] = [];
+    for (const row of tableRows) {
+      const values: string[] = [];
+      const cells = Array.from(row.children).filter((cell) => /^(?:TD|TH)$/.test(cell.tagName));
+      let col = 0;
+      for (const cell of cells) {
+        while ((remaining[col] ?? 0) > 0) { values[col] = ""; remaining[col]!--; col++; }
+        const value = converter.turndown(cell.innerHTML).trim().replace(/\s*\n+\s*/g, " <br> ").replace(/(?<!\\)\|/g, "\\|");
+        const colSpan = Math.min(100, Math.max(1, Number(cell.getAttribute("colspan")) || 1));
+        const rowSpan = Math.min(tableRows.length, Math.max(1, Number(cell.getAttribute("rowspan")) || 1));
+        for (let offset = 0; offset < colSpan; offset++) {
+          values[col] = offset ? "" : value;
+          remaining[col] = rowSpan - 1;
+          col++;
+        }
+      }
+      while (col < remaining.length) { if ((remaining[col] ?? 0) > 0) { values[col] = ""; remaining[col]!--; } col++; }
+      if (values.length) rows.push(values);
+    }
+    const caption = table.querySelector("caption")?.textContent?.trim();
+    if (!rows.length) return caption ? `\n\n${caption}\n\n` : "";
+    const columns = Math.max(...rows.map((row) => row.length));
+    const first = tableRows[0];
+    const firstCells = first ? Array.from(first.children).filter((cell) => /^(?:TD|TH)$/.test(cell.tagName)) : [];
+    const hasHeader = first?.parentElement?.tagName === "THEAD" || (firstCells.length > 0 && firstCells.every((cell) => cell.tagName === "TH"));
+    const encode = (row: string[]) => `| ${Array.from({ length: columns }, (_, index) => row[index] ?? "").join(" | ")} |`;
+    const header = hasHeader ? rows.shift()! : Array<string>(columns).fill("");
+    const separator = `| ${Array<string>(columns).fill("---").join(" | ")} |`;
+    return `\n\n${caption ? `${caption}\n\n` : ""}${[encode(header), separator, ...rows.map(encode)].join("\n")}\n\n`;
+  },
+});
+// Turndown visits children before the table rule. GFM's row rule assumes
+// every child is a cell and can throw on whitespace nodes in a header row.
+converter.addRule("safeTableRow", { filter: "tr", replacement: (content) => content });
+
+// Older sessions already contain the raw serialized table. Convert complete
+// tables outside fenced code without changing the stored session or user text.
+export function convertStoredHtmlTables(input: string): string {
+  if (!/<table(?:\s|>)/i.test(input)) return input;
+  const convert = (text: string): string => {
+    const tags = /<\/?table(?=\s|>)(?:\s+(?:"[^"]*"|'[^']*'|[^'">])*)?\s*>/gi;
+    let depth = 0, start = -1, offset = 0, output = "";
+    for (const match of text.matchAll(tags)) {
+      const index = match.index;
+      if (match[0].startsWith("</")) {
+        if (!depth) continue;
+        if (--depth === 0 && start >= 0) {
+          const end = index + match[0].length;
+          const html = text.slice(start, end);
+          let replacement = html;
+          try { replacement = converter.turndown(html).trim() || html; } catch { /* Keep the original if parsing fails. */ }
+          output += text.slice(offset, start) + `\n\n${replacement}\n\n`;
+          offset = end;
+          start = -1;
+        }
+      } else if (depth++ === 0) start = index;
+    }
+    return output + text.slice(offset);
+  };
+  let normal = "", result = "", fence = "", fenceLength = 0;
+  for (const line of input.split(/(?<=\n)/)) {
+    const match = /^ {0,3}(`{3,}|~{3,})([^\n]*)/.exec(line);
+    if (match && (!fence || (match[1]![0] === fence && match[1]!.length >= fenceLength && !match[2]!.trim()))) {
+      if (!fence) { result += convert(normal); normal = ""; fence = match[1]![0]!; fenceLength = match[1]!.length; }
+      else { fence = ""; fenceLength = 0; }
+      result += line;
+    } else if (fence) result += line;
+    else normal += line;
+  }
+  return result + convert(normal);
+}
+
 export async function readMarkdown(locator: Locator): Promise<string> {
   const html = await locator.evaluate((root) => {
     const containerSelector = '.markdown, [data-markdown-text-style="assistant-message"], .puik-root.not-markdown > [class*="_DilResponseRoot"]';
@@ -82,6 +163,12 @@ export async function readMarkdown(locator: Locator): Promise<string> {
       if (button.classList.contains("group/suggested-followup")) for (const sibling of Array.from(button.parentElement?.parentElement?.children ?? [])) if (sibling.matches('[aria-hidden="true"].pointer-events-none')) sibling.remove();
       if (button.matches(".behavior-btn.entity-underline") && !button.closest('[hidden], [aria-hidden="true"]')) button.replaceWith(document.createTextNode(button.textContent ?? ""));
       else button.remove();
+    }
+    for (const icon of clone.querySelectorAll("svg")) {
+      if (icon.closest("pre, code") || icon.parentElement?.closest('[hidden], [aria-hidden="true"]')) continue;
+      const name = [icon.getAttribute("aria-label"), icon.getAttribute("data-icon"), icon.getAttribute("data-testid"), icon.getAttribute("class"), icon.querySelector("title")?.textContent].filter(Boolean).join(" ");
+      if (/(?:^|[\s_:-])(?:check|checkmark|tick|success|passed|complete)(?:$|[\s_:-])/i.test(name)) icon.replaceWith(document.createTextNode("✓ "));
+      else if (/(?:^|[\s_:-])(?:cross|error|failed)(?:$|[\s_:-])/i.test(name)) icon.replaceWith(document.createTextNode("✗ "));
     }
     for (const hidden of clone.querySelectorAll('[hidden], [aria-hidden="true"]')) if (!hidden.closest("pre, code")) hidden.remove();
     for (const element of clone.querySelectorAll('script, style, svg, [data-markdown-copy="exclude"], .katex-mathml, .chart-widget-container, [data-code-block-preview-pane], [role="tooltip"]')) element.remove();

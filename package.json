@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-coder",
-  "version": "0.2.34",
+  "version": "0.2.35",
   "private": true,
   "type": "module",
   "description": "Local coding harness driven by ChatGPT Web with Codex-style tools over MCP.",
@@ -35,6 +35,7 @@
     "ink": "^8.0.0",
     "playwright": "^1.64.1",
     "react": "^19.3.1",
+    "string-width": "^8.3.0",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2",
     "wrap-ansi": "^10.0.2",
