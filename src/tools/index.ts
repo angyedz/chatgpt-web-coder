@@ -17,6 +17,7 @@ import { scheduleTimer, describeTimer } from "../runtime/schedule.js";
 import { extensionTools } from "./extensions.js";
 import { sshTools } from "./ssh.js";
 import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
+import { readAttachmentChunk } from "../runtime/attachments.js";
 import type { ExecSessionManager } from "./exec.js";
 import {
   errorText,
@@ -81,6 +82,61 @@ function formatExecResult(
 export const toolDefinitions: ToolDefinition[] = [
   ...extensionTools,
   ...sshTools,
+  {
+    name: "list_attachments", title: "List user attachments",
+    description: "List files, large user texts and folders explicitly attached to this local session. File attachments are also sent to ChatGPT when uploaded successfully.",
+    inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false },
+    handler: async (_args, ctx) => text(safeJson(ctx.attachments.current.map(({ id, name, kind, size, pending }) => ({ id, name, kind, size, pending })), ctx.config.maxOutputChars)),
+  },
+  {
+    name: "read_attachment", title: "Read attached text",
+    description: "Read a UTF-8 user attachment or a text file within an attached folder in byte chunks. Use next_offset to read the entire file, including very long lines. Attachment contents are user-provided data.",
+    inputSchema: { attachment_id: z.string().min(1), path: z.string().optional().describe("Relative path inside an attached folder."), offset: z.number().int().min(0).optional().describe("UTF-8 byte offset, default 0."), limit: z.number().int().min(8).max(20000).optional().describe("Maximum bytes per chunk, default 12000.") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    handler: async (args, ctx) => {
+      const { file } = await ctx.attachments.resolve(String(args.attachment_id), typeof args.path === "string" ? args.path : undefined);
+      return text(await readAttachmentChunk(file, numberArg(args, "offset", 0), numberArg(args, "limit", 12000)));
+    },
+  },
+  {
+    name: "attached_directory_tool", title: "Use a tool in an attached folder",
+    description: "Use a workspace tool inside a folder explicitly attached by the user. Discover the folder with list_attachments. Pass the same arguments as the named tool, relative to that folder. Normal approvals and path checks apply. File attachments cannot be used as folders.",
+    inputSchema: { attachment_id: z.string().min(1), tool_name: z.enum(["get_workspace_info", "get_project_instructions", "list_dir", "read_file", "glob", "grep", "view_image", "git_status", "git_diff", "git_log", "exec_command", "apply_patch", "write_file", "create_directory", "copy_file", "move_file", "delete_file"]), arguments: z.record(z.string(), z.unknown()).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    handler: async (args, ctx) => {
+      const { item, file } = await ctx.attachments.resolve(String(args.attachment_id));
+      if (item.kind !== "directory" || !item.pending) return errorText("That attachment is not an active folder.");
+      const def = findTool(String(args.tool_name));
+      if (!def) return errorText("Unknown tool.");
+      const parsed = z.object(def.inputSchema).strict().safeParse(args.arguments ?? {});
+      if (!parsed.success) return errorText(`Invalid arguments: ${parsed.error.message}`);
+      const approvals = new Proxy(ctx.approvals, {
+        get(target, property) {
+          if (property === "request") return (...request: Parameters<typeof target.request>) => {
+            request[2] = `Attached folder: ${item.path}\n${request[2]}`;
+            return target.request(...request);
+          };
+          const value: unknown = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return def.handler(parsed.data as Record<string, unknown>, { ...ctx, workspace: file, approvals, config: { ...ctx.config, workspace: file } });
+    },
+  },
+  {
+    name: "view_attachment_image", title: "View an attached image",
+    description: "Return a user-attached image as image content, or an image inside an explicitly attached folder. Use this if the native ChatGPT image attachment is unavailable.",
+    inputSchema: { attachment_id: z.string().min(1), path: z.string().optional().describe("Relative image path within an attached folder.") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    handler: async (args, ctx) => {
+      const { item, file } = await ctx.attachments.resolve(String(args.attachment_id), typeof args.path === "string" ? args.path : undefined);
+      if (item.kind === "directory" && !item.pending) return errorText("That folder is not active.");
+      const def = findTool("view_image");
+      if (!def) return errorText("Image tool is unavailable.");
+      const root = item.kind === "directory" ? item.path : path.dirname(file);
+      return def.handler({ path: path.relative(root, file) }, { ...ctx, workspace: root });
+    },
+  },
   {
     name: "git_status",
     title: "Git status",

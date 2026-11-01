@@ -263,7 +263,7 @@ export class ChatGptBrowser {
 
   refreshSession(): void { this.emitSession(); }
 
-  async send(prompt: string, signal: AbortSignal, options: { continueChat?: boolean; canRecoverStall?: () => boolean } = {}): Promise<string> {
+  async send(prompt: string, signal: AbortSignal, options: { continueChat?: boolean; canRecoverStall?: () => boolean; files?: { id: string; name: string; path: string }[]; onSubmitted?: () => void } = {}): Promise<string> {
     signal.throwIfAborted();
     await this.ensureLoggedIn();
     const page = this.requirePage();
@@ -281,7 +281,7 @@ export class ChatGptBrowser {
     this.submittedPrompt = prompt;
     this.baseline = await this.count("assistantMessage");
     this.baselineMarkdown = await this.requirePage().locator(selectors.markdown.join(", ")).count();
-    await this.fillComposer(prompt);
+    await this.fillComposer(prompt, options.files ?? [], signal);
     signal.throwIfAborted();
     const responseStream = new ResponseStream(this.events, newId("assistant"));
     this.responseStream = responseStream;
@@ -289,6 +289,7 @@ export class ChatGptBrowser {
     const initialToolEpoch = this.toolEpoch;
     try {
     await this.clickSend();
+    options.onSubmitted?.();
     signal.throwIfAborted();
 
     this.events.emit({ type: "phase", phase: "thinking" });
@@ -474,7 +475,7 @@ export class ChatGptBrowser {
     this.events.emit({ type: "status", key: "browser", state: "off" });
   }
 
-  private async fillComposer(prompt: string): Promise<void> {
+  private async fillComposer(prompt: string, files: { id: string; name: string; path: string }[], signal: AbortSignal): Promise<void> {
     const page = this.requirePage();
     let composer = await this.activeComposer(30_000);
 
@@ -496,6 +497,60 @@ export class ChatGptBrowser {
       throw new Error(
         "Failed to type the prompt into the ChatGPT composer; the editor did not preserve the text.",
       );
+    }
+
+    if (files.length) {
+      this.events.emit({ type: "phase", phase: "uploading" });
+      const form = composer.locator("xpath=ancestor::form[1]");
+      const existing = form.locator('.composer-attachment-surface:is(button, [role="button"])');
+      for (let index = 0; index < await existing.count(); index += 1) {
+        if (await existing.nth(index).isVisible().catch(() => false)) throw new Error("The ChatGPT composer already contains an attachment. Remove it in the browser before retrying; nothing was sent.");
+      }
+      let input = form.locator('input[data-testid="upload-photos-input"], input[type="file"][multiple]:not([accept])').first();
+      if (!(await input.count())) {
+        const add = form.locator('button[data-testid*="attach" i], button[aria-label*="attach" i], button[aria-label*="add files" i], button[aria-label*="прикреп" i]').first();
+        if (await add.count()) await add.click();
+        input = page.locator('input[data-testid="upload-photos-input"], input[type="file"][multiple]:not([accept])').first();
+      }
+      if (!(await input.count())) throw new Error("The ChatGPT file upload control was not found. The message and attachments were not sent.");
+      let uploadFailure = "";
+      const observe = (response: import("playwright").Response) => {
+        try {
+          const url = new URL(response.url());
+          if (url.origin === new URL(page.url()).origin && /^\/backend-api\/files(?:\/|$)/.test(url.pathname) && response.status() >= 400) uploadFailure = `upload HTTP ${response.status()}`;
+        } catch { /* Ignore unrelated URLs. */ }
+      };
+      page.on("response", observe);
+      try {
+        signal.throwIfAborted();
+        await input.setInputFiles(files.map((item) => item.path), { timeout: 20_000 });
+        const deadline = Date.now() + 60_000;
+        let readySince = 0;
+        let ready = false;
+        while (Date.now() < deadline) {
+          signal.throwIfAborted();
+          if (uploadFailure) throw new Error(`ChatGPT file upload failed (${uploadFailure}). The message was not sent; check the browser before retrying.`);
+          const visible = await Promise.all(files.map(async (file) => {
+            const cards = form.getByRole("group", { name: file.name, exact: true }).or(form.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`));
+            for (let index = 0; index < await cards.count(); index += 1) {
+              const card = cards.nth(index);
+              if (await card.isVisible().catch(() => false) && await card.locator('[aria-busy="true"], [data-state="loading"], .animate-spin').count().catch(() => 0) === 0) return true;
+            }
+            return false;
+          }));
+          if (visible.every(Boolean) && await this.waitForSendEnabled(500)) {
+            if (!readySince) readySince = Date.now();
+            if (Date.now() - readySince >= 1000) { ready = true; break; }
+          } else readySince = 0;
+          await page.waitForTimeout(200);
+        }
+        if (!ready) {
+          const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => [])).map((item) => item.trim()).filter(Boolean).slice(0, 3).join(" · ");
+          throw new Error(`ChatGPT did not confirm all file attachments${alerts ? `: ${alerts}` : ""}. The message was not sent; check the browser before retrying.`);
+        }
+      } finally { page.off("response", observe); }
+      if (this.config.attachConnector && !(await this.connectorSelected(composer))) throw new Error("The connector disappeared while attaching files. The message was not sent; check the browser.");
+      this.events.emit({ type: "phase", phase: "sending" });
     }
 
     // ProseMirror/Lexical sometimes ignores synthetic input, which leaves the

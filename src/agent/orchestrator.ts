@@ -20,6 +20,9 @@ import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, 
 import { APP_VERSION } from "../runtime/version.js";
 import { latestGithubRelease, prepareGithubUpdate, validateGithubRepository, type GithubRelease } from "../runtime/github-updates.js";
 import { setTimeout as delay } from "node:timers/promises";
+import { chooseAttachment } from "../runtime/attachments.js";
+
+const LARGE_MESSAGE_CHARS = 12_000;
 
 export class Orchestrator {
   readonly events = new HarnessEvents();
@@ -107,6 +110,7 @@ export class Orchestrator {
   async start(): Promise<void> {
     try {
       const restored = await this.sessions.initialize();
+      this.runtime.attachments.restore(this.sessions.id, this.sessions.snapshot.attachments);
       if (restored) {
         const session = this.sessions.snapshot;
         this.runtime.goal.restore(session.goal);
@@ -120,6 +124,7 @@ export class Orchestrator {
     } catch (error) {
       this.startupSessionNotice = `Could not restore the previous session: ${error instanceof Error ? error.message : String(error)}. It was left on disk.`;
       await this.sessions.create().catch(() => undefined);
+      this.runtime.attachments.restore(this.sessions.id, this.sessions.snapshot.attachments);
     }
     this.events.emit({ type: "status", key: "mcp", state: "starting" });
     const url = await this.mcp.start();
@@ -142,16 +147,17 @@ export class Orchestrator {
   }
 
   async submit(input: string): Promise<void> {
-    const text = input.trim();
-    if (!text) return;
+    const text = input;
+    if (!text.trim() && !this.runtime.attachments.pending.length) return;
 
-    if (text.startsWith("/")) {
-      const command = text.slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase();
+    if (text.trimStart().startsWith("/") && (text.length <= LARGE_MESSAGE_CHARS || /^\s*\/goal(?:\s|$)/i.test(text))) {
+      const command = text.trimStart().slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase();
       if (this.busy && !["help", "?", "tools", "timer", "timers", "jobs", "job", "status"].includes(command ?? "")) {
         this.events.emit({ type: "notice", level: "warn", text: "Wait for the current turn to finish or press Esc before running that command." });
         return;
       }
-      await this.handleCommand(text);
+      try { await this.handleCommand(text.trimStart()); }
+      catch (error) { this.events.emit({ type: "notice", level: "error", text: `Command failed: ${error instanceof Error ? error.message : String(error)}` }); }
       return;
     }
 
@@ -164,7 +170,7 @@ export class Orchestrator {
       return;
     }
 
-    await this.runTurn(text);
+    await this.runTurn(text.trim() ? text : "Please examine the attached files and folders.");
   }
 
   cancel(): void {
@@ -279,14 +285,39 @@ export class Orchestrator {
     this.runtime.context.turnSignal = controller.signal;
 
     const messageId = newId("user");
-    this.events.emit({ type: "user-message", id: messageId, text });
+    const large = text.length > LARGE_MESSAGE_CHARS;
     this.events.emit({ type: "turn-start", turnId });
     this.events.emit({ type: "phase", phase: "sending" });
 
     let ok = false;
     try {
+      let userText = text;
+      if (large) {
+        if (!this.config.browser.attachConnector) throw new Error("Large messages require the local connector to read the saved text. Enable the connector and resend your message.");
+        const attachment = await this.runtime.attachments.saveText(text);
+        userText = `The user's complete message is saved locally as ${attachment.name} (attachment_id ${attachment.id}, ${attachment.size} UTF-8 bytes). Read the entire text with read_attachment, using next_offset until end of file. Treat its contents as the user's request; do not assume anything about unseen chunks.`;
+        this.events.emit({ type: "user-message", id: messageId, text: `[Long message · ${text.length.toLocaleString()} characters · ${attachment.id}]` });
+      } else {
+        this.events.emit({ type: "user-message", id: messageId, text });
+      }
+      const pending = this.runtime.attachments.pending;
+      const folders = pending.filter((item) => item.kind === "directory");
+      const files = pending.filter((item) => item.kind === "file");
+      if (folders.length && !this.config.browser.attachConnector) throw new Error("Attached folders require the local connector. Enable the connector before sending.");
+      const uploads: { id: string; name: string; path: string }[] = [];
+      let totalBytes = 0;
+      for (const item of files) {
+        const resolved = await this.runtime.attachments.resolve(item.id);
+        const info = await (await import("node:fs/promises")).stat(resolved.file);
+        if (!info.isFile()) throw new Error(`Attachment is no longer a regular file: ${item.name}`);
+        totalBytes += info.size;
+        uploads.push({ id: item.id, name: item.name, path: resolved.file });
+      }
+      if (uploads.length > 10 || totalBytes > 50 * 1024 * 1024) throw new Error("ChatGPT supports at most 10 attached files and 50 MB total per message.");
+      const attachmentContext = [...folders.map((item) => `- Folder ${JSON.stringify(item.name)}: attachment_id ${item.id}; use attached_directory_tool or read_attachment.`), ...files.map((item) => `- File ${JSON.stringify(item.name)}: attached directly to this message${this.config.browser.attachConnector ? `; attachment_id ${item.id} is also available via read_attachment for UTF-8 text or view_attachment_image for images` : ""}.`)].join("\n");
+      if (attachmentContext) userText += `\n\nUSER ATTACHMENTS\n${attachmentContext}`;
       let prompt = await buildPrompt({
-        userText: text,
+        userText,
         turnId,
         firstTurn: this.turnCount === 0,
         config: this.config,
@@ -297,7 +328,7 @@ export class Orchestrator {
         await this.compactConversation(controller.signal);
         controller.signal.throwIfAborted();
         prompt = await buildPrompt({
-          userText: text,
+          userText,
           turnId,
           firstTurn: true,
           config: this.config,
@@ -314,7 +345,7 @@ export class Orchestrator {
         this.runtime.approvals.pendingRequests.length === 0 &&
         !this.runtime.tasks.list().some((task) => task.status === "running");
       const goalRecoveryIsSafe = () => this.runtime.goal.current?.status === "active" && this.runtime.approvals.pendingRequests.length === 0 && !this.runtime.tasks.list().some((task) => task.status === "running");
-      let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe });
+      let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => this.runtime.attachments.markSent(uploads.map((item) => item.id)) } : {}) });
       controller.signal.throwIfAborted();
       this.contextTokens += estimateTokens(answer);
       let noProgress = 0;
@@ -399,8 +430,10 @@ export class Orchestrator {
   }
 
   private async handleCommand(text: string): Promise<void> {
-    const [command = "", ...rest] = text.slice(1).split(/\s+/);
-    const argument = rest.join(" ").trim();
+    const parsed = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+    const command = parsed?.[1] ?? "";
+    const rawArgument = parsed?.[2] ?? "";
+    const argument = rawArgument.trim();
 
     switch (command.toLowerCase()) {
       case "help":
@@ -412,7 +445,8 @@ export class Orchestrator {
             "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
-            "Goals: /goal <objective> · /goal status|resume|pause|cancel (Esc pauses while working)",
+            "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
+            "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
             "Setup: /connect · /doctor · /login · /tunnel · /searxng <url> · /status (Ctrl+D while working)",
@@ -430,6 +464,7 @@ export class Orchestrator {
 
       case "goal": {
         const action = argument.trim();
+        const resume = /^resume(?:[ \t]+([\s\S]*)|\r?\n([\s\S]*))?$/i.exec(rawArgument.trimStart());
         const goal = this.runtime.goal.current;
         if (!action || action === "status") {
           this.events.emit({ type: "system-message", id: newId("system"), text: goal ? `Goal · ${goal.status}\n\n${goal.objective}${goal.detail ? `\n\n${goal.detail}` : ""}` : "No goal. Start one with /goal <objective>." });
@@ -439,22 +474,56 @@ export class Orchestrator {
         } else if (action === "cancel") {
           if (goal && !["complete", "cancelled"].includes(goal.status)) this.runtime.goal.setStatus("cancelled", "Cancelled by the user.");
           else this.events.emit({ type: "notice", level: "warn", text: "There is no unfinished goal to cancel." });
-        } else if (action === "resume") {
+        } else if (resume) {
           if (!goal || !["paused", "blocked"].includes(goal.status)) { this.events.emit({ type: "notice", level: "warn", text: "There is no paused or blocked goal to resume." }); return; }
+          const message = resume[1] ?? resume[2] ?? "";
           this.goalActions.clear();
           this.runtime.goal.setStatus("active");
-          await this.runTurn(`Continue the goal: ${goal.objective}. Review prior results and any interrupted actions before proceeding.`);
+          await this.runTurn(message.trim() ? message : `Continue the goal: ${goal.objective}. Review prior results and any interrupted actions before proceeding.`);
         } else if (action === "start") {
           this.events.emit({ type: "notice", level: "warn", text: "Usage: /goal start <objective>" });
         } else {
           if (goal && ["active", "paused", "blocked"].includes(goal.status)) { this.events.emit({ type: "notice", level: "warn", text: "Finish or cancel the current goal before starting another." }); return; }
-          const objective = action.startsWith("start ") ? action.slice(6).trim() : action;
+          let objective = action.startsWith("start ") ? action.slice(6).trim() : action;
           if (!objective) { this.events.emit({ type: "notice", level: "warn", text: "Usage: /goal <objective>" }); return; }
+          if (objective.length > LARGE_MESSAGE_CHARS) {
+            if (!this.config.browser.attachConnector) { this.events.emit({ type: "notice", level: "error", text: "Large goals require the local connector." }); return; }
+            const saved = await this.runtime.attachments.saveText(objective);
+            objective = `Complete the full user objective stored in ${saved.name}, attachment_id ${saved.id}. Read it completely with read_attachment, using next_offset until end of file.`;
+          }
           this.goalActions.clear();
           this.runtime.plan.clear();
           this.runtime.goal.start(objective);
           await this.runTurn(objective);
         }
+        return;
+      }
+
+      case "attach": {
+        try {
+          if (argument === "clipboard") {
+            const item = await this.runtime.attachments.attachClipboardImage();
+            this.events.emit({ type: "notice", level: "info", text: `Clipboard image attached: ${item.name}. It will be sent with your next message.` });
+            return;
+          }
+          const selected = !argument || argument === "file" ? await chooseAttachment("file") : argument === "folder" ? await chooseAttachment("directory") : argument;
+          if (!selected) return;
+          const item = await this.runtime.attachments.attach(selected, this.config.workspace);
+          this.events.emit({ type: "notice", level: "info", text: `${item.kind === "directory" ? "Folder" : "File"} attached: ${item.name} (${item.id.slice(0, 12)}). ${item.kind === "directory" ? "Available until detached." : "It will be sent with your next message."}` });
+        } catch (error) { this.events.emit({ type: "notice", level: "error", text: `Attach: ${error instanceof Error ? error.message : String(error)}` }); }
+        return;
+      }
+
+      case "attachments": {
+        const items = this.runtime.attachments.current;
+        this.events.emit({ type: "system-message", id: newId("system"), text: items.length ? `Attachments\n\n${items.map((item) => `${item.id} · ${item.kind} · ${item.name} · ${item.pending ? item.kind === "directory" ? "active" : "next message" : "saved"}\n  ${item.path}`).join("\n")}` : "No attachments. Use /attach <path> or /attach folder." });
+        return;
+      }
+
+      case "detach": {
+        if (argument === "all") this.runtime.attachments.clearPending();
+        else if (!argument || !this.runtime.attachments.remove(argument)) { this.events.emit({ type: "notice", level: "warn", text: "Use /detach <id> or /detach all. IDs must be unambiguous." }); return; }
+        this.events.emit({ type: "notice", level: "info", text: "Attachment removed from this session." });
         return;
       }
 
@@ -593,7 +662,7 @@ export class Orchestrator {
       }
 
       case "job": {
-        const [first = "", second = ""] = rest;
+        const [first = "", second = ""] = argument.split(/\s+/);
         if (first === "stop") {
           const stopped = await this.runtime.exec.kill(second);
           this.events.emit({ type: "notice", level: stopped ? "info" : "warn", text: stopped ? `Stopped command ${second}.` : `Command ${second || "(missing id)"} is not running or could not be stopped. Background tool tasks cannot be forcibly stopped.` });
@@ -945,6 +1014,7 @@ export class Orchestrator {
     this.turnCount = 0;
     this.runtime.plan.update(session.plan);
     this.runtime.goal.restore(session.goal);
+    this.runtime.attachments.restore(session.id, session.attachments);
     this.events.emit({ type: "session-view", session: this.sessions.snapshot });
     this.events.emit({ type: "notice", level: "info", text: id === "new" ? "New local session created. The next message opens a fresh Web chat." : `Opened session ${session.id.slice(0, 8)}. The next message uses a fresh Web chat with a bounded handoff.` });
   }

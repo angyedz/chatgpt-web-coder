@@ -52,6 +52,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
   const [goal, setGoal] = useState(() => initialSession?.goal);
+  const [attachments, setAttachments] = useState(() => initialSession?.attachments ?? []);
   const [localSessionId, setLocalSessionId] = useState(() => initialSession?.id ?? "");
   const [phase, setPhase] = useState<TurnPhase>(() => orchestrator.currentPhase ?? "idle");
   const [status, setStatus] = useState<StatusMap>(() => ({
@@ -209,6 +210,10 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setGoal(event.goal);
           break;
 
+        case "attachments":
+          setAttachments(event.attachments);
+          break;
+
         case "status":
           setStatus((current) => ({
             ...current,
@@ -238,6 +243,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setTools(event.session.tools);
           setPlan(event.session.plan);
           setGoal(event.session.goal);
+          setAttachments(event.session.attachments ?? []);
           setNotices([]);
           setApprovals([]);
           setLocalSessionId(event.session.id);
@@ -299,6 +305,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setNotices([]);
           setPlan([]);
           setGoal(undefined);
+          setAttachments([]);
           setApprovals([]);
           break;
 
@@ -362,10 +369,9 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   });
 
   const handleSubmit = (value: string) => {
-    const text = value.trim();
-    if (!text) return;
+    if (!value.trim() && !attachments.some((item) => item.pending)) return;
     setInputKey((current) => current + 1);
-    void orchestrator.submit(text);
+    void orchestrator.submit(value);
   };
 
   const nextTimerSeconds = timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
@@ -376,10 +382,12 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const showLive = busy && !approval && rows >= 14;
   const showUpdate = Boolean(pendingUpdate && !busy && !approval && rows >= 8);
   const showGoal = Boolean(goal && rows >= 16 && !approval);
+  const pendingAttachments = attachments.filter((item) => item.pending);
+  const showAttachments = pendingAttachments.length > 0 && rows >= 12 && !approval;
   const maxPlanSteps = plan.length && !approval && rows >= 17 ? (rows < 24 ? 1 : 3) : 0;
   const shownNotices = rows >= 20 && !approval ? notices.slice(-2) : [];
   const chrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
-    + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showGoal ? 1 : 0) + shownNotices.length
+    + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showGoal ? 1 : 0) + (showAttachments ? 1 : 0) + shownNotices.length
     + (maxPlanSteps ? 2 + Math.min(plan.length, maxPlanSteps) : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0);
   const transcriptHeight = Math.max(0, rows - chrome);
@@ -448,6 +456,8 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         </Box>
       ) : null}
 
+      {showAttachments ? <Box paddingX={2} flexShrink={0}><Text color={theme.accentAlt} wrap="truncate-end">◇ {pendingAttachments.length} attached · {oneLine(terminalText(pendingAttachments.map((item) => item.name).join(" · ")), Math.max(8, columns - 35))} <Text color={theme.dim}>/attachments</Text></Text></Box> : null}
+
       {showGoal && goal ? <Box paddingX={2} flexShrink={0}><Text color={goal.status === "active" ? theme.accent : goal.status === "complete" ? theme.ok : theme.warn} wrap="truncate-end">◇ GOAL · {goal.status} · {oneLine(terminalText(goal.objective), Math.max(10, columns - 30))}</Text></Box> : null}
 
       <PlanPanel steps={plan} maxVisible={maxPlanSteps} />
@@ -468,11 +478,12 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         phase={phase}
         inputKey={inputKey}
         onSubmit={handleSubmit}
+        hasAttachments={pendingAttachments.length > 0}
         initialHistory={messages.filter((message) => message.role === "user").map((message) => message.text)}
         placeholder={
           phase === "waiting-login"
             ? "Sign in to ChatGPT in the browser window…"
-            : "Message or /command…"
+            : "Message or /command…  ·  /attach"
         }
       /> : null}
 

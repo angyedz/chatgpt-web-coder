@@ -8,6 +8,7 @@ import type { TimerManager } from "../runtime/timers.js";
 import type { BackgroundTaskManager } from "../runtime/tasks.js";
 import type { ExternalMcpManager } from "../mcp/client.js";
 import type { GoalStore } from "../runtime/goals.js";
+import type { AttachmentStore } from "../runtime/attachments.js";
 
 export interface TextContent {
   type: "text";
@@ -34,6 +35,7 @@ export interface ToolContext {
   approvals: ApprovalManager;
   plan: PlanStore;
   goal: GoalStore;
+  attachments: AttachmentStore;
   exec: ExecSessionManager;
   timers: TimerManager;
   tasks: BackgroundTaskManager;

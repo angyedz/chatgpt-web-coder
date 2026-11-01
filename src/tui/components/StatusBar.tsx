@@ -16,6 +16,7 @@ interface StatusBarProps {
 export const phaseLabel: Record<TurnPhase, string> = {
   idle: "ready",
   sending: "sending prompt",
+  uploading: "uploading attachments",
   thinking: "ChatGPT is thinking",
   responding: "ChatGPT is responding",
   tool: "local tool running",

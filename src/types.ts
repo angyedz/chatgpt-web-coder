@@ -1,12 +1,14 @@
 export type Role = "user" | "assistant" | "system";
 import type { SavedSession } from "./runtime/sessions.js";
 import type { Goal } from "./runtime/goals.js";
+import type { Attachment } from "./runtime/attachments.js";
 
 export type ConnectionState = "off" | "starting" | "up" | "error";
 
 export type TurnPhase =
   | "idle"
   | "sending"
+  | "uploading"
   | "thinking"
   | "responding"
   | "tool"
@@ -73,6 +75,7 @@ export type HarnessEvent =
   | { type: "tool-end"; call: ToolCallView }
   | { type: "plan"; steps: PlanStep[] }
   | { type: "goal"; goal?: Goal }
+  | { type: "attachments"; attachments: Attachment[] }
   | {
       type: "status";
       key: "browser" | "mcp" | "tunnel" | "searxng";

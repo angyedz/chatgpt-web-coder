@@ -6,6 +6,7 @@ import type { TimerInfo } from "./timers.js";
 import { cleanAssistantHistory } from "../browser/response-text.js";
 import { harnessHome } from "../utils/paths.js";
 import type { Goal } from "./goals.js";
+import type { Attachment } from "./attachments.js";
 
 export interface SessionJob {
   id: string;
@@ -26,6 +27,7 @@ export interface SavedSession {
   tools: ToolCallView[];
   plan: PlanStep[];
   goal?: Goal;
+  attachments?: Attachment[];
   jobs: SessionJob[];
   timers: TimerInfo[];
   previousRuntime?: { jobs: SessionJob[]; timers: TimerInfo[]; savedAt: number };
@@ -148,6 +150,9 @@ export class SessionStore {
         break;
       case "goal":
         session.goal = event.goal ? structuredClone(event.goal) : undefined;
+        break;
+      case "attachments":
+        session.attachments = structuredClone(event.attachments);
         break;
       case "turn-end":
         for (const item of session.messages) if (item.streaming) { item.streaming = false; item.interrupted = !event.ok; }
