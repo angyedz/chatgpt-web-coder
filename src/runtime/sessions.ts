@@ -250,8 +250,11 @@ export function sessionHandoff(session: SavedSession): string {
   const completeOrder = items.every((item) => Number.isFinite(item.order));
   items.sort((a, b) => completeOrder ? a.order! - b.order! : a.time - b.time);
   const history = items.slice(-40).map((item) => item.text).join("\n\n").slice(-36_000);
+  const goal = session.goal
+    ? `status: ${session.goal.status}\nobjective (exact): ${session.goal.objective}${session.goal.detail ? `\nlast status detail: ${session.goal.detail}` : ""}`
+    : "(none)";
   const plan = session.plan.map((step) => `${step.status}: ${step.step}`).join("\n");
   const jobs = (session.previousRuntime?.jobs ?? session.jobs).map((job) => `${job.id} ${job.kind} ${job.status}: ${job.description}`).join("\n");
   const timers = (session.previousRuntime?.timers ?? session.timers).map((timer) => `${timer.id}: ${timer.label}, due ${new Date(timer.dueAt).toISOString()}`).join("\n");
-  return `Restored local session. The previous Web conversation is unavailable; this is a bounded handoff, not a complete transcript. Treat past tool results as historical and inspect the current workspace before relying on them. Any previously running action has an unknown outcome; do not restart it automatically. Previously scheduled timers and background processes are not automatically restored.\n\n${session.contextSummary ? `Earlier compacted memory:\n${session.contextSummary.slice(-16_000)}\n\n` : ""}Last known plan:\n${plan || "(none)"}\n\nLast recorded jobs (historical):\n${jobs || "(none)"}\n\nLast recorded timers (historical):\n${timers || "(none)"}\n\nRecent transcript:\n${history || "(empty)"}`;
+  return `Restored local session. The previous Web conversation is unavailable; this is a bounded handoff, not a complete transcript. Treat past tool results as historical and inspect the current workspace before relying on them. Any previously running action has an unknown outcome; do not restart it automatically. Previously scheduled timers and background processes are not automatically restored.\n\nLast known user goal (authoritative harness state):\n${goal}\n\n${session.contextSummary ? `Earlier compacted memory:\n${session.contextSummary.slice(-16_000)}\n\n` : ""}Last known plan:\n${plan || "(none)"}\n\nLast recorded jobs (historical):\n${jobs || "(none)"}\n\nLast recorded timers (historical):\n${timers || "(none)"}\n\nRecent transcript:\n${history || "(empty)"}`;
 }

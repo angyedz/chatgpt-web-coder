@@ -15,6 +15,7 @@ import { oneLine } from "../utils/text.js";
 import { discoverSkills } from "../runtime/skills.js";
 import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
 import { SessionStore, sessionHandoff, type SavedSession, type SessionJob } from "../runtime/sessions.js";
+import type { Goal } from "../runtime/goals.js";
 import type { ConnectionState, TurnPhase } from "../types.js";
 import { installTunnelClient } from "../runtime/install-tunnel.js";
 import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, prepareRollback, prepareUpdate, updateLog, mcpRefreshAfterUpdate, mcpRefreshOnStartup, dismissMcpRefresh, type McpRefreshReminder, type PendingUpdate } from "../runtime/updates.js";
@@ -1448,14 +1449,19 @@ export class Orchestrator {
     }
     try {
       this.events.emit({ type: "notice", level: "info", text: `Compacting approximately ${this.contextTokens.toLocaleString()} context tokens…` });
+      // The model's summary is useful context, but goal/plan state belongs to
+      // the harness. Snapshot it separately so a lossy summary cannot erase an
+      // active goal or make its remaining steps disappear after the chat rolls.
+      const goalAtCompaction = this.runtime.goal.current;
+      const planAtCompaction = this.runtime.plan.current;
       const summary = await this.browser.send(
-        "Create a compact, high fidelity handoff summary of this conversation for a fresh chat. Include the user's overall goal, requirements and preferences; confirmed facts; decisions and their reasons; files changed and important current code state; commands and checks already run with outcomes; unresolved tasks and next steps. Preserve names, paths, values and constraints. Omit chit chat. Do not call any tools or make changes. Reply only with the summary.",
+        "Create a compact, high fidelity handoff summary of this conversation for a fresh chat. Include the user's overall goal, requirements and preferences; confirmed facts; decisions and their reasons; files changed and important current code state; commands and checks already run with outcomes; unresolved tasks and next steps. Preserve names, paths, values and constraints. Omit chit chat. Do not call any tools or make changes. Reply only with the summary. The harness separately preserves the authoritative goal and plan state.",
         operationSignal,
         { continueChat: true },
       );
       operationSignal.throwIfAborted();
       if (!summary.trim()) throw new Error("The model returned an empty context summary.");
-      this.contextSummary = summary.slice(0, this.config.context.maxTokens * 2);
+      this.contextSummary = buildCompactionHandoff(summary, goalAtCompaction, planAtCompaction, this.config.context.maxTokens * 2);
       this.sessions.setSummary(this.contextSummary);
       await this.browser.newChat();
       operationSignal.throwIfAborted();
@@ -1526,6 +1532,35 @@ function validateExternalServer(value: unknown): ExternalMcpServer {
 function estimateTokens(value: string): number {
   // Conservative heuristic for mixed English/Russian text; the web client has no token-count API.
   return Math.ceil(Math.max(value.length / 3, Buffer.byteLength(value, "utf8") / 4));
+}
+
+function buildCompactionHandoff(
+  summary: string,
+  goal: Goal | undefined,
+  plan: Array<{ step: string; status: string }>,
+  maxChars: number,
+): string {
+  const goalState = goal
+    ? `status: ${goal.status}\nobjective (exact): ${goal.objective}${goal.detail ? `\nlast status detail: ${goal.detail.slice(0, 1_000)}` : ""}`
+    : "(none)";
+  const planState = plan.length
+    ? plan.slice(0, 80).map((step) => `${step.status}: ${step.step.slice(0, 500)}`).join("\n").slice(0, 10_000)
+    : "(none)";
+  const authoritativeState = [
+    "AUTHORITATIVE HARNESS STATE — preserve this exact goal and plan across the chat handoff.",
+    `USER GOAL\n${goalState}`,
+    `CURRENT PLAN\n${planState}`,
+    goal?.status === "active"
+      ? "The goal is still active. Continue its unfinished requirements after compaction; the summary alone does not complete it."
+      : "Respect the stored goal status; do not treat a paused or blocked goal as active without an explicit resume.",
+  ].join("\n\n");
+  const safeLimit = Math.max(1, maxChars);
+  const state = authoritativeState.length <= safeLimit
+    ? authoritativeState
+    : authoritativeState.slice(-safeLimit);
+  const summaryBudget = Math.max(0, safeLimit - state.length - 2);
+  const modelSummary = summary.trim().slice(0, summaryBudget);
+  return modelSummary ? `${modelSummary}\n\n${state}` : state;
 }
 
 function parseTokenBudget(value: string): number | undefined {
