@@ -444,6 +444,7 @@ export class Orchestrator {
           text: [
             "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
+            "Selection: /copy or Ctrl+Y · select in the terminal · Ctrl+Y or Esc to return",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",

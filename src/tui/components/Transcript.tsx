@@ -18,6 +18,7 @@ interface TranscriptProps {
   systemView?: boolean;
   scrollOffset?: number;
   onScrollLimit?: (limit: number) => void;
+  paused?: boolean;
 }
 
 interface Row {
@@ -29,7 +30,7 @@ interface Row {
   railColor?: string;
 }
 
-export const Transcript = React.memo(function Transcript({ messages, tools, height, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
+export const Transcript = React.memo(function Transcript({ messages, tools, height, systemView = false, scrollOffset = 0, onScrollLimit, paused = false }: TranscriptProps) {
   const { columns = 80 } = useWindowSize();
   const [frame, setFrame] = useState(0);
   const messageRows = useRef(new WeakMap<ChatMessage, { text: string; width: number; spaced: boolean; rows: Row[] }>());
@@ -37,11 +38,11 @@ export const Transcript = React.memo(function Transcript({ messages, tools, heig
   const running = tools.some((call) => call.status === "running");
   const reducedMotion = process.env.CHATGPT_CODER_REDUCED_MOTION === "1" || process.env.CI === "true";
   useEffect(() => {
-    if (!running || reducedMotion) return;
+    if (!running || reducedMotion || paused) return;
     const timer = setInterval(() => setFrame((value) => value + 1), 140);
     timer.unref?.();
     return () => clearInterval(timer);
-  }, [running, reducedMotion]);
+  }, [running, reducedMotion, paused]);
   // Limit prose width on wide terminals and reserve space for the message rail.
   const width = Math.max(1, Math.min(96, columns - 7));
   const entries = useMemo((): Entry[] => {

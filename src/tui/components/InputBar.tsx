@@ -12,6 +12,7 @@ interface InputBarProps {
   placeholder: string;
   initialHistory?: string[];
   hasAttachments?: boolean;
+  copyMode?: boolean;
 }
 
 interface Draft { value: string; cursor: number }
@@ -27,7 +28,7 @@ function nextCharacter(value: string, cursor: number): number {
   return cursor + (code > 0xffff ? 2 : 1);
 }
 
-export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistory = [], hasAttachments = false }: InputBarProps) {
+export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistory = [], hasAttachments = false, copyMode = false }: InputBarProps) {
   const { columns = 100 } = useWindowSize();
   const history = useRef(initialHistory.slice(-200));
   const historyIndex = useRef<number | null>(null);
@@ -100,7 +101,7 @@ export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistor
   const visibleRight = right.slice(0, Math.max(0, available - visibleLeft.length - 1));
   return (
     <Box borderStyle="round" borderColor={disabled ? theme.border : theme.accent} paddingX={1} marginX={1}>
-      {disabled ? <Text color={phase === "cancelling" ? theme.warn : theme.dim} wrap="truncate-end">{phase === "cancelling" ? "Stopping…" : phase === "uploading" ? "Uploading attachments…  ·  Esc to stop" : phase === "downloading-update" ? "Downloading update…  ·  please wait" : phase === "updating" ? "Updating…  ·  please wait" : phase === "waiting-approval" ? "Respond to the approval above" : "Working…  ·  Ctrl+D status  ·  Esc to stop"}</Text> : (
+      {disabled && !(copyMode && draft.value) ? <Text color={copyMode || phase === "cancelling" ? theme.warn : theme.dim} wrap="truncate-end">{copyMode ? "Select text with the mouse · copy in terminal · Ctrl+Y / Esc to return" : phase === "cancelling" ? "Stopping…" : phase === "uploading" ? "Uploading attachments…  ·  Esc to stop" : phase === "downloading-update" ? "Downloading update…  ·  please wait" : phase === "updating" ? "Updating…  ·  please wait" : phase === "waiting-approval" ? "Respond to the approval above" : "Working…  ·  Ctrl+D status  ·  Esc to stop"}</Text> : (
         <Box gap={1}><Text bold color={theme.accent}>›</Text><Text wrap="truncate-end">{marker ? <Text color={theme.dim}>{marker}</Text> : null}{draft.value ? <>{visibleLeft}<Text inverse>{selected}</Text>{visibleRight}</> : <><Text inverse> </Text><Text color={theme.dim}>{placeholder}</Text></>}</Text></Box>
       )}
     </Box>

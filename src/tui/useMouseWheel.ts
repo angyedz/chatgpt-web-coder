@@ -12,14 +12,14 @@ interface WheelArea {
 
 // Ink consumes mouse sequences before useInput. Observe the same stdin chunks
 // without reading from the stream, so Ink still owns keyboard input and paste.
-export function useMouseWheel(area: WheelArea, onWheel: (direction: 1 | -1) => void): void {
+export function useMouseWheel(area: WheelArea, onWheel: (direction: 1 | -1) => void, enabled = true): void {
   const { stdin } = useStdin();
   const { stdout } = useStdout();
   const current = useRef({ area, onWheel });
   current.current = { area, onWheel };
 
   useEffect(() => {
-    if (!(stdin as NodeJS.ReadStream).isTTY || !(stdout as NodeJS.WriteStream).isTTY || process.env.TERM === "dumb") return;
+    if (!enabled || !(stdin as NodeJS.ReadStream).isTTY || !(stdout as NodeJS.WriteStream).isTTY || process.env.TERM === "dumb") return;
     let pending = "";
     let inPaste = false;
 
@@ -57,5 +57,5 @@ export function useMouseWheel(area: WheelArea, onWheel: (direction: 1 | -1) => v
       stdin.removeListener("data", onData);
       stdout.write(disableMouse);
     };
-  }, [stdin, stdout]);
+  }, [stdin, stdout, enabled]);
 }

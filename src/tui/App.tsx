@@ -48,6 +48,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialSession?.messages ?? []);
   const [showSystemLog, setShowSystemLog] = useState(false);
+  const [copyMode, setCopyMode] = useState(false);
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
@@ -72,6 +73,9 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [now, setNow] = useState(Date.now());
   const noticeId = useRef(0);
   const visibleMessages = useMemo(() => messages.filter((message) => showSystemLog ? message.role === "system" : message.role !== "system"), [messages, showSystemLog]);
+  const frozenTranscript = useRef<{ messages: ChatMessage[]; tools: ToolCallView[]; systemView: boolean; phase: TurnPhase; startedAt?: number; busy: boolean; plan: PlanStep[]; goal: typeof goal; attachments: typeof attachments; notices: Notice[]; timerCount: number; nextTimerSeconds: number; jobCount: number; pendingUpdate: typeof pendingUpdate } | undefined>(undefined);
+  const copyModeRef = useRef(false);
+  copyModeRef.current = copyMode;
   const activeTools = useRef(new Set<string>());
   const pendingApprovals = useRef(new Set<string>());
   const turnActive = useRef(false);
@@ -93,7 +97,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       switch (event.type) {
         case "user-message":
         case "system-message":
-          setScrollOffset(0);
+          if (!copyModeRef.current) setScrollOffset(0);
           setShowSystemLog(event.type === "system-message");
           eventOrder.current += 1;
           {
@@ -271,7 +275,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setNotices((current) => [...current.slice(-7), notice]);
           if (event.level === "error") {
             const order = ++eventOrder.current;
-            setScrollOffset(0);
+            if (!copyModeRef.current) setScrollOffset(0);
             setMessages((current) => [...current, { id: `notice-error-${notice.id}`, role: "system", text: event.text, createdAt: Date.now(), order }]);
           }
           break;
@@ -322,7 +326,22 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     return unsubscribe;
   }, [orchestrator, exit]);
 
+  const selectMode = (enabled: boolean) => {
+    frozenTranscript.current = enabled ? { messages: visibleMessages, tools: showSystemLog ? noTools : tools, systemView: showSystemLog, phase, startedAt: turnStartedAt, busy, plan, goal, attachments, notices, timerCount: timers.length, nextTimerSeconds: timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0, jobCount, pendingUpdate } : undefined;
+    setCopyMode(enabled);
+  };
+
   useInput((input, key) => {
+    if (key.ctrl && input === "y") {
+      selectMode(!copyMode);
+      return;
+    }
+    if (copyMode) {
+      if (key.escape) selectMode(false);
+      else if (key.pageUp) setScrollOffset((current) => Math.min(scrollLimit, current + Math.max(1, Math.floor(rows / 2))));
+      else if (key.pageDown) setScrollOffset((current) => Math.max(0, current - Math.max(1, Math.floor(rows / 2))));
+      return;
+    }
     if (approval) {
       if (input.toLowerCase() === "y") {
         orchestrator.approve(approval.id, true);
@@ -371,29 +390,38 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const handleSubmit = (value: string) => {
     if (!value.trim() && !attachments.some((item) => item.pending)) return;
     setInputKey((current) => current + 1);
+    if (value.trim().toLowerCase() === "/copy") { selectMode(true); return; }
     void orchestrator.submit(value);
   };
 
-  const nextTimerSeconds = timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
+  const snapshot = copyMode ? frozenTranscript.current : undefined;
+  const displayedPlan = snapshot ? snapshot.plan : plan;
+  const displayedGoal = snapshot ? snapshot.goal : goal;
+  const displayedAttachments = snapshot ? snapshot.attachments : attachments;
+  const displayedNotices = snapshot ? snapshot.notices : notices;
+  const displayedUpdate = snapshot ? snapshot.pendingUpdate : pendingUpdate;
+  const timerCount = snapshot ? snapshot.timerCount : timers.length;
+  const displayedJobCount = snapshot ? snapshot.jobCount : jobCount;
+  const nextTimerSeconds = snapshot ? snapshot.nextTimerSeconds : timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
   const showHeader = rows >= 12;
   const showStatus = rows >= 10;
   const showInput = !approval || rows >= 12;
-  const showJobs = showActivity && rows >= 20 && !approval;
-  const showLive = busy && !approval && rows >= 14;
-  const showUpdate = Boolean(pendingUpdate && !busy && !approval && rows >= 8);
-  const showGoal = Boolean(goal && rows >= 16 && !approval);
-  const pendingAttachments = attachments.filter((item) => item.pending);
+  const showJobs = Boolean((timerCount || displayedJobCount) && rows >= 20 && !approval);
+  const showLive = (copyMode ? frozenTranscript.current?.busy : busy) && !approval && rows >= 14;
+  const showUpdate = Boolean(displayedUpdate && !(snapshot ? snapshot.busy : busy) && !approval && rows >= 8);
+  const showGoal = Boolean(displayedGoal && rows >= 16 && !approval);
+  const pendingAttachments = displayedAttachments.filter((item) => item.pending);
   const showAttachments = pendingAttachments.length > 0 && rows >= 12 && !approval;
-  const maxPlanSteps = plan.length && !approval && rows >= 17 ? (rows < 24 ? 1 : 3) : 0;
-  const shownNotices = rows >= 20 && !approval ? notices.slice(-2) : [];
+  const maxPlanSteps = displayedPlan.length && !approval && rows >= 17 ? (rows < 24 ? 1 : 3) : 0;
+  const shownNotices = rows >= 20 && !approval ? displayedNotices.slice(-2) : [];
   const chrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
     + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showGoal ? 1 : 0) + (showAttachments ? 1 : 0) + shownNotices.length
-    + (maxPlanSteps ? 2 + Math.min(plan.length, maxPlanSteps) : 0)
+    + (maxPlanSteps ? 2 + Math.min(displayedPlan.length, maxPlanSteps) : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0);
   const transcriptHeight = Math.max(0, rows - chrome);
   useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
     setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
-  });
+  }, !copyMode);
 
   return (
     <Box flexDirection="column" height={rows}>
@@ -407,18 +435,19 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       /> : null}
 
       {transcriptHeight > 0 ? <Transcript
-        messages={visibleMessages}
-        tools={showSystemLog ? noTools : tools}
-        systemView={showSystemLog}
+        messages={copyMode ? frozenTranscript.current?.messages ?? visibleMessages : visibleMessages}
+        tools={copyMode ? frozenTranscript.current?.tools ?? noTools : showSystemLog ? noTools : tools}
+        systemView={copyMode ? frozenTranscript.current?.systemView ?? false : showSystemLog}
         height={transcriptHeight}
         scrollOffset={scrollOffset}
         onScrollLimit={setScrollLimit}
+        paused={copyMode}
       /> : null}
 
       {showJobs ? (
         <Box paddingX={2} gap={2} flexShrink={0}>
-          {timers.length ? <Text color={theme.accent} wrap="truncate-end">◷ {timers.length} timer{timers.length === 1 ? "" : "s"} · {nextTimerSeconds}s</Text> : null}
-          {jobCount ? <Text color={theme.accentAlt} wrap="truncate-end">◉ {jobCount} background job{jobCount === 1 ? "" : "s"}</Text> : null}
+          {timerCount ? <Text color={theme.accent} wrap="truncate-end">◷ {timerCount} timer{timerCount === 1 ? "" : "s"} · {nextTimerSeconds}s</Text> : null}
+          {displayedJobCount ? <Text color={theme.accentAlt} wrap="truncate-end">◉ {displayedJobCount} background job{displayedJobCount === 1 ? "" : "s"}</Text> : null}
           {columns >= 70 ? <Text color={theme.dim}>/timers · /jobs</Text> : null}
         </Box>
       ) : null}
@@ -458,23 +487,24 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
       {showAttachments ? <Box paddingX={2} flexShrink={0}><Text color={theme.accentAlt} wrap="truncate-end">◇ {pendingAttachments.length} attached · {oneLine(terminalText(pendingAttachments.map((item) => item.name).join(" · ")), Math.max(8, columns - 35))} <Text color={theme.dim}>/attachments</Text></Text></Box> : null}
 
-      {showGoal && goal ? <Box paddingX={2} flexShrink={0}><Text color={goal.status === "active" ? theme.accent : goal.status === "complete" ? theme.ok : theme.warn} wrap="truncate-end">◇ GOAL · {goal.status} · {oneLine(terminalText(goal.objective), Math.max(10, columns - 30))}</Text></Box> : null}
+      {showGoal && displayedGoal ? <Box paddingX={2} flexShrink={0}><Text color={displayedGoal.status === "active" ? theme.accent : displayedGoal.status === "complete" ? theme.ok : theme.warn} wrap="truncate-end">◇ GOAL · {displayedGoal.status} · {oneLine(terminalText(displayedGoal.objective), Math.max(10, columns - 30))}</Text></Box> : null}
 
-      <PlanPanel steps={plan} maxVisible={maxPlanSteps} />
+      <PlanPanel steps={displayedPlan} maxVisible={maxPlanSteps} />
 
       {approval ? <ApprovalPrompt request={approval} /> : null}
 
-      {showLive ? <ActivityBar phase={phase} startedAt={turnStartedAt} /> : null}
+      {showLive ? <ActivityBar phase={copyMode ? frozenTranscript.current?.phase ?? phase : phase} startedAt={copyMode ? frozenTranscript.current?.startedAt : turnStartedAt} paused={copyMode} /> : null}
 
-      {showUpdate && pendingUpdate ? (
+      {showUpdate && displayedUpdate ? (
         <Box paddingX={2} flexShrink={0}>
-          <Text color={theme.dim} wrap="truncate-end"><Text bold color={theme.warn}>◇ Approval required: /update apply</Text>{`  ·  ${pendingUpdate.kind === "download" ? "Downloaded" : pendingUpdate.kind === "rollback" ? "Rollback" : "Selected"} ${terminalText(pendingUpdate.version)}  ·  /update cancel`}</Text>
+          <Text color={theme.dim} wrap="truncate-end"><Text bold color={theme.warn}>◇ Approval required: /update apply</Text>{`  ·  ${displayedUpdate.kind === "download" ? "Downloaded" : displayedUpdate.kind === "rollback" ? "Rollback" : "Selected"} ${terminalText(displayedUpdate.version)}  ·  /update cancel`}</Text>
         </Box>
       ) : null}
 
       {showInput ? <InputBar
         key={localSessionId}
-        disabled={busy || Boolean(approval)}
+        disabled={copyMode || busy || Boolean(approval)}
+        copyMode={copyMode}
         phase={phase}
         inputKey={inputKey}
         onSubmit={handleSubmit}
@@ -494,6 +524,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
         tunnelDetail={status.tunnel?.detail}
         approvalMode={orchestrator.config.approvalMode}
         showPhase={!showLive}
+        copyMode={copyMode}
       /> : null}
     </Box>
   );
