@@ -19,7 +19,7 @@ describe("turn cancellation", () => {
     const stop = vi.spyOn(orchestrator.browser, "stop").mockResolvedValue();
     let finishCleanup!: () => void;
     const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
-    const dispose = vi.spyOn(orchestrator.runtime.exec, "stopForeground").mockReturnValue(cleanup);
+    const dispose = vi.spyOn(orchestrator.runtime.exec, "stopTurn").mockReturnValue(cleanup);
 
     const turn = orchestrator.submit("hello");
     await ready;

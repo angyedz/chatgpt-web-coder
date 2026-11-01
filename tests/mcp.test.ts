@@ -28,6 +28,8 @@ describe("MCP host", () => {
     config.mcp.port = 0;
     config.approvalMode = "never";
     const runtime = createRuntime(config);
+    runtime.context.turnId = "mcp-test-turn";
+    runtime.context.turnSignal = new AbortController().signal;
     host = new McpHost(runtime.context, config.mcp);
     const url = await host.start();
 
@@ -36,6 +38,10 @@ describe("MCP host", () => {
     await client.connect(transport);
 
     const tools = await client.listTools();
+    const callTool = (name: string, args: Record<string, unknown> = {}) => client!.callTool({
+      name,
+      arguments: { ...args, turn_id: runtime.context.turnId },
+    });
     const names = tools.tools.map((tool) => tool.name);
     expect(names).toContain("exec_command");
     expect(names).toContain("apply_patch");
@@ -45,33 +51,26 @@ describe("MCP host", () => {
     expect(names).toContain("start_background_task");
     expect(names).toContain("list_exec_sessions");
 
-    const timer = await client.callTool({ name: "set_timer", arguments: { duration_ms: 60_000, label: "test timer" } });
+    const timer = await callTool("set_timer", { duration_ms: 60_000, label: "test timer" });
     const timerText = (timer.content as Array<{ text?: string }>)[0]?.text ?? "";
     const timerId = /timer_[a-f0-9]+/.exec(timerText)?.[0];
     expect(timerId).toBeTruthy();
-    const activeTimers = await client.callTool({ name: "list_timers", arguments: {} });
+    const activeTimers = await callTool("list_timers");
     expect(JSON.stringify(activeTimers.content)).toContain("test timer");
-    await client.callTool({ name: "cancel_timer", arguments: { timer_id: timerId } });
+    await callTool("cancel_timer", { timer_id: timerId });
 
     await writeFile(path.join(workspace, "hello.txt"), "hello mcp\n");
-    const plan = await client.callTool({
-      name: "update_plan",
-      arguments: { steps: [{ step: "Inspect the workspace", status: "in_progress" }, { step: "Build", status: "pending" }] },
+    const plan = await callTool("update_plan", {
+      steps: [{ step: "Inspect the workspace", status: "in_progress" }, { step: "Build", status: "pending" }],
     });
     expect(JSON.stringify(plan.content)).toContain("Plan updated");
-    const directory = await client.callTool({ name: "list_dir", arguments: { path: ".", depth: 1 } });
+    const directory = await callTool("list_dir", { path: ".", depth: 1 });
     expect(JSON.stringify(directory.content)).toContain("hello.txt");
-    const result = await client.callTool({
-      name: "read_file",
-      arguments: { path: "hello.txt" },
-    });
+    const result = await callTool("read_file", { path: "hello.txt" });
     const content = result.content as Array<{ type: string; text?: string }>;
     expect(content[0]?.text).toContain("hello mcp");
 
-    const info = await client.callTool({
-      name: "get_workspace_info",
-      arguments: {},
-    });
+    const info = await callTool("get_workspace_info");
     const infoText = (info.content as Array<{ text?: string }>)[0]?.text ?? "";
     expect(infoText).toContain(workspace.replaceAll("\\", "\\\\"));
   });

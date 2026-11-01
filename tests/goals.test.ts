@@ -15,6 +15,8 @@ describe("goal completion", () => {
     const config = defaultConfig(process.cwd());
     config.mcp.port = 0;
     const runtime = createRuntime(config);
+    runtime.context.turnId = "goal-test-turn";
+    runtime.context.turnSignal = new AbortController().signal;
     const host = new McpHost(runtime.context, config.mcp);
     const client = new Client({ name: "goal-test", version: "1.0.0" });
     try {
@@ -23,7 +25,7 @@ describe("goal completion", () => {
       expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("update_goal");
       runtime.goal.start("Finish the work");
       runtime.plan.update([{ step: "Finish the work", status: "in_progress" }]);
-      const arguments_ = { status: "complete", detail: "The work is fully complete." };
+      const arguments_ = { status: "complete", detail: "The work is fully complete.", turn_id: runtime.context.turnId };
       const rejected = await client.callTool({ name: "update_goal", arguments: arguments_ });
       expect(rejected.isError).toBe(true);
       expect(runtime.goal.current?.status).toBe("active");
