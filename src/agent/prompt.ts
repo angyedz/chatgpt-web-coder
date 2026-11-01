@@ -14,12 +14,14 @@ export interface PromptOptions {
   goal?: Goal;
 }
 
+export const goalReportingInstructions = `If update_goal is not exposed by the connector, use update_plan as a compatibility fallback: to report a real blocker, call update_plan with exactly {"steps":[{"step":"[HARNESS_GOAL:blocked] <concrete blocker>","status":"pending"}]}; to report an achieved goal, use {"steps":[{"step":"[HARNESS_GOAL:complete] <concrete evidence>","status":"pending"}]}. Replace the angle-bracket text with a specific explanation of at least 10 characters. This special call reports the goal outcome without replacing the plan. Only treat the update as successful if the tool result confirms "Goal blocked" or "Goal complete"; if it says "Plan updated" or returns an error, the goal was not updated. Never report completion for unfinished work or retry denied actions.`;
+
 export async function buildPrompt(options: PromptOptions): Promise<string> {
   const { userText, turnId, firstTurn, config, contextSummary, goal } = options;
   // The full contract is already present in this Web chat. Re-inserting it on
   // every message makes large prompts expensive for ChatGPT's editor.
   if (!firstTurn) {
-    const activeGoal = goal?.status === "active" ? `\nACTIVE USER GOAL\n${goal.objective}\nContinue until achieved, then call update_goal with complete and evidence; if genuinely blocked, call update_goal with blocked. Do not repeat denied actions.\n` : "";
+    const activeGoal = goal?.status === "active" ? `\nACTIVE USER GOAL\n${goal.objective}\nContinue until achieved, then call update_goal with complete and evidence; if genuinely blocked, call update_goal with blocked. Do not repeat denied actions.\n${goalReportingInstructions}\n` : "";
     return `Continue this conversation using the existing connector and instructions. Project instructions and skills can change: consult get_project_instructions and list_skills when relevant.\nTurn: ${turnId}\n${activeGoal}\nUSER REQUEST\n${userText}`;
   }
   const [instructions, skills] = await Promise.all([projectInstructions(config.workspace), discoverSkills(config)]);
@@ -70,7 +72,7 @@ RULES
   const memory = contextSummary?.trim()
     ? `\n\nCOMPACTED PROJECT CONVERSATION MEMORY\nTreat this as the reliable summary of earlier turns in this same task. Preserve decisions, files changed, commands/checks already run, and unresolved work.\n${contextSummary.trim()}`
     : "";
-  const goalBlock = goal?.status === "active" ? `\n\nACTIVE USER GOAL\n${goal.objective}\nWork autonomously until this objective is achieved. After completing all required work, call update_goal with status complete and concrete evidence. If an external condition or user input truly prevents progress, call update_goal with status blocked and explain it. Do not claim completion for partial work; do not retry denied actions. The harness will continue the goal if you stop without reporting an outcome.` : "";
+  const goalBlock = goal?.status === "active" ? `\n\nACTIVE USER GOAL\n${goal.objective}\nWork autonomously until this objective is achieved. After completing all required work, call update_goal with status complete and concrete evidence. If an external condition or user input truly prevents progress, call update_goal with status blocked and explain it. Do not claim completion for partial work; do not retry denied actions. The harness will continue the goal if you stop without reporting an outcome.\n${goalReportingInstructions}` : "";
 
   return `${contract}${timerRules}
 

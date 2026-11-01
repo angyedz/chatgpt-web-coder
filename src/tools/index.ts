@@ -739,7 +739,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: "update_plan",
     title: "Update the plan",
     description:
-      "Update the visible task plan. Keep exactly one step in_progress while working and mark steps completed as you finish them.",
+      "Update the visible task plan. Keep exactly one step in_progress while working and mark steps completed as you finish them. If update_goal is unavailable in the connector, a single pending step '[HARNESS_GOAL:blocked] <reason>' or '[HARNESS_GOAL:complete] <evidence>' reports the active goal outcome without changing the plan.",
     inputSchema: {
       steps: z
         .array(
@@ -752,10 +752,25 @@ export const toolDefinitions: ToolDefinition[] = [
         .max(30)
         .describe("Ordered plan steps."),
     },
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, openWorldHint: false },
     handler: async (args, ctx) => {
       const raw = args.steps;
       if (!Array.isArray(raw)) return errorText("steps must be an array.");
+      const hasGoalMarker = raw.some((step) => step && typeof step === "object" && typeof (step as Record<string, unknown>).step === "string" && /^\[HARNESS_GOAL(?::|\])/i.test(String((step as Record<string, unknown>).step).trim()));
+      if (hasGoalMarker && raw.length !== 1) return errorText("A goal report must be the only step; the existing plan was not changed.");
+      if (raw.length === 1 && raw[0] && typeof raw[0] === "object") {
+        const single = raw[0] as Record<string, unknown>;
+        const marker = typeof single.step === "string" ? /^\[HARNESS_GOAL:(complete|blocked)\]\s+([\s\S]+)$/i.exec(single.step.trim()) : null;
+        if (marker) {
+          if (single.status !== "pending") return errorText("Goal reports through update_plan must use status pending; the existing plan will not be changed.");
+          const detail = marker[2]!.trim();
+          if (detail.length < 10) return errorText("Give at least 10 characters of concrete evidence or the blocker; the goal remains active.");
+          const goalTool = findTool("update_goal");
+          if (!goalTool) return errorText("The goal reporting tool is unavailable; the goal remains active.");
+          return goalTool.handler({ status: marker[1]!.toLowerCase(), detail }, ctx);
+        }
+      }
+      if (hasGoalMarker) return errorText("Invalid goal report. Use '[HARNESS_GOAL:blocked] <reason>' or '[HARNESS_GOAL:complete] <evidence>'; the existing plan was not changed.");
       const steps = raw
         .filter((step): step is { step: string; status: "pending" | "in_progress" | "completed" } =>
           typeof step === "object" &&

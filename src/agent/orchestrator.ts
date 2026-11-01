@@ -7,7 +7,7 @@ import { runDoctor } from "../runtime/doctor.js";
 import { toolDefinitions } from "../tools/index.js";
 import { TunnelSupervisor } from "../tunnel/supervisor.js";
 import { newId } from "../utils/ids.js";
-import { buildPrompt } from "./prompt.js";
+import { buildPrompt, goalReportingInstructions } from "./prompt.js";
 import { parseDuration } from "../runtime/timers.js";
 import { describeTimer, scheduleTimer } from "../runtime/schedule.js";
 import { oneLine } from "../utils/text.js";
@@ -418,7 +418,7 @@ export class Orchestrator {
           break;
         }
         this.events.emit({ type: "notice", level: "info", text: "Goal remains active; continuing the task…" });
-        const continuation = `The user goal is still active: ${this.runtime.goal.current.objective}\nContinue the unfinished work using the results already obtained. Do not repeat completed work or denied actions. When all requirements are actually achieved, call update_goal with complete and evidence. If genuinely blocked by an external condition or required user input, call update_goal with blocked and explain why.`;
+        const continuation = `The user goal is still active: ${this.runtime.goal.current.objective}\nContinue the unfinished work using the results already obtained. Do not repeat completed work or denied actions. When all requirements are actually achieved, call update_goal with complete and evidence. If genuinely blocked by an external condition or required user input, call update_goal with blocked and explain why.\n${goalReportingInstructions}`;
         let nextPrompt = continuation;
         if (this.contextTokens + estimateTokens(continuation) > this.config.context.maxTokens * 0.8 && this.turnCount > 0) {
           await this.compactConversation(controller.signal);
