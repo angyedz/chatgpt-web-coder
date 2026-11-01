@@ -85,6 +85,7 @@ export type HarnessEvent =
     }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
   | { type: "update-selection"; pending?: { kind: "download" | "local" | "rollback"; version: string } }
+  | { type: "mcp-refresh"; reminder?: { name: string; result: "changed" | "unknown" } }
   | { type: "approval"; request: ApprovalRequest }
   | { type: "approval-resolved"; id: string; allowed: boolean }
   | { type: "turn-start"; turnId: string }

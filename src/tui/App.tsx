@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useWindowSize } from "ink";
+import wrapAnsi from "wrap-ansi";
 import type { Orchestrator } from "../agent/orchestrator.js";
 import type {
   ApprovalRequest,
@@ -61,6 +62,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   }));
   const [session, setSession] = useState<SessionInfo | undefined>();
   const [pendingUpdate, setPendingUpdate] = useState<{ kind: "download" | "local" | "rollback"; version: string } | undefined>();
+  const [connectorRefresh, setConnectorRefresh] = useState(() => orchestrator.connectorRefresh);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const approval = approvals[0];
   const [busy, setBusy] = useState(false);
@@ -232,6 +234,10 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setPendingUpdate(event.pending);
           break;
 
+        case "mcp-refresh":
+          setConnectorRefresh(event.reminder);
+          break;
+
         case "session":
           setSession(event.session);
           break;
@@ -322,6 +328,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     });
     setStatus((current) => ({ ...current, ...orchestrator.serviceStatuses }));
     setPhase((current) => orchestrator.currentPhase ?? current);
+    setConnectorRefresh(orchestrator.connectorRefresh);
     return unsubscribe;
   }, [orchestrator, exit]);
 
@@ -354,6 +361,11 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
 
     if (key.ctrl && input === "d") {
       void orchestrator.showStatus();
+      return;
+    }
+
+    if (key.ctrl && input === "r" && connectorRefresh) {
+      void orchestrator.dismissConnectorRefresh();
       return;
     }
 
@@ -405,10 +417,16 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const showAttachments = pendingAttachments.length > 0 && rows >= 12 && !approval;
   const maxPlanSteps = displayedPlan.length && !approval && rows >= 17 ? (rows < 24 ? 1 : 3) : 0;
   const shownNotices = rows >= 20 && !approval ? displayedNotices.slice(-2) : [];
+  const refreshLines = connectorRefresh && rows >= 12 && !approval ? [
+    connectorRefresh.result === "changed" ? "MCP tools changed · refresh the ChatGPT connector" : "Could not compare MCP tools · check the ChatGPT connector",
+    "ChatGPT account settings → Plugins → ⚙ (gear)",
+    `Select ${terminalText(connectorRefresh.name)} → scroll down → Refresh tools`,
+    "Ctrl+R to dismiss",
+  ].flatMap((line) => wrapAnsi(line, Math.max(1, columns - 4), { hard: true }).split("\n")) : [];
   const chrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
     + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showGoal ? 1 : 0) + (showAttachments ? 1 : 0) + shownNotices.length
     + (maxPlanSteps ? 2 + Math.min(displayedPlan.length, maxPlanSteps) : 0)
-    + (approval ? approvalHeight(approval, columns, rows) : 0);
+    + (approval ? approvalHeight(approval, columns, rows) : 0) + refreshLines.length;
   const transcriptHeight = Math.max(0, rows - chrome);
 
   return (
@@ -487,6 +505,10 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           <Text color={theme.dim} wrap="truncate-end"><Text bold color={theme.warn}>◇ Approval required: /update apply</Text>{`  ·  ${displayedUpdate.kind === "download" ? "Downloaded" : displayedUpdate.kind === "rollback" ? "Rollback" : "Selected"} ${terminalText(displayedUpdate.version)}  ·  /update cancel`}</Text>
         </Box>
       ) : null}
+
+      {refreshLines.length ? <Box flexDirection="column" paddingX={2} flexShrink={0}>
+        {refreshLines.map((line, index) => <Text key={index} color={index === 0 ? theme.warn : theme.dim} wrap="truncate-end">{line}</Text>)}
+      </Box> : null}
 
       {showInput ? <InputBar
         key={localSessionId}

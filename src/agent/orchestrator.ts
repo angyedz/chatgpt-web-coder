@@ -16,7 +16,7 @@ import { formatInstructions, projectInstructions } from "../runtime/instructions
 import { SessionStore, sessionHandoff, type SavedSession, type SessionJob } from "../runtime/sessions.js";
 import type { ConnectionState, TurnPhase } from "../types.js";
 import { installTunnelClient } from "../runtime/install-tunnel.js";
-import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, prepareRollback, prepareUpdate, updateLog, type PendingUpdate } from "../runtime/updates.js";
+import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, prepareRollback, prepareUpdate, updateLog, mcpRefreshAfterUpdate, mcpRefreshOnStartup, dismissMcpRefresh, type McpRefreshReminder, type PendingUpdate } from "../runtime/updates.js";
 import { APP_VERSION } from "../runtime/version.js";
 import { latestGithubRelease, prepareGithubUpdate, validateGithubRepository, type GithubRelease } from "../runtime/github-updates.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -48,6 +48,8 @@ export class Orchestrator {
   private readonly timerOwners = new Map<string, string>();
   private phaseState: TurnPhase = "idle";
   private pendingUpdate?: PendingUpdate;
+  private mcpRefreshReminder?: McpRefreshReminder;
+  private mcpRefreshScan = 0;
   private updateOperation?: Promise<void>;
   private btwController?: AbortController;
   private btwBrowser?: ChatGptBrowser;
@@ -110,12 +112,35 @@ export class Orchestrator {
 
   get currentSession(): SavedSession { return this.sessions.snapshot; }
 
+  get connectorRefresh(): { name: string; result: "changed" | "unknown" } | undefined {
+    return this.mcpRefreshReminder ? { name: this.config.browser.connectorName || "chatgpt-coder", result: this.mcpRefreshReminder.result } : undefined;
+  }
+
+  async dismissConnectorRefresh(): Promise<void> {
+    if (!this.mcpRefreshReminder) return;
+    try {
+      await dismissMcpRefresh(this.mcpRefreshReminder);
+      this.mcpRefreshReminder = undefined;
+      this.events.emit({ type: "mcp-refresh" });
+    } catch (error) {
+      this.events.emit({ type: "notice", level: "error", text: `Could not dismiss MCP reminder: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+
   get sessionStartupNotice(): string | undefined { return this.startupSessionNotice; }
 
   get serviceStatuses(): Record<string, { state: ConnectionState; detail?: string }> { return { ...this.serviceState }; }
   get currentPhase(): TurnPhase { return this.phaseState; }
 
   async start(): Promise<void> {
+    if (process.env.CHATGPT_CODER_INSTALL_DIR && this.config.browser.attachConnector) {
+      const scan = ++this.mcpRefreshScan;
+      void mcpRefreshOnStartup().then((reminder) => {
+        if (scan !== this.mcpRefreshScan || this.shuttingDown) return;
+        this.mcpRefreshReminder = reminder;
+        this.events.emit({ type: "mcp-refresh", reminder: this.connectorRefresh });
+      }).catch(() => undefined);
+    }
     try {
       const restored = await this.sessions.initialize();
       this.runtime.attachments.restore(this.sessions.id, this.sessions.snapshot.attachments);
@@ -958,6 +983,18 @@ export class Orchestrator {
       this.events.emit({ type: "update-selection" });
       this.events.emit({ type: "notice", level: "info", text: `${pending.kind === "rollback" ? "Rollback" : "Update"} installed. Restart chatgpt-coder to use version ${pending.version}.` });
       output(`${pending.kind === "rollback" ? "Rollback" : "Update"} to ${pending.version} installed. Exit and restart chatgpt-coder to load it. The current process is still running the previous version.`);
+      if (this.config.browser.attachConnector) {
+        const scan = ++this.mcpRefreshScan;
+        try {
+          const reminder = await mcpRefreshAfterUpdate(pending);
+          if (scan === this.mcpRefreshScan) {
+            this.mcpRefreshReminder = reminder;
+            this.events.emit({ type: "mcp-refresh", reminder: this.connectorRefresh });
+          }
+        } catch {
+          this.events.emit({ type: "notice", level: "warn", text: "Update installed, but MCP tools could not be compared. Check the connector's Refresh tools setting after restarting." });
+        }
+      }
       return;
     }
     if (command === "status") {

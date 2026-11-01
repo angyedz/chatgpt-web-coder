@@ -17,6 +17,74 @@ export interface UpdatePackage { kind: "package"; version: string; source: strin
 export interface UpdateRollback { kind: "rollback"; version: string; targetRelease: string; installation: Installation }
 export type PendingUpdate = UpdatePackage | UpdateRollback;
 
+export interface McpRefreshReminder {
+  root: string;
+  from: string;
+  to: string;
+  result: "changed" | "unknown";
+}
+
+const toolFingerprintScript = `
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+const app = process.argv[1];
+const { toolDefinitions } = await import(pathToFileURL(path.join(app, 'dist', 'tools', 'index.js')).href);
+const { z } = await import(pathToFileURL(path.join(app, 'node_modules', 'zod', 'index.js')).href);
+const sort = (v) => Array.isArray(v) ? v.map(sort) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, sort(x)])) : v;
+const manifest = toolDefinitions.map(t => ({ name: t.name, title: t.title, description: t.description, annotations: t.annotations, inputSchema: z.toJSONSchema(z.object(t.inputSchema), { target: 'draft-7', io: 'input' }) })).sort((a, b) => a.name.localeCompare(b.name));
+process.stdout.write(createHash('sha256').update(JSON.stringify(sort(manifest))).digest('hex'));
+`;
+
+async function toolFingerprint(root: string, release: string): Promise<string> {
+  if (!/^[0-9a-f]{32}$/.test(release)) throw new Error("Invalid release identifier.");
+  const app = path.join(root, "releases", release, "app");
+  const result = await runChild(process.execPath, ["--input-type=module", "-e", toolFingerprintScript, app], undefined, 15_000);
+  const value = result.stdout.trim();
+  if (result.code !== 0 || !/^[0-9a-f]{64}$/.test(value)) throw new Error("Could not compare MCP tool metadata.");
+  return value;
+}
+
+function reminderPath(reminder: Pick<McpRefreshReminder, "root" | "from" | "to">): string {
+  if (!/^[0-9a-f]{32}$/.test(reminder.from) || !/^[0-9a-f]{32}$/.test(reminder.to)) throw new Error("Invalid release identifier.");
+  const installationKey = createHash("sha256").update(path.resolve(reminder.root).toLowerCase()).digest("hex").slice(0, 16);
+  return path.join(harnessHome(), "updates", "mcp-refresh", `${installationKey}-${reminder.from}-${reminder.to}.ack`);
+}
+
+async function compareMcpTools(root: string, from: string, to: string): Promise<McpRefreshReminder | undefined> {
+  if (from === to) return undefined;
+  const reminder: McpRefreshReminder = { root, from, to, result: "unknown" };
+  try { if ((await readFile(reminderPath(reminder), "utf8")) === "dismissed") return undefined; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  try {
+    const [before, after] = await Promise.all([toolFingerprint(root, from), toolFingerprint(root, to)]);
+    if (before === after) return undefined;
+    reminder.result = "changed";
+  } catch { /* An unknown comparison must not be presented as a confirmed change. */ }
+  return reminder;
+}
+
+export async function mcpRefreshAfterUpdate(pending: PendingUpdate): Promise<McpRefreshReminder | undefined> {
+  const { root, release: from } = pending.installation;
+  const to = (await readFile(path.join(root, "current.txt"), "utf8")).trim();
+  if (!/^[0-9a-f]{32}$/.test(to)) throw new Error("Invalid installed release identifier.");
+  return compareMcpTools(root, from, to);
+}
+
+export async function mcpRefreshOnStartup(): Promise<McpRefreshReminder | undefined> {
+  const current = await installation();
+  const file = path.join(current.root, "releases", current.release, "release.json");
+  const metadata = JSON.parse((await readFile(file, "utf8")).replace(/^\uFEFF/, "")) as { previous?: unknown };
+  if (typeof metadata.previous !== "string" || !/^[0-9a-f]{32}$/.test(metadata.previous)) return undefined;
+  return compareMcpTools(current.root, metadata.previous, current.release);
+}
+
+export async function dismissMcpRefresh(reminder: McpRefreshReminder): Promise<void> {
+  const file = reminderPath(reminder);
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, "dismissed", { encoding: "utf8", mode: 0o600 });
+}
+
 async function installation(): Promise<Installation> {
   if (process.platform !== "win32") throw new Error("Local update files are supported by the Windows installation.");
   const root = process.env.CHATGPT_CODER_INSTALL_DIR;
@@ -229,9 +297,9 @@ async function cleanupStaging(source: string): Promise<void> {
   await rm(resolved, { recursive: true, force: true });
 }
 
-async function runChild(executable: string, args: string[], report?: (message: string) => void): Promise<{ code: number | null; output: string; stdout: string; stderr: string }> {
+async function runChild(executable: string, args: string[], report?: (message: string) => void, timeout?: number): Promise<{ code: number | null; output: string; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(executable, args, { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], timeout });
     let output = "";
     let stdoutText = "";
     let stderrText = "";
