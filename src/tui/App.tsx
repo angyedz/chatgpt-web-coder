@@ -19,6 +19,7 @@ import { InputBar } from "./components/InputBar.js";
 import { PlanPanel } from "./components/PlanPanel.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { Transcript } from "./components/Transcript.js";
+import { TaskSidebar } from "./components/TaskSidebar.js";
 import { theme } from "./theme.js";
 import { terminalText } from "./terminal-text.js";
 import { useMouseWheel } from "./useMouseWheel.js";
@@ -425,10 +426,15 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
     `Select ${terminalText(connectorRefresh.name)} → scroll down → Refresh tools`,
     "Ctrl+R to dismiss",
   ].flatMap((line) => wrapAnsi(line, Math.max(1, columns - 4), { hard: true }).split("\n")) : [];
-  const chrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
-    + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showGoal ? 1 : 0) + (showAttachments ? 1 : 0) + shownNotices.length
-    + (maxPlanSteps ? 2 + Math.min(displayedPlan.length, maxPlanSteps) : 0)
+  const baseChrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
+    + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showAttachments ? 1 : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0) + refreshLines.length;
+  const showSidebar = columns >= 130 && rows >= 22 && !approval && rows - baseChrome >= 10
+    && Boolean(displayedGoal || displayedPlan.length || showJobs || shownNotices.some((notice) => notice.level !== "info"));
+  const sidebarWidth = showSidebar ? Math.min(56, Math.max(36, Math.floor(columns / 3))) : 0;
+  const chatWidth = columns - sidebarWidth;
+  const chrome = baseChrome + (showSidebar ? 0 : (showJobs ? 1 : 0) + (showGoal ? 1 : 0) + shownNotices.length
+    + (maxPlanSteps ? 2 + Math.min(displayedPlan.length, maxPlanSteps) : 0));
   const transcriptHeight = Math.max(0, rows - chrome);
   useMouseWheel({ top: showHeader ? 3 : 0, height: transcriptHeight, width: columns }, (direction) => {
     setScrollOffset((current) => Math.max(0, Math.min(scrollLimit, current + direction * 3)));
@@ -448,16 +454,31 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
         status={status}
       /> : null}
 
-      {transcriptHeight > 0 ? <Transcript
-        messages={visibleMessages}
-        tools={showSystemLog ? noTools : tools}
-        systemView={showSystemLog}
-        height={transcriptHeight}
-        scrollOffset={scrollOffset}
-        onScrollLimit={setScrollLimit}
-      /> : null}
+      {transcriptHeight > 0 ? <Box width={columns} height={transcriptHeight} flexShrink={0}>
+        <Box width={chatWidth} height={transcriptHeight} flexShrink={0}>
+          <Transcript
+            messages={visibleMessages}
+            tools={showSystemLog ? noTools : tools}
+            systemView={showSystemLog}
+            width={chatWidth}
+            height={transcriptHeight}
+            scrollOffset={scrollOffset}
+            onScrollLimit={setScrollLimit}
+          />
+        </Box>
+        {showSidebar ? <TaskSidebar
+          width={sidebarWidth}
+          height={transcriptHeight}
+          goal={displayedGoal}
+          steps={displayedPlan}
+          notices={shownNotices}
+          jobs={displayedJobCount}
+          timers={timerCount}
+          nextTimerSeconds={nextTimerSeconds}
+        /> : null}
+      </Box> : null}
 
-      {showJobs ? (
+      {showJobs && !showSidebar ? (
         <Box paddingX={2} gap={2} flexShrink={0}>
           {timerCount ? <Text color={theme.accent} wrap="truncate-end">◷ {timerCount} timer{timerCount === 1 ? "" : "s"} · {nextTimerSeconds}s</Text> : null}
           {displayedJobCount ? <Text color={theme.accentAlt} wrap="truncate-end">◉ {displayedJobCount} background job{displayedJobCount === 1 ? "" : "s"}</Text> : null}
@@ -465,7 +486,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
         </Box>
       ) : null}
 
-      {shownNotices.length > 0 ? (
+      {shownNotices.length > 0 && !showSidebar ? (
         <Box flexDirection="column" paddingX={2} flexShrink={0}>
           {shownNotices.map((notice) => (
             <Box key={notice.id} gap={1}>
@@ -500,9 +521,9 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
 
       {showAttachments ? <Box paddingX={2} flexShrink={0}><Text color={theme.accentAlt} wrap="truncate-end">◇ {pendingAttachments.length} attached · {oneLine(terminalText(pendingAttachments.map((item) => item.name).join(" · ")), Math.max(8, columns - 35))} <Text color={theme.dim}>/attachments</Text></Text></Box> : null}
 
-      {showGoal && displayedGoal ? <Box paddingX={2} flexShrink={0}><Text color={displayedGoal.status === "active" ? theme.accent : displayedGoal.status === "complete" ? theme.ok : theme.warn} wrap="truncate-end">◇ GOAL · {displayedGoal.status} · {oneLine(terminalText(displayedGoal.objective), Math.max(10, columns - 30))}</Text></Box> : null}
+      {showGoal && displayedGoal && !showSidebar ? <Box paddingX={2} flexShrink={0}><Text color={displayedGoal.status === "active" ? theme.accent : displayedGoal.status === "complete" ? theme.ok : theme.warn} wrap="truncate-end">◇ GOAL · {displayedGoal.status} · {oneLine(terminalText(displayedGoal.objective), Math.max(10, columns - 30))}</Text></Box> : null}
 
-      <PlanPanel steps={displayedPlan} maxVisible={maxPlanSteps} />
+      {!showSidebar ? <PlanPanel steps={displayedPlan} maxVisible={maxPlanSteps} /> : null}
 
       {approval ? <ApprovalPrompt request={approval} /> : null}
 

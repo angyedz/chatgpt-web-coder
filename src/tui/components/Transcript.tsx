@@ -15,6 +15,7 @@ interface TranscriptProps {
   messages: ChatMessage[];
   tools: ToolCallView[];
   height: number;
+  width?: number;
   systemView?: boolean;
   scrollOffset?: number;
   onScrollLimit?: (limit: number) => void;
@@ -29,8 +30,9 @@ interface Row {
   railColor?: string;
 }
 
-export const Transcript = React.memo(function Transcript({ messages, tools, height, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
-  const { columns = 80 } = useWindowSize();
+export const Transcript = React.memo(function Transcript({ messages, tools, height, width: viewportWidth, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
+  const { columns: terminalColumns = 80 } = useWindowSize();
+  const columns = viewportWidth ?? terminalColumns;
   const [frame, setFrame] = useState(0);
   const messageRows = useRef(new WeakMap<ChatMessage, { text: string; width: number; spaced: boolean; rows: Row[] }>());
   const toolRows = useRef(new WeakMap<ToolCallView, { width: number; spaced: boolean; grouped: boolean; frame: number; rows: Row[] }>());
