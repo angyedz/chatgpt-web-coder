@@ -14,15 +14,17 @@ export interface PromptOptions {
   goal?: Goal;
 }
 
-export const goalReportingInstructions = `If update_goal is not exposed by the connector, use update_plan as a compatibility fallback: to report a real blocker, call update_plan with exactly {"steps":[{"step":"[HARNESS_GOAL:blocked] <concrete blocker>","status":"pending"}]}; to report an achieved goal, use {"steps":[{"step":"[HARNESS_GOAL:complete] <concrete evidence>","status":"pending"}]}. Replace the angle-bracket text with a specific explanation of at least 10 characters. This special call reports the goal outcome without replacing the plan. Only treat the update as successful if the tool result confirms "Goal blocked" or "Goal complete"; if it says "Plan updated" or returns an error, the goal was not updated. Never report completion for unfinished work or retry denied actions.`;
+export const goalReportingInstructions = `If update_goal is not exposed by the connector, use update_plan as a compatibility fallback: to report a real blocker, call update_plan with exactly {"steps":[{"step":"[HARNESS_GOAL:blocked] <concrete blocker>","status":"pending"}]}; to report an achieved goal, use {"steps":[{"step":"[HARNESS_GOAL:complete] <concrete evidence>","status":"pending"}]}. Replace the angle-bracket text with a specific explanation of at least 10 characters. This special call reports the goal outcome without replacing the plan. Only treat the update as successful if the tool result confirms "Goal blocked" or "Goal complete"; if it says "Plan updated" or returns an error, the goal was not updated. Never report completion for unfinished work.`;
+
+const approvalInstructions = (mode: HarnessConfig["approvalMode"]) => `Approval mode ${mode}: ask requests confirmation for ordinary operations; never runs ordinary operations without prompting, not a restriction. Do not retry an action explicitly denied by the user unless the user explicitly asks to reconsider that action. For such a retry using exec_command, ssh_exec, ssh_upload or ssh_download, set require_approval=true and wait for the user's decision even in never mode. This confirmation applies only to that call and does not change the mode. If that parameter is unavailable, ask the user to refresh connector tools or switch to /approval ask before retrying; do not bypass a denial.`;
 
 export async function buildPrompt(options: PromptOptions): Promise<string> {
   const { userText, turnId, firstTurn, config, contextSummary, goal } = options;
   // The full contract is already present in this Web chat. Re-inserting it on
   // every message makes large prompts expensive for ChatGPT's editor.
   if (!firstTurn) {
-    const activeGoal = goal?.status === "active" ? `\nACTIVE USER GOAL\n${goal.objective}\nContinue until achieved, then call update_goal with complete and evidence; if genuinely blocked, call update_goal with blocked. Do not repeat denied actions.\n${goalReportingInstructions}\n` : "";
-    return `Continue this conversation using the existing connector and instructions. Project instructions and skills can change: consult get_project_instructions and list_skills when relevant.\nTurn: ${turnId}\n${activeGoal}\nUSER REQUEST\n${userText}`;
+    const activeGoal = goal?.status === "active" ? `\nACTIVE USER GOAL\n${goal.objective}\nContinue until achieved, then call update_goal with complete and evidence; if genuinely blocked, call update_goal with blocked.\n${goalReportingInstructions}\n` : "";
+    return `Continue this conversation using the existing connector and instructions. Project instructions and skills can change: consult get_project_instructions and list_skills when relevant.\nTurn: ${turnId}\n${approvalInstructions(config.approvalMode)}\n${activeGoal}\nUSER REQUEST\n${userText}`;
   }
   const [instructions, skills] = await Promise.all([projectInstructions(config.workspace), discoverSkills(config)]);
   const agents = formatInstructions(instructions);
@@ -47,7 +49,7 @@ RULES
 4. Commands must be non-interactive (flags like --yes, CI=1, no editors). Start persistent servers only as background sessions. Use start_background_task for another tool that should continue independently, and get_background_task for its result. Never claim an unfinished background task is complete.
 5. Use update_plan for tasks with 3+ steps. Mark exactly one step in_progress.
 6. Use web_search (SearXNG) for current external information and web_fetch to read a page. Do not use it to inspect the local repository.
-7. If a tool is denied or fails, report its actual error and whether the command started. Distinguish a user denial, approval timeout, cancellation, and a process exit; never invent a security rule or infer the cause without evidence. Continue with a safe alternative when appropriate. Do not retry the identical denied action.
+7. If a tool is denied or fails, report its actual error and whether the command started. Distinguish a user denial, approval timeout, cancellation, and a process exit; never invent a security rule or infer the cause without evidence. Continue with a safe alternative when appropriate. ${approvalInstructions(config.approvalMode)}
 8. Make the smallest correct change. Do not rewrite unrelated code.
 9. When finished, give a short summary: what changed, which checks ran, and any remaining risk.`;
   const timerRules = `\n10. Use set_timer for reminders or explicitly requested scheduled shell commands; it requests approval when scheduling a command. Timers and background jobs run only while the harness is open. Use timeout_ms on exec_command when a command needs a time limit.
@@ -72,7 +74,7 @@ RULES
   const memory = contextSummary?.trim()
     ? `\n\nCOMPACTED PROJECT CONVERSATION MEMORY\nTreat this as the reliable summary of earlier turns in this same task. Preserve decisions, files changed, commands/checks already run, and unresolved work.\n${contextSummary.trim()}`
     : "";
-  const goalBlock = goal?.status === "active" ? `\n\nACTIVE USER GOAL\n${goal.objective}\nWork autonomously until this objective is achieved. After completing all required work, call update_goal with status complete and concrete evidence. If an external condition or user input truly prevents progress, call update_goal with status blocked and explain it. Do not claim completion for partial work; do not retry denied actions. The harness will continue the goal if you stop without reporting an outcome.\n${goalReportingInstructions}` : "";
+  const goalBlock = goal?.status === "active" ? `\n\nACTIVE USER GOAL\n${goal.objective}\nWork autonomously until this objective is achieved. After completing all required work, call update_goal with status complete and concrete evidence. If an external condition or user input truly prevents progress, call update_goal with status blocked and explain it. Do not claim completion for partial work. The harness will continue the goal if you stop without reporting an outcome.\n${goalReportingInstructions}` : "";
 
   return `${contract}${timerRules}
 
