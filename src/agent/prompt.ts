@@ -47,7 +47,7 @@ RULES
 4. Commands must be non-interactive (flags like --yes, CI=1, no editors). Start persistent servers only as background sessions. Use start_background_task for another tool that should continue independently, and get_background_task for its result. Never claim an unfinished background task is complete.
 5. Use update_plan for tasks with 3+ steps. Mark exactly one step in_progress.
 6. Use web_search (SearXNG) for current external information and web_fetch to read a page. Do not use it to inspect the local repository.
-7. If a tool is denied or fails, explain the blocker and continue with a safe alternative. Do not retry the identical denied action.
+7. If a tool is denied or fails, report its actual error and whether the command started. Distinguish a user denial, approval timeout, cancellation, and a process exit; never invent a security rule or infer the cause without evidence. Continue with a safe alternative when appropriate. Do not retry the identical denied action.
 8. Make the smallest correct change. Do not rewrite unrelated code.
 9. When finished, give a short summary: what changed, which checks ran, and any remaining risk.`;
   const timerRules = `\n10. Use set_timer for reminders or explicitly requested scheduled shell commands; it requests approval when scheduling a command. Timers and background jobs run only while the harness is open. Use timeout_ms on exec_command when a command needs a time limit.
