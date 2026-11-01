@@ -7,11 +7,13 @@ import { TimerManager } from "./timers.js";
 import { BackgroundTaskManager } from "./tasks.js";
 import type { ToolContext } from "../tools/types.js";
 import { ExternalMcpManager } from "../mcp/client.js";
+import { GoalStore } from "./goals.js";
 
 export interface Runtime {
   events: HarnessEvents;
   approvals: ApprovalManager;
   plan: PlanStore;
+  goal: GoalStore;
   exec: ExecSessionManager;
   timers: TimerManager;
   tasks: BackgroundTaskManager;
@@ -26,6 +28,7 @@ export function createRuntime(
 ): Runtime {
   const approvals = new ApprovalManager(events, config.approvalMode);
   const plan = new PlanStore(events);
+  const goal = new GoalStore(events);
   const exec = new ExecSessionManager(config.maxOutputChars, events);
   const timers = new TimerManager(events);
   const tasks = new BackgroundTaskManager(events);
@@ -36,11 +39,12 @@ export function createRuntime(
     events,
     approvals,
     plan,
+    goal,
     exec,
     timers,
     tasks,
     externalMcp,
     turnId,
   };
-  return { events, approvals, plan, exec, timers, tasks, externalMcp, context };
+  return { events, approvals, plan, goal, exec, timers, tasks, externalMcp, context };
 }

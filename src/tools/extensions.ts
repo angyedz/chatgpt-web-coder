@@ -8,6 +8,24 @@ const serverField = z.string().min(1).describe("Configured MCP server name from 
 
 export const extensionTools: ToolDefinition[] = [
   {
+    name: "get_goal", title: "Read the current goal",
+    description: "Read the user-started goal and its status. A goal is created only by the user.",
+    inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false },
+    handler: async (_args, ctx) => text(ctx.goal.current ? JSON.stringify(ctx.goal.current) : "No goal in this session."),
+  },
+  {
+    name: "update_goal", title: "Report the goal outcome",
+    description: "Mark the active goal complete only after the objective is actually achieved, or blocked only when an external condition or user input prevents further work. Give concrete evidence or the blocker. Never claim completion for unfinished work.",
+    inputSchema: { status: z.enum(["complete", "blocked"]), detail: z.string().min(10).describe("Evidence of completion or the concrete blocker.") },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+    handler: async (args, ctx) => {
+      if (ctx.goal.current?.status !== "active") return errorText("There is no active goal. Only the user can start or resume one.");
+      if (args.status === "complete" && (ctx.plan.current.some((step) => step.status !== "completed") || ctx.tasks.list().some((task) => task.status === "running") || ctx.approvals.pendingRequests.length)) return errorText("Cannot complete a goal while its plan, background tool tasks, or approvals are unfinished.");
+      ctx.goal.setStatus(args.status as "complete" | "blocked", String(args.detail));
+      return text(`Goal ${String(args.status)}: ${String(args.detail)}`);
+    },
+  },
+  {
     name: "get_project_instructions", title: "Read applicable AGENTS.md files",
     description: "Read AGENTS.md instructions from workspace ancestors down to the directory containing the given workspace path. Call before working in a directory, especially before editing files; deeper instructions apply only within their directory.",
     inputSchema: { path: z.string().optional().describe("Workspace file or directory; default '.'.") },

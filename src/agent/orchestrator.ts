@@ -19,6 +19,7 @@ import { installTunnelClient } from "../runtime/install-tunnel.js";
 import { applyUpdate, checkUpdateAvailability, chooseUpdateFile, discardUpdate, prepareRollback, prepareUpdate, updateLog, type PendingUpdate } from "../runtime/updates.js";
 import { APP_VERSION } from "../runtime/version.js";
 import { latestGithubRelease, prepareGithubUpdate, validateGithubRepository, type GithubRelease } from "../runtime/github-updates.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 export class Orchestrator {
   readonly events = new HarnessEvents();
@@ -36,6 +37,8 @@ export class Orchestrator {
   private contextSummary = "";
   private shuttingDown = false;
   private planRevision = 0;
+  private goalActionRevision = 0;
+  private readonly goalActions = new Set<string>();
   private startupSessionNotice?: string;
   private readonly serviceState: Record<string, { state: ConnectionState; detail?: string }> = {};
   private readonly jobOwners = new Map<string, string>();
@@ -62,9 +65,21 @@ export class Orchestrator {
       if (event.type === "tool-end") {
         this.contextTokens += estimateTokens(JSON.stringify(event.call.args ?? ""));
         this.contextTokens += estimateTokens(event.call.output ?? event.call.error ?? "");
+        if (this.runtime.goal.current?.status === "active" && !["get_goal", "update_goal", "update_plan"].includes(event.call.name)) {
+          const signature = JSON.stringify([event.call.name, event.call.args, event.call.status, event.call.output, event.call.error]);
+          if (!this.goalActions.has(signature)) { this.goalActions.add(signature); this.goalActionRevision += 1; }
+          if (this.goalActions.size > 500) this.goalActions.delete(this.goalActions.values().next().value!);
+        }
+      }
+      if (event.type === "approval-resolved" && !event.allowed && this.runtime.goal.current?.status === "active") {
+        this.runtime.goal.setStatus("paused", "An approval was denied or timed out. Review the request before /goal resume.");
+        this.cancel();
       }
       if (event.type === "plan") this.planRevision += 1;
       this.sessions.record(event);
+      if (event.type === "goal" && this.busy && event.goal && ["complete", "blocked", "paused"].includes(event.goal.status)) {
+        this.events.emit({ type: "notice", level: event.goal.status === "complete" ? "info" : "warn", text: `Goal ${event.goal.status}${event.goal.detail ? `: ${event.goal.detail}` : ""}` });
+      }
       if (["tool-end", "turn-end"].includes(event.type) || (event.type === "notice" && !event.text.startsWith("Session save failed:"))) this.captureSessionRuntime();
       if (event.type === "turn-end") void this.sessions.flush().catch(() => undefined);
     });
@@ -94,6 +109,7 @@ export class Orchestrator {
       const restored = await this.sessions.initialize();
       if (restored) {
         const session = this.sessions.snapshot;
+        this.runtime.goal.restore(session.goal);
         this.contextSummary = sessionHandoff(session);
         this.contextTokens = estimateTokens(this.contextSummary);
         this.runtime.plan.update(session.plan);
@@ -153,6 +169,7 @@ export class Orchestrator {
 
   cancel(): void {
     if (!this.currentTurn || this.currentTurn.signal.aborted) return;
+    if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", "Stopped by the user. Use /goal resume to continue.");
     this.currentTurn.abort();
     this.runtime.approvals.denyForeground();
     this.events.emit({ type: "phase", phase: "cancelling" });
@@ -187,6 +204,7 @@ export class Orchestrator {
     await this.updateOperation?.catch(() => undefined);
     await discardUpdate(this.pendingUpdate);
     this.pendingUpdate = undefined;
+    if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", "Harness closed. Use /goal resume to continue.");
     this.currentTurn?.abort();
     this.captureSessionRuntime();
     await this.sessions.flush().catch(() => undefined);
@@ -246,8 +264,9 @@ export class Orchestrator {
 
   private async runTurn(text: string): Promise<void> {
     this.busy = true;
+    const goalTurn = this.runtime.goal.current?.status === "active";
     const previousSession = this.sessions.snapshot;
-    if (!this.browser.isOpen && previousSession.messages.some((message) => message.role === "user")) {
+    if ((!this.browser.isOpen || this.config.browser.newChatPerTurn) && previousSession.messages.some((message) => message.role === "user")) {
       this.contextSummary = sessionHandoff(previousSession);
       this.contextTokens = estimateTokens(this.contextSummary);
       this.turnCount = 0;
@@ -272,6 +291,7 @@ export class Orchestrator {
         firstTurn: this.turnCount === 0,
         config: this.config,
         contextSummary: this.contextSummary,
+        goal: this.runtime.goal.current,
       });
       if (this.contextTokens + estimateTokens(prompt) > this.config.context.maxTokens * 0.8 && this.turnCount > 0) {
         await this.compactConversation(controller.signal);
@@ -282,6 +302,7 @@ export class Orchestrator {
           firstTurn: true,
           config: this.config,
           contextSummary: this.contextSummary,
+          goal: this.runtime.goal.current,
         });
       }
       this.contextTokens += estimateTokens(prompt);
@@ -292,11 +313,38 @@ export class Orchestrator {
       const continuationIsSafe = () => unfinishedPlan() &&
         this.runtime.approvals.pendingRequests.length === 0 &&
         !this.runtime.tasks.list().some((task) => task.status === "running");
-      let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: continuationIsSafe });
+      const goalRecoveryIsSafe = () => this.runtime.goal.current?.status === "active" && this.runtime.approvals.pendingRequests.length === 0 && !this.runtime.tasks.list().some((task) => task.status === "running");
+      let answer = await this.browser.send(prompt, controller.signal, { canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe });
       controller.signal.throwIfAborted();
       this.contextTokens += estimateTokens(answer);
+      let noProgress = 0;
+      let lastGoalActionRevision = this.goalActionRevision;
+      while (this.runtime.goal.current?.status === "active") {
+        while (this.runtime.goal.current?.status === "active" && (this.runtime.approvals.pendingRequests.length || this.runtime.tasks.list().some((task) => task.status === "running"))) await delay(1000, undefined, { signal: controller.signal });
+        if (this.runtime.goal.current?.status !== "active") break;
+        if (noProgress >= 3) {
+          this.runtime.goal.setStatus("blocked", "The agent stopped making progress after three continuations. Review the result and use /goal resume or provide new instructions.");
+          break;
+        }
+        this.events.emit({ type: "notice", level: "info", text: "Goal remains active; continuing the task…" });
+        const continuation = `The user goal is still active: ${this.runtime.goal.current.objective}\nContinue the unfinished work using the results already obtained. Do not repeat completed work or denied actions. When all requirements are actually achieved, call update_goal with complete and evidence. If genuinely blocked by an external condition or required user input, call update_goal with blocked and explain why.`;
+        let nextPrompt = continuation;
+        if (this.contextTokens + estimateTokens(continuation) > this.config.context.maxTokens * 0.8 && this.turnCount > 0) {
+          await this.compactConversation(controller.signal);
+          controller.signal.throwIfAborted();
+          nextPrompt = await buildPrompt({ userText: continuation, turnId, firstTurn: true, config: this.config, contextSummary: this.contextSummary, goal: this.runtime.goal.current });
+        }
+        this.contextTokens += estimateTokens(nextPrompt);
+        this.turnCount += 1;
+        answer = await this.browser.send(nextPrompt, controller.signal, { continueChat: true, canRecoverStall: goalRecoveryIsSafe });
+        controller.signal.throwIfAborted();
+        this.contextTokens += estimateTokens(answer);
+        if (this.goalActionRevision === lastGoalActionRevision) noProgress += 1;
+        else noProgress = 0;
+        lastGoalActionRevision = this.goalActionRevision;
+      }
       let continuations = 0;
-      while (this.browser.responseEndedAfterTool && continuationIsSafe() && continuations < 2) {
+      while (!goalTurn && this.browser.responseEndedAfterTool && continuationIsSafe() && continuations < 2) {
         continuations += 1;
         this.events.emit({ type: "notice", level: "info", text: `ChatGPT stopped after a tool call with the plan unfinished. Continuing the same task (${continuations}/2)…` });
         const continuation = "Your previous response stopped immediately after a tool call while the task plan is unfinished. Continue the same user request using the tool results already obtained. Do not repeat completed work or retry denied actions. If you are blocked or need user input, explain that instead. Update the plan and summarize the result when finished.";
@@ -305,7 +353,7 @@ export class Orchestrator {
         controller.signal.throwIfAborted();
         this.contextTokens += estimateTokens(answer);
       }
-      if (this.browser.responseEndedAfterTool && unfinishedPlan()) {
+      if (!goalTurn && this.browser.responseEndedAfterTool && unfinishedPlan()) {
         const reason = continuationIsSafe()
           ? "Automatic continuation reached its limit."
           : "A background task or approval is still pending, so automatic continuation was skipped.";
@@ -313,7 +361,7 @@ export class Orchestrator {
         return;
       }
       ok = true;
-      if (!answer.trim()) {
+      if (!answer.trim() && this.runtime.goal.current?.status !== "complete") {
         this.events.emit({
           type: "notice",
           level: "warn",
@@ -324,6 +372,7 @@ export class Orchestrator {
       const aborted =
         controller.signal.aborted ||
         (error instanceof Error && error.name === "AbortError");
+      if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", aborted ? "Stopped by the user. Use /goal resume to continue." : `Turn failed: ${error instanceof Error ? error.message : String(error)}. Review before /goal resume.`);
       if (aborted) {
         this.events.emit({
           type: "notice",
@@ -363,6 +412,7 @@ export class Orchestrator {
             "Commands\n",
             "Chats: /new · /clear · /model (list) · /model <number> · /effort (list) · /effort <number>",
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
+            "Goals: /goal <objective> · /goal status|resume|pause|cancel (Esc pauses while working)",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
             "Setup: /connect · /doctor · /login · /tunnel · /searxng <url> · /status (Ctrl+D while working)",
@@ -375,6 +425,36 @@ export class Orchestrator {
       case "new": {
         try { await this.switchSession("new"); }
         catch (error) { this.events.emit({ type: "notice", level: "error", text: `Session: ${error instanceof Error ? error.message : String(error)}` }); }
+        return;
+      }
+
+      case "goal": {
+        const action = argument.trim();
+        const goal = this.runtime.goal.current;
+        if (!action || action === "status") {
+          this.events.emit({ type: "system-message", id: newId("system"), text: goal ? `Goal · ${goal.status}\n\n${goal.objective}${goal.detail ? `\n\n${goal.detail}` : ""}` : "No goal. Start one with /goal <objective>." });
+        } else if (action === "pause") {
+          if (goal?.status === "active") this.runtime.goal.setStatus("paused", "Paused by the user.");
+          else this.events.emit({ type: "notice", level: "warn", text: "There is no active goal to pause." });
+        } else if (action === "cancel") {
+          if (goal && !["complete", "cancelled"].includes(goal.status)) this.runtime.goal.setStatus("cancelled", "Cancelled by the user.");
+          else this.events.emit({ type: "notice", level: "warn", text: "There is no unfinished goal to cancel." });
+        } else if (action === "resume") {
+          if (!goal || !["paused", "blocked"].includes(goal.status)) { this.events.emit({ type: "notice", level: "warn", text: "There is no paused or blocked goal to resume." }); return; }
+          this.goalActions.clear();
+          this.runtime.goal.setStatus("active");
+          await this.runTurn(`Continue the goal: ${goal.objective}. Review prior results and any interrupted actions before proceeding.`);
+        } else if (action === "start") {
+          this.events.emit({ type: "notice", level: "warn", text: "Usage: /goal start <objective>" });
+        } else {
+          if (goal && ["active", "paused", "blocked"].includes(goal.status)) { this.events.emit({ type: "notice", level: "warn", text: "Finish or cancel the current goal before starting another." }); return; }
+          const objective = action.startsWith("start ") ? action.slice(6).trim() : action;
+          if (!objective) { this.events.emit({ type: "notice", level: "warn", text: "Usage: /goal <objective>" }); return; }
+          this.goalActions.clear();
+          this.runtime.plan.clear();
+          this.runtime.goal.start(objective);
+          await this.runTurn(objective);
+        }
         return;
       }
 
@@ -864,6 +944,7 @@ export class Orchestrator {
     this.contextTokens = estimateTokens(this.contextSummary);
     this.turnCount = 0;
     this.runtime.plan.update(session.plan);
+    this.runtime.goal.restore(session.goal);
     this.events.emit({ type: "session-view", session: this.sessions.snapshot });
     this.events.emit({ type: "notice", level: "info", text: id === "new" ? "New local session created. The next message opens a fresh Web chat." : `Opened session ${session.id.slice(0, 8)}. The next message uses a fresh Web chat with a bounded handoff.` });
   }
@@ -989,6 +1070,7 @@ export class Orchestrator {
       const summary = await this.browser.send(
         "Create a compact, high fidelity handoff summary of this conversation for a fresh chat. Include the user's overall goal, requirements and preferences; confirmed facts; decisions and their reasons; files changed and important current code state; commands and checks already run with outcomes; unresolved tasks and next steps. Preserve names, paths, values and constraints. Omit chit chat. Do not call any tools or make changes. Reply only with the summary.",
         operationSignal,
+        { continueChat: true },
       );
       operationSignal.throwIfAborted();
       if (!summary.trim()) throw new Error("The model returned an empty context summary.");
@@ -998,7 +1080,7 @@ export class Orchestrator {
       operationSignal.throwIfAborted();
       this.contextTokens = estimateTokens(this.contextSummary);
       this.turnCount = 0;
-      this.runtime.plan.clear();
+      if (this.runtime.goal.current?.status !== "active") this.runtime.plan.clear();
       compacted = true;
       this.events.emit({ type: "notice", level: "info", text: `Context compacted. The previous chat was summarized and a fresh chat is ready (summary estimate: ${this.contextTokens.toLocaleString()} tokens).` });
     } catch (error) {

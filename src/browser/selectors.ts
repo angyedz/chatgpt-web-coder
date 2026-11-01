@@ -33,7 +33,7 @@ export const selectors = {
     '[data-message-author="assistant"]',
   ],
   userMessage: ['[data-message-author-role="user"]'],
-  markdown: [".markdown", '[class*="markdown"]'],
+  markdown: [".markdown", '[data-markdown-text-style="assistant-message"]', '.puik-root.not-markdown > [class*="_DilResponseRoot"]'],
   loginButton: [
     '[data-testid="login-button"]',
     'button:has-text("Log in")',

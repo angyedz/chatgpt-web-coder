@@ -1,5 +1,6 @@
 export type Role = "user" | "assistant" | "system";
 import type { SavedSession } from "./runtime/sessions.js";
+import type { Goal } from "./runtime/goals.js";
 
 export type ConnectionState = "off" | "starting" | "up" | "error";
 
@@ -71,6 +72,7 @@ export type HarnessEvent =
   | { type: "tool-start"; call: ToolCallView }
   | { type: "tool-end"; call: ToolCallView }
   | { type: "plan"; steps: PlanStep[] }
+  | { type: "goal"; goal?: Goal }
   | {
       type: "status";
       key: "browser" | "mcp" | "tunnel" | "searxng";

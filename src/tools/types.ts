@@ -7,6 +7,7 @@ import type { PlanStore } from "./plan.js";
 import type { TimerManager } from "../runtime/timers.js";
 import type { BackgroundTaskManager } from "../runtime/tasks.js";
 import type { ExternalMcpManager } from "../mcp/client.js";
+import type { GoalStore } from "../runtime/goals.js";
 
 export interface TextContent {
   type: "text";
@@ -32,6 +33,7 @@ export interface ToolContext {
   events: HarnessEvents;
   approvals: ApprovalManager;
   plan: PlanStore;
+  goal: GoalStore;
   exec: ExecSessionManager;
   timers: TimerManager;
   tasks: BackgroundTaskManager;

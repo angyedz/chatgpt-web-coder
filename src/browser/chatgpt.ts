@@ -28,6 +28,7 @@ export class ChatGptBrowser {
   private sawStopButton = false;
   private readonly pendingApprovals = new Set<string>();
   private lastProgressAt?: number;
+  private readonly appliedPicker: Partial<Record<PickerKind, string>> = {};
 
   constructor(
     private readonly config: BrowserConfig,
@@ -228,6 +229,8 @@ export class ChatGptBrowser {
       waitUntil: "domcontentloaded",
       timeout: this.config.navigationTimeoutMs,
     });
+    delete this.appliedPicker.model;
+    delete this.appliedPicker.effort;
     await this.ensureLoggedIn();
     await this.ensureTemporaryPersonalization();
     this.chatStarted = true;
@@ -244,11 +247,18 @@ export class ChatGptBrowser {
     this.chatStarted = false;
     this.submittedPrompt = "";
     this.lastProgressAt = undefined;
+    delete this.appliedPicker.model;
+    delete this.appliedPicker.effort;
   }
 
   async picker(kind: PickerKind, select?: string): Promise<{ choices: string[]; selected?: string; confirmed?: boolean }> {
     await this.ensureLoggedIn();
-    return readPicker(this.requirePage(), kind, select);
+    const result = await readPicker(this.requirePage(), kind, select);
+    if (result.selected) {
+      this.appliedPicker[kind] = result.selected;
+      if (kind === "model") delete this.appliedPicker.effort;
+    }
+    return result;
   }
 
   refreshSession(): void { this.emitSession(); }
@@ -262,8 +272,8 @@ export class ChatGptBrowser {
     signal.throwIfAborted();
     if (await this.firstVisible("stopButton")) throw new Error("ChatGPT is still generating a previous response. Wait or stop it in the browser before sending another request.");
     signal.throwIfAborted();
-    if (this.config.modelLabel.trim()) await this.picker("model", this.config.modelLabel);
-    if (this.config.effortLabel.trim()) await this.picker("effort", this.config.effortLabel);
+    if (this.config.modelLabel.trim() && this.appliedPicker.model !== this.config.modelLabel) await this.picker("model", this.config.modelLabel);
+    if (this.config.effortLabel.trim() && this.appliedPicker.effort !== this.config.effortLabel) await this.picker("effort", this.config.effortLabel);
     signal.throwIfAborted();
 
     this.endedAfterTool = false;

@@ -12,15 +12,20 @@ export interface DisplayLine {
 export function markdownLines(markdown: string, width: number): DisplayLine[] {
   const result: DisplayLine[] = [];
   let inCode = false;
+  let fenceLength = 0;
   const columns = Math.max(1, width);
   for (const raw of terminalText(markdown).split("\n")) {
-    const fence = /^\s*```([^`]*)$/.exec(raw);
+    const fence = /^\s*(`{3,})([^`]*)$/.exec(raw);
     if (fence) {
       if (!inCode) {
-        const language = fence[1]?.trim();
+        fenceLength = fence[1]!.length;
+        const language = fence[2]?.trim();
         result.push({ text: language ? `┌─ ${language}` : "┌─ code", tone: "muted" });
-      } else {
+      } else if (fence[1]!.length >= fenceLength && !fence[2]?.trim()) {
         result.push({ text: "└─", tone: "muted" });
+      } else {
+        result.push({ text: `│ ${raw}`, tone: "code" });
+        continue;
       }
       inCode = !inCode;
       continue;
@@ -31,18 +36,21 @@ export function markdownLines(markdown: string, width: number): DisplayLine[] {
       }
       continue;
     }
-    const heading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(raw);
-    const list = !heading ? /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(raw) : null;
-    const quote = !heading && !list ? /^\s*>\s?(.*)$/.exec(raw) : null;
+    if (/^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(raw)) continue;
+    const tableRow = /^\s*\|.*\|\s*$/.test(raw) ? raw.trim().slice(1, -1).split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|")).join("  │  ") : raw;
+    const heading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(tableRow);
+    const list = !heading ? /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(tableRow) : null;
+    const quote = !heading && !list ? /^\s*>\s?(.*)$/.exec(tableRow) : null;
     let prefix = list ? `${list[1]}${/^\d/.test(list[2]!) ? list[2] : "•"} ` : quote ? "│ " : "";
     // Leave room for at least one character in narrow terminals.
     if (prefix.length >= columns) prefix = "";
-    let text = heading ? heading[1]! : list ? list[3]! : quote ? quote[1]! : raw;
+    let text = heading ? heading[1]! : list ? list[3]! : quote ? quote[1]! : tableRow;
     text = text
       .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1 ($2)")
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => label === url ? url : `${label} (${url})`)
       .replace(/\*\*([^*]+)\*\*/g, "\u001b[1m$1\u001b[22m")
       .replace(/__([^_]+)__/g, "\u001b[1m$1\u001b[22m")
+      .replace(/~~([^~]+)~~/g, "\u001b[9m$1\u001b[29m")
       .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "\u001b[3m$1\u001b[23m")
       .replace(/`([^`]+)`/g, "\u001b[36m$1\u001b[39m");
     const wrapped = wrapAnsi(text || " ", Math.max(1, columns - prefix.length), { hard: true, trim: false }).split("\n");

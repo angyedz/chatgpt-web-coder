@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useWindowSize } from "ink";
 import type { ChatMessage, ToolCallView } from "../../types.js";
 import { cleanAssistantHistory } from "../../browser/response-text.js";
@@ -29,9 +29,11 @@ interface Row {
   railColor?: string;
 }
 
-export function Transcript({ messages, tools, height, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
+export const Transcript = React.memo(function Transcript({ messages, tools, height, systemView = false, scrollOffset = 0, onScrollLimit }: TranscriptProps) {
   const { columns = 80 } = useWindowSize();
   const [frame, setFrame] = useState(0);
+  const messageRows = useRef(new WeakMap<ChatMessage, { text: string; width: number; spaced: boolean; rows: Row[] }>());
+  const toolRows = useRef(new WeakMap<ToolCallView, { width: number; spaced: boolean; grouped: boolean; frame: number; rows: Row[] }>());
   const running = tools.some((call) => call.status === "running");
   const reducedMotion = process.env.CHATGPT_CODER_REDUCED_MOTION === "1" || process.env.CI === "true";
   useEffect(() => {
@@ -42,19 +44,31 @@ export function Transcript({ messages, tools, height, systemView = false, scroll
   }, [running, reducedMotion]);
   // Limit prose width on wide terminals and reserve space for the message rail.
   const width = Math.max(1, Math.min(96, columns - 7));
-  const entries: Entry[] = [
-    ...messages.map((message) => ({ kind: "message" as const, time: message.createdAt, order: message.order, message })),
-    ...tools.map((call) => ({ kind: "tool" as const, time: call.startedAt, order: call.order, call })),
-  ];
+  const entries = useMemo((): Entry[] => {
+    const items: Entry[] = [
+      ...messages.map((message) => ({ kind: "message" as const, time: message.createdAt, order: message.order, message })),
+      ...tools.map((call) => ({ kind: "tool" as const, time: call.startedAt, order: call.order, call })),
+    ];
   // Older saved sessions can contain entries without sequence numbers. Never
   // compare a sequence number to a timestamp: choose one scale for the list.
-  const hasCompleteOrder = entries.every((entry) => Number.isFinite(entry.order));
-  entries.sort((a, b) => hasCompleteOrder ? a.order! - b.order! : a.time - b.time);
+    const hasCompleteOrder = items.every((entry) => Number.isFinite(entry.order));
+    items.sort((a, b) => hasCompleteOrder ? a.order! - b.order! : a.time - b.time);
+    return items;
+  }, [messages, tools]);
 
   const rows: Row[] = [];
-  const cleaned = cleanAssistantHistory(entries.flatMap((entry) => entry.kind === "message" ? [entry.message] : []));
+  const cleaned = useMemo(() => cleanAssistantHistory(entries.flatMap((entry) => entry.kind === "message" ? [entry.message] : [])), [entries]);
   for (const [entryIndex, entry] of entries.entries()) {
     if (entry.kind === "tool") {
+      const spaced = entryIndex > 0 && entries[entryIndex - 1]?.kind !== "tool";
+      const grouped = entryIndex === 0 || entries[entryIndex - 1]?.kind !== "tool";
+      const toolFrame = entry.call.status === "running" && !reducedMotion ? frame : 0;
+      const cached = toolRows.current.get(entry.call);
+      if (cached && cached.width === width && cached.spaced === spaced && cached.grouped === grouped && cached.frame === toolFrame) {
+        for (const row of cached.rows) rows.push(row);
+        continue;
+      }
+      const start = rows.length;
       if (entryIndex > 0 && entries[entryIndex - 1]?.kind !== "tool") {
         rows.push({ key: `${entry.call.id}:space`, text: " " });
       }
@@ -64,12 +78,20 @@ export function Transcript({ messages, tools, height, systemView = false, scroll
       toolDisplayLines(entry.call, width, reducedMotion ? 0 : frame).forEach((line, index) => {
         rows.push({ key: `${entry.call.id}:${index}`, text: line.text, rail: "  │  ", railColor: theme.border, color: line.color });
       });
+      toolRows.current.set(entry.call, { width, spaced, grouped, frame: toolFrame, rows: rows.slice(start) });
       continue;
     }
     const message = entry.message;
     const isUser = message.role === "user";
     const displayText = message.role === "assistant" ? cleaned.get(message.id) ?? "" : message.text;
     if (message.role === "assistant" && !displayText && !message.streaming) continue;
+    const spaced = entryIndex > 0;
+    const cached = messageRows.current.get(message);
+    if (cached && cached.text === displayText && cached.width === width && cached.spaced === spaced) {
+      for (const row of cached.rows) rows.push(row);
+      continue;
+    }
+    const start = rows.length;
     if (entryIndex > 0) rows.push({ key: `${message.id}:space`, text: " " });
     const systemTitle = message.role === "system" ? /^([^\n]{1,72})\n\s*\n/.exec(displayText) : null;
     const title = systemTitle ? terminalText(systemTitle[1]!).trim() : "";
@@ -90,6 +112,7 @@ export function Transcript({ messages, tools, height, systemView = false, scroll
       });
     });
     rows.push({ key: `${message.id}:end`, text: "", rail: "  ╰─", railColor: color });
+    messageRows.current.set(message, { text: displayText, width, spaced, rows: rows.slice(start) });
   }
 
   // Lay out and clip by actual terminal rows, not by message count. Ink/Yoga
@@ -112,7 +135,7 @@ export function Transcript({ messages, tools, height, systemView = false, scroll
       ))}
     </Box>
   );
-}
+});
 
 function Welcome({ height }: { height: number }) {
   return (

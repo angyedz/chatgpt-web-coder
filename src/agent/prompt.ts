@@ -3,6 +3,7 @@ import { toolDefinitions } from "../tools/index.js";
 import { truncate } from "../utils/text.js";
 import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
 import { discoverSkills } from "../runtime/skills.js";
+import type { Goal } from "../runtime/goals.js";
 
 export interface PromptOptions {
   userText: string;
@@ -10,10 +11,17 @@ export interface PromptOptions {
   firstTurn: boolean;
   config: HarnessConfig;
   contextSummary?: string;
+  goal?: Goal;
 }
 
 export async function buildPrompt(options: PromptOptions): Promise<string> {
-  const { userText, turnId, firstTurn, config, contextSummary } = options;
+  const { userText, turnId, firstTurn, config, contextSummary, goal } = options;
+  // The full contract is already present in this Web chat. Re-inserting it on
+  // every message makes large prompts expensive for ChatGPT's editor.
+  if (!firstTurn) {
+    const activeGoal = goal?.status === "active" ? `\nACTIVE USER GOAL\n${goal.objective}\nContinue until achieved, then call update_goal with complete and evidence; if genuinely blocked, call update_goal with blocked. Do not repeat denied actions.\n` : "";
+    return `Continue this conversation using the existing connector and instructions. Project instructions and skills can change: consult get_project_instructions and list_skills when relevant.\nTurn: ${turnId}\n${activeGoal}\nUSER REQUEST\n${userText}`;
+  }
   const [instructions, skills] = await Promise.all([projectInstructions(config.workspace), discoverSkills(config)]);
   const agents = formatInstructions(instructions);
 
@@ -61,21 +69,12 @@ RULES
   const memory = contextSummary?.trim()
     ? `\n\nCOMPACTED PROJECT CONVERSATION MEMORY\nTreat this as the reliable summary of earlier turns in this same task. Preserve decisions, files changed, commands/checks already run, and unresolved work.\n${contextSummary.trim()}`
     : "";
-
-  if (!firstTurn) {
-    return `${contract}${timerRules}
-
-AVAILABLE TOOLS (all exposed by the "${connector}" connector)
-${toolList}${agentsBlock}${skillBlock}${mcpBlock}${memory}
-
-USER REQUEST
-${userText}`;
-  }
+  const goalBlock = goal?.status === "active" ? `\n\nACTIVE USER GOAL\n${goal.objective}\nWork autonomously until this objective is achieved. After completing all required work, call update_goal with status complete and concrete evidence. If an external condition or user input truly prevents progress, call update_goal with status blocked and explain it. Do not claim completion for partial work; do not retry denied actions. The harness will continue the goal if you stop without reporting an outcome.` : "";
 
   return `${contract}${timerRules}
 
 AVAILABLE TOOLS (all exposed by the "${connector}" connector)
-${toolList}${agentsBlock}${skillBlock}${mcpBlock}${memory}
+${toolList}${agentsBlock}${skillBlock}${mcpBlock}${memory}${goalBlock}
 
 FIRST TURN
 Start by checking the workspace with get_workspace_info or list_dir when the request depends on repository state. Then work autonomously until the request is complete.

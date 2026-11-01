@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import type { Orchestrator } from "../agent/orchestrator.js";
 import type {
@@ -39,6 +39,7 @@ const emptyStatus: StatusMap = {
   tunnel: { state: "off" },
   searxng: { state: "off" },
 };
+const noTools: ToolCallView[] = [];
 
 export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const { exit } = useApp();
@@ -50,6 +51,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
+  const [goal, setGoal] = useState(() => initialSession?.goal);
   const [localSessionId, setLocalSessionId] = useState(() => initialSession?.id ?? "");
   const [phase, setPhase] = useState<TurnPhase>(() => orchestrator.currentPhase ?? "idle");
   const [status, setStatus] = useState<StatusMap>(() => ({
@@ -68,15 +70,22 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const [scrollLimit, setScrollLimit] = useState(0);
   const [now, setNow] = useState(Date.now());
   const noticeId = useRef(0);
+  const visibleMessages = useMemo(() => messages.filter((message) => showSystemLog ? message.role === "system" : message.role !== "system"), [messages, showSystemLog]);
   const activeTools = useRef(new Set<string>());
   const pendingApprovals = useRef(new Set<string>());
   const turnActive = useRef(false);
   const eventOrder = useRef(initialSession?.order ?? 0);
+  const timers = orchestrator.runtime?.timers?.list() ?? [];
+  const processCount = (orchestrator.runtime?.exec?.list() ?? []).filter((job) => job.background && job.running).length;
+  const taskCount = (orchestrator.runtime?.tasks?.list() ?? []).filter((task) => task.status === "running").length;
+  const jobCount = processCount + taskCount;
+  const showActivity = timers.length > 0 || jobCount > 0;
 
   useEffect(() => {
+    if (!showActivity) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [showActivity]);
 
   useEffect(() => {
     const unsubscribe = orchestrator.events.on((event) => {
@@ -196,6 +205,10 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setPlan(event.steps);
           break;
 
+        case "goal":
+          setGoal(event.goal);
+          break;
+
         case "status":
           setStatus((current) => ({
             ...current,
@@ -224,6 +237,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setShowSystemLog(false);
           setTools(event.session.tools);
           setPlan(event.session.plan);
+          setGoal(event.session.goal);
           setNotices([]);
           setApprovals([]);
           setLocalSessionId(event.session.id);
@@ -284,6 +298,7 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           setTools([]);
           setNotices([]);
           setPlan([]);
+          setGoal(undefined);
           setApprovals([]);
           break;
 
@@ -353,11 +368,6 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
     void orchestrator.submit(text);
   };
 
-  const timers = orchestrator.runtime?.timers?.list() ?? [];
-  const processCount = (orchestrator.runtime?.exec?.list() ?? []).filter((job) => job.background && job.running).length;
-  const taskCount = (orchestrator.runtime?.tasks?.list() ?? []).filter((task) => task.status === "running").length;
-  const jobCount = processCount + taskCount;
-  const showActivity = timers.length > 0 || jobCount > 0;
   const nextTimerSeconds = timers[0] ? Math.max(0, Math.ceil((timers[0].dueAt - now) / 1000)) : 0;
   const showHeader = rows >= 12;
   const showStatus = rows >= 10;
@@ -365,10 +375,11 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
   const showJobs = showActivity && rows >= 20 && !approval;
   const showLive = busy && !approval && rows >= 14;
   const showUpdate = Boolean(pendingUpdate && !busy && !approval && rows >= 8);
+  const showGoal = Boolean(goal && rows >= 16 && !approval);
   const maxPlanSteps = plan.length && !approval && rows >= 17 ? (rows < 24 ? 1 : 3) : 0;
   const shownNotices = rows >= 20 && !approval ? notices.slice(-2) : [];
   const chrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
-    + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + shownNotices.length
+    + (showJobs ? 1 : 0) + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showGoal ? 1 : 0) + shownNotices.length
     + (maxPlanSteps ? 2 + Math.min(plan.length, maxPlanSteps) : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0);
   const transcriptHeight = Math.max(0, rows - chrome);
@@ -388,8 +399,8 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
       /> : null}
 
       {transcriptHeight > 0 ? <Transcript
-        messages={messages.filter((message) => showSystemLog ? message.role === "system" : message.role !== "system")}
-        tools={showSystemLog ? [] : tools}
+        messages={visibleMessages}
+        tools={showSystemLog ? noTools : tools}
         systemView={showSystemLog}
         height={transcriptHeight}
         scrollOffset={scrollOffset}
@@ -436,6 +447,8 @@ export function App({ orchestrator }: { orchestrator: Orchestrator }) {
           ))}
         </Box>
       ) : null}
+
+      {showGoal && goal ? <Box paddingX={2} flexShrink={0}><Text color={goal.status === "active" ? theme.accent : goal.status === "complete" ? theme.ok : theme.warn} wrap="truncate-end">◇ GOAL · {goal.status} · {oneLine(terminalText(goal.objective), Math.max(10, columns - 30))}</Text></Box> : null}
 
       <PlanPanel steps={plan} maxVisible={maxPlanSteps} />
 

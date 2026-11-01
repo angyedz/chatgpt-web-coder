@@ -59,12 +59,17 @@ export function cleanBrowserFallback(text: string): string {
   const hasLabel = lines.some((line) => label.test(line));
   const progress = /^(?:Inspecting|Checking|Listing|Searching|Reading|Reviewing|Analyzing|Creating|Building|Writing|Updating|Running|Verifying|Preparing|Exploring|Investigating)\s+(?:[A-Z][\w'-]*\s*){1,9}$/;
   const activity = /^(?:Created|Verified|Inspected|Checked|Listed|Searched|Read|Reviewed|Analyzed|Built|Updated|Ran|Prepared|Explored|Investigated)\s+.{3,170}$/;
+  // The whole-message fallback can include a timing label from the page UI.
+  // Restrict this to a standalone line, outside fenced code; never strip a
+  // phrase embedded in a sentence or an example inside a code block.
+  const timing = /^\s*(?:worked for|thought for|работал(?:а)?|работа заняла|думал(?:а)?)\s+(?:\d+\s*(?:h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?|ч(?:ас(?:а|ов)?)?|мин(?:ут(?:а|ы)?)?|с(?:ек(?:унд(?:а|ы)?)?)?)\s*){1,4}[.!]?\s*$/i;
   const significant = lines.map((line) => line.trim()).filter(Boolean);
   if (significant.length && significant.every((line) => line === significant[0]) && progress.test(significant[0]!)) return "";
   const result: string[] = [];
   let inCode = false;
   for (const line of lines) {
-    if (/^\s*```/.test(line)) { inCode = !inCode; result.push(line); continue; }
+    if (/^\s*`{3,}/.test(line)) { inCode = !inCode; result.push(line); continue; }
+    if (!inCode && timing.test(line)) continue;
     if (!inCode && label.test(line)) {
       let previous = result.length - 1;
       while (previous >= 0 && !result[previous]!.trim()) previous -= 1;
@@ -86,7 +91,12 @@ export function cleanAssistantHistory(messages: ChatMessage[]): Map<string, stri
   for (const message of messages) {
     if (message.role === "user") { parts.length = 0; continue; }
     if (message.role !== "assistant") continue;
-    let text = cleanBrowserFallback(message.text);
+    let cached = cleanedMessages.get(message);
+    if (!cached || cached.original !== message.text) {
+      cached = { original: message.text, cleaned: cleanBrowserFallback(message.text) };
+      cleanedMessages.set(message, cached);
+    }
+    let text = cached.cleaned;
     if (text && parts.length && parts[0]!.length >= 20 && text.startsWith(parts[0]!)) {
       for (let index = parts.length - 1; index >= 0; index -= 1) {
         const previous = parts[index]!;
@@ -100,6 +110,7 @@ export function cleanAssistantHistory(messages: ChatMessage[]): Map<string, stri
   }
   return result;
 }
+const cleanedMessages = new WeakMap<ChatMessage, { original: string; cleaned: string }>();
 // ChatGPT may expose its progress label inside an assistant message before it
 // renders any actual answer. Do not treat that label as model output.
 export function removeResponseStatus(text: string): string {

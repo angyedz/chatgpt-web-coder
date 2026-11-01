@@ -5,6 +5,7 @@ import type { ChatMessage, HarnessEvent, PlanStep, ToolCallView } from "../types
 import type { TimerInfo } from "./timers.js";
 import { cleanAssistantHistory } from "../browser/response-text.js";
 import { harnessHome } from "../utils/paths.js";
+import type { Goal } from "./goals.js";
 
 export interface SessionJob {
   id: string;
@@ -24,6 +25,7 @@ export interface SavedSession {
   messages: ChatMessage[];
   tools: ToolCallView[];
   plan: PlanStep[];
+  goal?: Goal;
   jobs: SessionJob[];
   timers: TimerInfo[];
   previousRuntime?: { jobs: SessionJob[]; timers: TimerInfo[]; savedAt: number };
@@ -144,13 +146,16 @@ export class SessionStore {
       case "plan":
         session.plan = structuredClone(event.steps);
         break;
+      case "goal":
+        session.goal = event.goal ? structuredClone(event.goal) : undefined;
+        break;
       case "turn-end":
         for (const item of session.messages) if (item.streaming) { item.streaming = false; item.interrupted = !event.ok; }
         break;
       default:
         return;
     }
-    this.changed();
+    this.changed(event.type === "assistant-delta" ? 2000 : 500);
   }
 
   setRuntime(jobs: SessionJob[], timers: TimerInfo[]): void {
@@ -167,10 +172,10 @@ export class SessionStore {
     if (this.pendingError) { const error = this.pendingError; this.pendingError = undefined; throw error; }
   }
 
-  private changed(): void {
+  private changed(delayMs = 500): void {
     this.current.updatedAt = Date.now();
     if (!this.timer) {
-      this.timer = setTimeout(() => { this.timer = undefined; this.enqueueSnapshot(); }, 500);
+      this.timer = setTimeout(() => { this.timer = undefined; this.enqueueSnapshot(); }, delayMs);
       this.timer.unref();
     }
   }
@@ -216,6 +221,7 @@ export class SessionStore {
   }
 
   private markInterrupted(): void {
+    if (this.current.goal?.status === "active") this.current.goal = { ...this.current.goal, status: "paused", detail: "Harness stopped; use /goal resume to continue after reviewing the session.", updatedAt: Date.now() };
     for (const message of this.current.messages) if (message.streaming) { message.streaming = false; message.interrupted = true; }
     for (const tool of this.current.tools) if (tool.status === "running") { tool.status = "error"; tool.error = "Harness stopped before the result was recorded; outcome is unknown."; }
     if (this.current.jobs.length || this.current.timers.length) {
