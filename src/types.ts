@@ -28,7 +28,7 @@ export interface ChatMessage {
   order?: number;
   streaming?: boolean;
   interrupted?: boolean;
-  channel?: "btw";
+  channel?: "btw" | "telegram";
 }
 
 export type ToolStatus = "running" | "ok" | "error" | "denied";
@@ -67,12 +67,17 @@ export interface SessionInfo {
   effort?: string;
 }
 
+export type TelegramSetupState =
+  | { stage: "token"; error?: string }
+  | { stage: "pairing"; botUsername: string; code: string };
+
 export type HarnessEvent =
-  | { type: "user-message"; id: string; text: string; channel?: "btw" }
+  | { type: "user-message"; id: string; text: string; channel?: "btw" | "telegram" }
+  | { type: "telegram-setup"; state?: TelegramSetupState }
   | { type: "system-message"; id: string; text: string }
-  | { type: "assistant-start"; id: string; channel?: "btw" }
-  | { type: "assistant-delta"; id: string; text: string; channel?: "btw" }
-  | { type: "assistant-done"; id: string; text: string; error?: string; channel?: "btw" }
+  | { type: "assistant-start"; id: string; channel?: "btw" | "telegram" }
+  | { type: "assistant-delta"; id: string; text: string; channel?: "btw" | "telegram" }
+  | { type: "assistant-done"; id: string; text: string; error?: string; channel?: "btw" | "telegram" }
   | { type: "tool-start"; call: ToolCallView }
   | { type: "tool-end"; call: ToolCallView }
   | { type: "plan"; steps: PlanStep[] }
@@ -80,7 +85,7 @@ export type HarnessEvent =
   | { type: "attachments"; attachments: Attachment[] }
   | {
       type: "status";
-      key: "browser" | "mcp" | "tunnel" | "searxng";
+      key: "browser" | "mcp" | "tunnel" | "searxng" | "telegram";
       state: ConnectionState;
       detail?: string;
     }

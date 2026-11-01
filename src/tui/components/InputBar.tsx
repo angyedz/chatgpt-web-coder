@@ -16,6 +16,7 @@ interface InputBarProps {
   onPasteImage?: (value: string) => Promise<boolean>;
   onPasteClipboardImage?: () => Promise<boolean>;
   onPasteError?: (message: string) => void;
+  secure?: boolean;
 }
 
 interface Draft { value: string; cursor: number }
@@ -31,7 +32,7 @@ function nextCharacter(value: string, cursor: number): number {
   return cursor + (code > 0xffff ? 2 : 1);
 }
 
-export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistory = [], hasAttachments = false, onPasteImage, onPasteClipboardImage, onPasteError }: InputBarProps) {
+export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistory = [], hasAttachments = false, onPasteImage, onPasteClipboardImage, onPasteError, secure = false }: InputBarProps) {
   const { columns = 100 } = useWindowSize();
   const history = useRef(initialHistory.slice(-200));
   const historyIndex = useRef<number | null>(null);
@@ -74,6 +75,7 @@ export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistor
     if (input.length > 1 && imagePathFromPaste(input)) { paste(input); return; }
     // Some terminals deliver an unbracketed multiline paste as a single input.
     if (input.length > 1 && /[\r\n]/.test(input)) { insert(input); return; }
+    if (secure && (key.upArrow || key.downArrow)) return;
     if (key.upArrow && history.current.length) {
       if (historyIndex.current === null) { savedDraft.current = state; historyIndex.current = history.current.length - 1; }
       else historyIndex.current = Math.max(0, historyIndex.current - 1);
@@ -98,7 +100,7 @@ export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistor
       if (pendingPastes.current) return;
       if (!state.value.trim() && !hasAttachments) return;
       if (onSubmit(state.value) === false) return;
-      if (state.value.trim() && (!state.value.trimStart().startsWith("/") || /^\s*\/btw\s/i.test(state.value) || state.value.length > 12_000 && !/^\s*\/goal(?:\s|$)/i.test(state.value))) history.current = [...history.current.slice(-199), state.value];
+      if (!secure && state.value.trim() && (!state.value.trimStart().startsWith("/") || /^\s*\/btw\s/i.test(state.value) || state.value.length > 12_000 && !/^\s*\/goal(?:\s|$)/i.test(state.value))) history.current = [...history.current.slice(-199), state.value];
       historyIndex.current = null;
       savedDraft.current = { value: "", cursor: 0 };
       update({ value: "", cursor: 0 });
@@ -120,12 +122,16 @@ export function InputBar({ disabled, phase, onSubmit, placeholder, initialHistor
     if (input) insert(input);
   }, { isActive: !disabled });
 
-  const marker = draft.value.length > 512 ? `[${draft.value.length.toLocaleString()} chars] ` : "";
+  const marker = !secure && draft.value.length > 512 ? `[${draft.value.length.toLocaleString()} chars] ` : "";
   const available = Math.max(5, columns - marker.length - 11);
-  const left = terminalText(draft.value.slice(Math.max(0, draft.cursor - available * 2), draft.cursor)).replace(/\n/g, " ↵ ");
+  const left = secure
+    ? "•".repeat(Math.min(draft.cursor, available))
+    : terminalText(draft.value.slice(Math.max(0, draft.cursor - available * 2), draft.cursor)).replace(/\n/g, " ↵ ");
   const rightCursor = nextCharacter(draft.value, draft.cursor);
-  const selected = terminalText(draft.value.slice(draft.cursor, rightCursor)).replace(/\n/g, "↵") || " ";
-  const right = terminalText(draft.value.slice(rightCursor, rightCursor + available * 2)).replace(/\n/g, " ↵ ");
+  const selected = secure ? (draft.cursor < draft.value.length ? "•" : " ") : terminalText(draft.value.slice(draft.cursor, rightCursor)).replace(/\n/g, "↵") || " ";
+  const right = secure
+    ? "•".repeat(Math.min(draft.value.length - rightCursor, available))
+    : terminalText(draft.value.slice(rightCursor, rightCursor + available * 2)).replace(/\n/g, " ↵ ");
   const visibleLeft = left.slice(-Math.max(0, available - Math.min(right.length, Math.floor(available / 3)) - 1));
   const visibleRight = right.slice(0, Math.max(0, available - visibleLeft.length - 1));
   return (

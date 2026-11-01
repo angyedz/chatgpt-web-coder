@@ -9,6 +9,7 @@ import type {
   PlanStep,
   SessionInfo,
   ToolCallView,
+  TelegramSetupState,
   TurnPhase,
 } from "../types.js";
 import { oneLine } from "../utils/text.js";
@@ -41,6 +42,7 @@ const emptyStatus: StatusMap = {
   mcp: { state: "off" },
   tunnel: { state: "off" },
   searxng: { state: "off" },
+  telegram: { state: "off" },
 };
 const noTools: ToolCallView[] = [];
 
@@ -66,6 +68,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   const [session, setSession] = useState<SessionInfo | undefined>();
   const [pendingUpdate, setPendingUpdate] = useState<{ kind: "download" | "local" | "rollback"; version: string } | undefined>();
   const [connectorRefresh, setConnectorRefresh] = useState(() => orchestrator.connectorRefresh);
+  const [telegramSetup, setTelegramSetup] = useState<TelegramSetupState>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const approval = approvals[0];
   const [busy, setBusy] = useState(false);
@@ -241,6 +244,10 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
           setConnectorRefresh(event.reminder);
           break;
 
+        case "telegram-setup":
+          setTelegramSetup(event.state);
+          break;
+
         case "session":
           setSession(event.session);
           break;
@@ -347,6 +354,11 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
       return;
     }
 
+    if (key.escape && telegramSetup) {
+      orchestrator.cancelTelegramSetup();
+      return;
+    }
+
     if (key.pageUp) {
       setScrollOffset((current) => Math.min(scrollLimit, current + Math.max(1, Math.floor(rows / 2))));
       return;
@@ -387,6 +399,21 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   });
 
   const handleSubmit = (value: string) => {
+    if (telegramSetup?.stage === "token") {
+      const token = value.trim();
+      if (!token) return false;
+      void orchestrator.submitTelegramToken(token);
+      return true;
+    }
+    if (telegramSetup?.stage === "pairing") {
+      if (/^\s*\/telegram\s+cancel\s*$/i.test(value)) {
+        void orchestrator.submit("/telegram cancel");
+        return true;
+      }
+      noticeId.current += 1;
+      setNotices((current) => [...current.slice(-7), { id: noticeId.current, level: "info", text: "Pair the bot from its private Telegram chat, or press Esc to cancel." }]);
+      return false;
+    }
     if (!value.trim() && !attachments.some((item) => item.pending)) return false;
     if (busy && !/^\s*\/btw(?:\s|$)/i.test(value)) {
       void orchestrator.submit(value);
@@ -428,7 +455,8 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   ].flatMap((line) => wrapAnsi(line, Math.max(1, columns - 4), { hard: true }).split("\n")) : [];
   const baseChrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
     + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showAttachments ? 1 : 0)
-    + (approval ? approvalHeight(approval, columns, rows) : 0) + refreshLines.length;
+    + (approval ? approvalHeight(approval, columns, rows) : 0) + refreshLines.length
+    + (telegramSetup ? telegramSetup.stage === "token" ? 4 + (telegramSetup.error ? 1 : 0) : 7 : 0);
   const showSidebar = columns >= 130 && rows >= 22 && !approval && rows - baseChrome >= 10
     && Boolean(displayedGoal || displayedPlan.length || showJobs || shownNotices.some((notice) => notice.level !== "info"));
   const sidebarWidth = showSidebar ? Math.min(56, Math.max(36, Math.floor(columns / 3))) : 0;
@@ -541,6 +569,19 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
         {refreshLines.map((line, index) => <Text key={index} color={index === 0 ? theme.warn : theme.dim} wrap="truncate-end">{line}</Text>)}
       </Box> : null}
 
+      {telegramSetup ? <Box flexDirection="column" marginX={2} flexShrink={0} borderStyle="round" borderColor={theme.accent} paddingX={1}>
+        <Text bold color={theme.accent}>TELEGRAM · SECURE SETUP</Text>
+        {telegramSetup.stage === "token" ? <>
+          <Text color={theme.dim}>Paste the BotFather token into the masked field below. It will not appear in chat history.</Text>
+          {telegramSetup.error ? <Text color={theme.error} wrap="truncate-end">{terminalText(telegramSetup.error)}</Text> : null}
+        </> : <>
+          <Text>Open <Text color={theme.accent}>@{terminalText(telegramSetup.botUsername)}</Text> in Telegram and press Start.</Text>
+          <Text>Then send this one-time pairing code in that private chat:</Text>
+          <Text bold color={theme.warn}>/pair {telegramSetup.code}</Text>
+          <Text color={theme.dim}>The code expires in 10 minutes. Press Esc to cancel.</Text>
+        </>}
+      </Box> : null}
+
       {showInput ? <InputBar
         key={localSessionId}
         disabled={(busy && !orchestrator.canSendBtw) || Boolean(approval)}
@@ -554,9 +595,14 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
           setNotices((current) => [...current.slice(-7), { id: noticeId.current, level: "error", text: `Paste: ${text}` }]);
         }}
         hasAttachments={pendingAttachments.length > 0}
-        initialHistory={messages.filter((message) => message.role === "user").map((message) => message.text)}
+        secure={telegramSetup?.stage === "token"}
+        initialHistory={messages.filter((message) => message.role === "user" && message.channel !== "telegram").map((message) => message.text)}
         placeholder={
-          busy
+          telegramSetup?.stage === "token"
+            ? "Bot token · hidden · Enter to verify · Esc to cancel"
+            : telegramSetup?.stage === "pairing"
+              ? "Waiting for private-chat pairing · Esc to cancel"
+            : busy
             ? "Working…  /btw <message>  ·  Esc to stop"
             : phase === "waiting-login"
             ? "Sign in to ChatGPT in the browser window…"

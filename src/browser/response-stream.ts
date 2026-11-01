@@ -12,7 +12,11 @@ export class ResponseStream {
   private current = "";
   private readonly completed: string[] = [];
 
-  constructor(private readonly events: HarnessEvents, private readonly prefix: string) {}
+  constructor(
+    private readonly events: HarnessEvents,
+    private readonly prefix: string,
+    private readonly channel?: "telegram",
+  ) {}
 
   get hasCurrentSegment(): boolean {
     return Boolean(this.id && this.current);
@@ -49,12 +53,12 @@ export class ResponseStream {
     if (!segment.trim()) return;
     if (!this.id) {
       this.id = `${this.prefix}_${this.sequence++}`;
-      this.events.emit({ type: "assistant-start", id: this.id });
+      this.events.emit({ type: "assistant-start", id: this.id, ...(this.channel ? { channel: this.channel } : {}) });
     }
     segment = segment.trimEnd();
     if (segment === this.current) return;
     this.current = segment;
-    this.events.emit({ type: "assistant-delta", id: this.id, text: segment });
+    this.events.emit({ type: "assistant-delta", id: this.id, text: segment, ...(this.channel ? { channel: this.channel } : {}) });
   }
 
   toolStarted(): void {
@@ -73,7 +77,7 @@ export class ResponseStream {
 
   private finishSegment(error?: string): void {
     if (this.id) {
-      this.events.emit({ type: "assistant-done", id: this.id, text: this.current, ...(error ? { error } : {}) });
+      this.events.emit({ type: "assistant-done", id: this.id, text: this.current, ...(error ? { error } : {}), ...(this.channel ? { channel: this.channel } : {}) });
       if (this.current) this.completed.push(this.current);
       this.id = undefined;
       this.current = "";

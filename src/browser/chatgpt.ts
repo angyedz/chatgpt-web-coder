@@ -20,6 +20,7 @@ export class ChatGptBrowser {
   private readonly activeToolCalls = new Set<string>();
   private toolEpoch = 0;
   private responseStream?: ResponseStream;
+  private responseChannel?: "telegram";
   private responseSignal?: AbortSignal;
   private readSequence = 0;
   private appliedReadSequence = 0;
@@ -291,6 +292,8 @@ export class ChatGptBrowser {
 
   refreshSession(): void { this.emitSession(); }
 
+  setResponseChannel(channel?: "telegram"): void { this.responseChannel = channel; }
+
   async send(prompt: string, signal: AbortSignal, options: { continueChat?: boolean; canRecoverStall?: () => boolean; files?: { id: string; name: string; path: string }[]; onSubmitted?: () => void } = {}): Promise<string> {
     signal.throwIfAborted();
     await this.ensureLoggedIn();
@@ -311,7 +314,7 @@ export class ChatGptBrowser {
     this.baselineMarkdown = await this.requirePage().locator(selectors.markdown.join(", ")).count();
     await this.fillComposer(prompt, options.files ?? [], signal);
     signal.throwIfAborted();
-    const responseStream = new ResponseStream(this.events, newId("assistant"));
+    const responseStream = new ResponseStream(this.events, newId("assistant"), this.responseChannel);
     this.responseStream = responseStream;
     this.responseSignal = signal;
     const initialToolEpoch = this.toolEpoch;

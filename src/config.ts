@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { expandHome, harnessHome } from "./utils/paths.js";
 
@@ -56,6 +57,15 @@ export interface SearxngConfig {
   language: string;
 }
 
+export interface TelegramConfig {
+  enabled: boolean;
+  ownerUserId: string;
+  ownerChatId: string;
+  botUsername: string;
+  dashboardMessageId: number;
+  updateOffset: number;
+}
+
 export interface HarnessConfig {
   workspace: string;
   approvalMode: ApprovalMode;
@@ -68,6 +78,7 @@ export interface HarnessConfig {
   skills: { paths: string[] };
   tunnel: TunnelConfig;
   searxng: SearxngConfig;
+  telegram: TelegramConfig;
 }
 
 type DeepPartial<T> = {
@@ -126,6 +137,7 @@ export function defaultConfig(workspace = process.cwd()): HarnessConfig {
       categories: "general",
       language: "auto",
     },
+    telegram: { enabled: false, ownerUserId: "", ownerChatId: "", botUsername: "", dashboardMessageId: 0, updateOffset: 0 },
   };
 }
 
@@ -214,6 +226,16 @@ export function loadConfig(workspace = process.cwd()): HarnessConfig {
       // An invalid credential store must not prevent browser-only startup.
     }
   }
+  if (!process.env.TELEGRAM_BOT_TOKEN && existsSync(credentialsFile)) {
+    try {
+      const credentials = JSON.parse(readFileSync(credentialsFile, "utf8")) as Record<string, string>;
+      const value = credentials.TELEGRAM_BOT_TOKEN;
+      if (value) process.env.TELEGRAM_BOT_TOKEN = decodeCredential(value);
+    } catch {
+      // Telegram is optional; a locked or damaged credential store must not
+      // prevent the local harness from starting.
+    }
+  }
 
   merged.browser.userDataDir = path.resolve(expandHome(merged.browser.userDataDir));
   merged.tunnel.binary = path.resolve(expandHome(merged.tunnel.binary));
@@ -280,6 +302,81 @@ export function saveTunnelApiKey(envName: string, apiKey: string): void {
   writeFileSync(file, `${JSON.stringify(credentials, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   if (process.platform !== "win32") chmodSync(file, 0o600);
   process.env[envName] = apiKey;
+}
+
+export function readCredential(name: string): string | undefined {
+  const file = path.join(harnessHome(), "credentials.json");
+  if (!existsSync(file)) return process.env[name] || undefined;
+  const credentials = JSON.parse(readFileSync(file, "utf8")) as Record<string, string>;
+  const stored = credentials[name];
+  return stored ? decodeCredential(stored) : process.env[name] || undefined;
+}
+
+export function saveCredential(name: string, value: string): void {
+  const file = path.join(harnessHome(), "credentials.json");
+  const credentials = readCredentialStore(file);
+  credentials[name] = encodeCredential(value);
+  writeFileSync(file, `${JSON.stringify(credentials, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(file, 0o600);
+  process.env[name] = value;
+}
+
+export function removeCredential(name: string): void {
+  const file = path.join(harnessHome(), "credentials.json");
+  if (existsSync(file)) {
+    const credentials = readCredentialStore(file);
+    delete credentials[name];
+    writeFileSync(file, `${JSON.stringify(credentials, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    if (process.platform !== "win32") chmodSync(file, 0o600);
+  }
+  delete process.env[name];
+}
+
+export function saveTelegramProfile(config: HarnessConfig, patch: Partial<TelegramConfig>): void {
+  const next = { ...config.telegram, ...patch };
+  const globalFile = globalConfigPath();
+  const global = readConfigFile(globalFile) ?? {};
+  (global as Record<string, unknown>).telegram = next;
+  mkdirSync(path.dirname(globalFile), { recursive: true });
+  writeFileSync(globalFile, `${JSON.stringify(global, null, 2)}\n`, "utf8");
+  const localFile = configPath(config.workspace);
+  if (path.resolve(localFile) !== path.resolve(globalFile)) {
+    const local = readConfigFile(localFile);
+    if (local?.telegram) {
+      (local as Record<string, unknown>).telegram = next;
+      writeFileSync(localFile, `${JSON.stringify(local, null, 2)}\n`, "utf8");
+    }
+  }
+  config.telegram = next;
+}
+
+function readCredentialStore(file: string): Record<string, string> {
+  if (!existsSync(file)) return {};
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!isPlainObject(value) || Object.values(value).some((entry) => typeof entry !== "string")) throw new Error("invalid credential data");
+    return value as Record<string, string>;
+  } catch {
+    throw new Error(`Cannot safely update credentials: ${file} is unreadable or invalid.`);
+  }
+}
+
+function encodeCredential(value: string): string {
+  if (process.platform !== "win32") return value;
+  const script = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $value=[Console]::In.ReadToEnd(); $bytes=[Text.Encoding]::UTF8.GetBytes($value); $protected=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Convert]::ToBase64String($protected))";
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { input: value, encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0 || !result.stdout.trim()) throw new Error("Windows user encryption is unavailable; Telegram token was not saved.");
+  return `dpapi:v1:${result.stdout.trim()}`;
+}
+
+function decodeCredential(value: string): string {
+  if (!value.startsWith("dpapi:v1:")) return value;
+  if (process.platform !== "win32") throw new Error("This credential is protected for a different operating system.");
+  const encoded = value.slice("dpapi:v1:".length);
+  const script = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $encoded=[Console]::In.ReadToEnd(); $bytes=[Convert]::FromBase64String($encoded); $plain=[Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Text.Encoding]::UTF8.GetString($plain))";
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { input: encoded, encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0) throw new Error("Could not decrypt the saved Telegram credential for this Windows account.");
+  return result.stdout;
 }
 
 export function exampleConfig(): string {

@@ -1,4 +1,5 @@
-import { saveConnectionSetting, saveHarnessConfig, saveTunnelApiKey, saveUpdateSetting, type ExternalMcpServer, type HarnessConfig } from "../config.js";
+import { saveConnectionSetting, saveHarnessConfig, saveTunnelApiKey, saveUpdateSetting, readCredential, removeCredential, saveCredential, saveTelegramProfile, type ExternalMcpServer, type HarnessConfig } from "../config.js";
+import { randomInt } from "node:crypto";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
 import { HarnessEvents } from "../events.js";
 import { McpHost } from "../mcp/server.js";
@@ -22,6 +23,7 @@ import { latestGithubRelease, prepareGithubUpdate, validateGithubRepository, typ
 import { setTimeout as delay } from "node:timers/promises";
 import { chooseAttachment, imagePathFromPaste } from "../runtime/attachments.js";
 import { stat } from "node:fs/promises";
+import { TelegramBot } from "../telegram/bot.js";
 
 const LARGE_MESSAGE_CHARS = 12_000;
 
@@ -58,6 +60,7 @@ export class Orchestrator {
   private updateCheckInFlight = false;
   private lastNotifiedUpdate?: string;
   private readonly pickerChoices: Record<"model" | "effort", string[]> = { model: [], effort: [] };
+  private telegramBot?: TelegramBot;
 
   constructor(public readonly config: HarnessConfig) {
     this.runtime = createRuntime(config, this.events);
@@ -169,6 +172,16 @@ export class Orchestrator {
       text: `MCP server listening at ${url}`,
     });
 
+    const telegramToken = this.config.telegram.enabled ? this.getTelegramToken() : undefined;
+    if (this.config.telegram.enabled && telegramToken) {
+      void this.startTelegramBot(telegramToken, this.config.telegram).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.events.emit({ type: "notice", level: "warn", text: `Telegram connection failed: ${message.replaceAll(telegramToken, "[redacted]")}` });
+      });
+    } else if (this.config.telegram.enabled) {
+      this.events.emit({ type: "status", key: "telegram", state: "error", detail: "Saved token is unavailable; use /telegram setup." });
+    }
+
     this.tunnel = new TunnelSupervisor(this.config.tunnel, url, this.events);
     void this.tunnel.start();
     void this.bootstrapBrowser();
@@ -210,7 +223,7 @@ export class Orchestrator {
 
     if (text.trimStart().startsWith("/") && (text.length <= LARGE_MESSAGE_CHARS || /^\s*\/goal(?:\s|$)/i.test(text))) {
       const command = text.trimStart().slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase();
-      if (this.busy && !["help", "?", "tools", "timer", "timers", "jobs", "job", "status"].includes(command ?? "")) {
+      if (this.busy && !["help", "?", "tools", "timer", "timers", "jobs", "job", "status", "telegram"].includes(command ?? "")) {
         this.events.emit({ type: "notice", level: "warn", text: "Wait for the current turn to finish or press Esc before running that command." });
         return;
       }
@@ -229,6 +242,87 @@ export class Orchestrator {
     }
 
     await this.runTurn(text.trim() ? text : "Please examine the attached files and folders.");
+  }
+
+  submitFromTelegram(text: string): boolean {
+    if (this.shuttingDown || this.busy || !text.trim() || text.trimStart().startsWith("/")) return false;
+    void this.runTurn(text.trim(), "telegram");
+    return true;
+  }
+
+  async submitTelegramToken(token: string): Promise<void> {
+    const value = token.trim();
+    if (!value || value.length > 200 || /\s/.test(value)) {
+      this.events.emit({ type: "telegram-setup", state: { stage: "token", error: "That token format is invalid. Paste the token from BotFather and try again." } });
+      return;
+    }
+    try {
+      const code = String(randomInt(10_000_000, 100_000_000));
+      await this.startTelegramBot(value, undefined, code);
+      this.events.emit({ type: "telegram-setup", state: { stage: "pairing", botUsername: this.telegramBot?.botUsername ?? "your bot", code } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.emit({ type: "telegram-setup", state: { stage: "token", error: `Could not connect to Telegram: ${message.replaceAll(value, "[redacted]")}` } });
+    }
+  }
+
+  async cancelTelegramSetup(): Promise<void> {
+    const bot = this.telegramBot;
+    if (bot && !this.config.telegram.enabled) {
+      this.telegramBot = undefined;
+      await bot.stop();
+    }
+    this.events.emit({ type: "telegram-setup", state: undefined });
+    this.events.emit({ type: "notice", level: "info", text: "Telegram setup cancelled." });
+  }
+
+  private getTelegramToken(): string | undefined {
+    try { return process.env.TELEGRAM_BOT_TOKEN ?? readCredential("TELEGRAM_BOT_TOKEN"); }
+    catch (error) {
+      this.events.emit({ type: "status", key: "telegram", state: "error", detail: error instanceof Error ? error.message : "Telegram credential could not be read." });
+      return undefined;
+    }
+  }
+
+  private async startTelegramBot(token: string, identity?: HarnessConfig["telegram"], pairingCode?: string): Promise<void> {
+    if (this.telegramBot) {
+      const previous = this.telegramBot;
+      this.telegramBot = undefined;
+      await previous.stop();
+    }
+    let bot: TelegramBot;
+    bot = new TelegramBot(token, identity, pairingCode, {
+      events: this.events,
+      workspace: this.config.workspace,
+      getBusy: () => this.busy,
+      getPhase: () => this.phaseState,
+      submit: (text) => this.submitFromTelegram(text),
+      cancel: () => this.cancel(),
+      approve: (id, allowed) => this.approve(id, allowed),
+      onStatus: (state, detail) => this.events.emit({ type: "status", key: "telegram", state: state === "up" ? "up" : state === "starting" ? "starting" : state === "error" ? "error" : "off", detail }),
+      onPaired: async (profile) => {
+        saveCredential("TELEGRAM_BOT_TOKEN", token);
+        saveTelegramProfile(this.config, profile);
+        this.events.emit({ type: "telegram-setup", state: undefined });
+        this.events.emit({ type: "notice", level: "info", text: `Telegram connected${profile.botUsername ? ` · @${profile.botUsername}` : ""}. Use /status in Telegram for the harness dashboard.` });
+      },
+      saveProfile: (patch) => {
+        try { saveTelegramProfile(this.config, patch); }
+        catch (error) { this.events.emit({ type: "notice", level: "error", text: `Could not save Telegram state: ${error instanceof Error ? error.message : String(error)}` }); }
+      },
+      onPairExpired: () => {
+        if (this.telegramBot === bot) this.telegramBot = undefined;
+        this.events.emit({ type: "telegram-setup", state: undefined });
+        this.events.emit({ type: "notice", level: "warn", text: "Telegram pairing code expired. Run /telegram setup to try again." });
+      },
+    });
+    this.telegramBot = bot;
+    try { await bot.start(); }
+    catch (error) {
+      if (this.telegramBot === bot) this.telegramBot = undefined;
+      await bot.stop().catch(() => undefined);
+      throw error;
+    }
   }
 
   async attachPastedImage(value: string): Promise<boolean> {
@@ -305,6 +399,8 @@ export class Orchestrator {
     await this.sessions.flush().catch(() => undefined);
     this.runtime.timers.dispose();
     this.runtime.approvals.denyAll();
+    await this.telegramBot?.stop().catch(() => undefined);
+    this.telegramBot = undefined;
     await this.browser.close().catch(() => undefined);
     await this.tunnel?.stop().catch(() => undefined);
     await this.mcp.stop().catch(() => undefined);
@@ -384,8 +480,9 @@ export class Orchestrator {
     }
   }
 
-  private async runTurn(text: string): Promise<void> {
+  private async runTurn(text: string, channel?: "telegram"): Promise<void> {
     this.busy = true;
+    this.browser.setResponseChannel(channel);
     const goalTurn = this.runtime.goal.current?.status === "active";
     const previousSession = this.sessions.snapshot;
     if ((!this.browser.isOpen || this.config.browser.newChatPerTurn) && previousSession.messages.some((message) => message.role === "user")) {
@@ -412,11 +509,11 @@ export class Orchestrator {
         if (!this.config.browser.attachConnector) throw new Error("Large messages require the local connector to read the saved text. Enable the connector and resend your message.");
         const attachment = await this.runtime.attachments.saveText(text);
         userText = `The user's complete message is saved locally as ${attachment.name} (attachment_id ${attachment.id}, ${attachment.size} UTF-8 bytes). Read the entire text with read_attachment, using next_offset until end of file. Treat its contents as the user's request; do not assume anything about unseen chunks.`;
-        this.events.emit({ type: "user-message", id: messageId, text: `[Long message · ${text.length.toLocaleString()} characters · ${attachment.id}]` });
+        this.events.emit({ type: "user-message", id: messageId, text: `[Long message · ${text.length.toLocaleString()} characters · ${attachment.id}]`, ...(channel ? { channel } : {}) });
       } else {
-        this.events.emit({ type: "user-message", id: messageId, text });
+        this.events.emit({ type: "user-message", id: messageId, text, ...(channel ? { channel } : {}) });
       }
-      const pending = this.runtime.attachments.pending;
+      const pending = channel ? [] : this.runtime.attachments.pending;
       const folders = pending.filter((item) => item.kind === "directory");
       const files = pending.filter((item) => item.kind === "file");
       if (folders.length && !this.config.browser.attachConnector) throw new Error("Attached folders require the local connector. Enable the connector before sending.");
@@ -557,6 +654,7 @@ export class Orchestrator {
       await this.cancellation;
       this.cancellation = undefined;
       this.currentTurn = undefined;
+      this.browser.setResponseChannel(undefined);
       if (this.runtime.context.turnSignal === controller.signal) this.runtime.context.turnSignal = undefined;
       this.busy = false;
       this.events.emit({ type: "turn-end", turnId, ok });
@@ -583,6 +681,7 @@ export class Orchestrator {
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
+            "Telegram: /telegram setup · /telegram status|start|stop|unlink (private chat only; one-time pairing required)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
@@ -592,6 +691,65 @@ export class Orchestrator {
           ].join("\n"),
         });
         return;
+
+      case "telegram": {
+        const [action = "help"] = argument.split(/\s+/, 1);
+        if (action === "help") {
+          const configured = Boolean(this.config.telegram.ownerUserId && this.getTelegramToken());
+          this.events.emit({ type: "notice", level: "info", text: configured
+            ? `Telegram ${this.telegramBot?.isRunning ? "is connected" : "is stopped"}. Use /telegram start|stop|unlink. To replace the bot, unlink it first, then run /telegram setup.`
+            : "Create a bot with @BotFather, then run /telegram setup. The token is entered in a masked local field and is saved encrypted on Windows." });
+          return;
+        }
+        if (action === "setup") {
+          if (this.telegramBot?.isRunning || (this.config.telegram.enabled && this.getTelegramToken())) {
+            this.events.emit({ type: "notice", level: "warn", text: "A Telegram bot is already connected. Use /telegram stop or /telegram unlink before setting up another one." });
+            return;
+          }
+          if (this.config.telegram.enabled) saveTelegramProfile(this.config, { enabled: false });
+          this.events.emit({ type: "telegram-setup", state: { stage: "token" } });
+          return;
+        }
+        if (action === "cancel") {
+          await this.cancelTelegramSetup();
+          return;
+        }
+        if (action === "status") {
+          const state = this.serviceState.telegram;
+          this.events.emit({ type: "notice", level: "info", text: this.config.telegram.ownerUserId
+            ? `Telegram ${this.telegramBot?.isRunning ? "connected" : "stopped"}${this.config.telegram.botUsername ? ` · @${this.config.telegram.botUsername}` : ""}${state?.detail ? ` · ${state.detail}` : ""}.`
+            : "Telegram is not configured. Run /telegram setup." });
+          return;
+        }
+        if (action === "start") {
+          if (this.telegramBot?.isRunning) { this.events.emit({ type: "notice", level: "info", text: "Telegram bot is already connected." }); return; }
+          if (!this.config.telegram.ownerUserId || !this.config.telegram.ownerChatId) { this.events.emit({ type: "notice", level: "warn", text: "Pair a Telegram private chat first with /telegram setup." }); return; }
+          const token = this.getTelegramToken();
+          if (!token) { this.events.emit({ type: "notice", level: "error", text: "Saved Telegram token is unavailable. Run /telegram unlink, then /telegram setup." }); return; }
+          try {
+            await this.startTelegramBot(token, { ...this.config.telegram, enabled: true });
+            saveTelegramProfile(this.config, { enabled: true });
+            this.events.emit({ type: "notice", level: "info", text: `Telegram bot connected${this.config.telegram.botUsername ? ` · @${this.config.telegram.botUsername}` : ""}.` });
+          } catch (error) { this.events.emit({ type: "notice", level: "error", text: `Could not start Telegram bot: ${error instanceof Error ? error.message.replaceAll(token, "[redacted]") : "Telegram connection failed."}` }); }
+          return;
+        }
+        if (action === "stop") {
+          if (this.telegramBot) { const bot = this.telegramBot; this.telegramBot = undefined; await bot.stop(); }
+          saveTelegramProfile(this.config, { enabled: false });
+          this.events.emit({ type: "notice", level: "info", text: "Telegram bot stopped. Its token and private-chat pairing are saved; use /telegram start to reconnect." });
+          return;
+        }
+        if (action === "unlink") {
+          if (this.telegramBot) { const bot = this.telegramBot; this.telegramBot = undefined; await bot.stop(); }
+          removeCredential("TELEGRAM_BOT_TOKEN");
+          saveTelegramProfile(this.config, { enabled: false, ownerUserId: "", ownerChatId: "", botUsername: "", dashboardMessageId: 0, updateOffset: 0 });
+          this.events.emit({ type: "telegram-setup", state: undefined });
+          this.events.emit({ type: "notice", level: "info", text: "Telegram bot unlinked. The local token was removed." });
+          return;
+        }
+        this.events.emit({ type: "notice", level: "warn", text: "Use /telegram setup|status|start|stop|unlink." });
+        return;
+      }
 
       case "new": {
         try { await this.switchSession("new"); }

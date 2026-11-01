@@ -38,6 +38,7 @@ export function Header({ model, session, approvalMode, status, localSessionId, c
           <Service label="mcp" state={status.mcp?.state ?? "off"} />
           {columns >= 60 ? <Service label="tunnel" state={status.tunnel?.state ?? "off"} /> : null}
           {columns >= 95 ? <Service label="search" state={status.searxng?.state ?? "off"} /> : null}
+          {columns >= 112 ? <Service label="telegram" state={status.telegram?.state ?? "off"} /> : null}
           {columns >= 80 ? <Text color={theme.dim}>approval <Text color={approvalMode === "never" ? theme.warn : theme.accent}>{approvalMode}</Text></Text> : null}
         </Box>
         {columns >= 80 ? <Text color={theme.dim}>context <Text color={ratio >= 0.8 ? theme.warn : theme.accent}>{meter}</Text> {Math.round(ratio * 100)}%</Text> : null}
