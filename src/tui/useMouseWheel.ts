@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useStdin, useStdout } from "ink";
 
 const enableMouse = "\u001b[?1000h\u001b[?1006h";
-export const disableMouse = "\u001b[?1000l\u001b[?1006l";
+export const disableMouse = "\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1005l\u001b[?1006l\u001b[?1015l";
 
 interface WheelArea {
   top: number;
@@ -19,7 +19,11 @@ export function useMouseWheel(area: WheelArea, onWheel: (direction: 1 | -1) => v
   current.current = { area, onWheel };
 
   useEffect(() => {
-    if (!enabled || !(stdin as NodeJS.ReadStream).isTTY || !(stdout as NodeJS.WriteStream).isTTY || process.env.TERM === "dumb") return;
+    if (!(stdin as NodeJS.ReadStream).isTTY || !(stdout as NodeJS.WriteStream).isTTY || process.env.TERM === "dumb") return;
+    if (!enabled) {
+      stdout.write(disableMouse);
+      return;
+    }
     let pending = "";
     let inPaste = false;
 

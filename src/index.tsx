@@ -100,8 +100,13 @@ async function main(): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.start();
 
+  // A previous full-screen program may have left mouse reporting enabled.
+  // Restore native terminal selection before mounting the UI.
+  if (process.stdout.isTTY && process.env.TERM !== "dumb") process.stdout.write(disableMouse);
   const app = render(<App orchestrator={orchestrator} />, {
     alternateScreen: true,
+    // Redrawing the whole screen destroys terminal selections on every frame.
+    incrementalRendering: true,
     exitOnCtrlC: false,
     patchConsole: false,
   });
