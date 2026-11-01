@@ -29,6 +29,87 @@ if (Test-Path -LiteralPath $windowsModules) { $env:PSModulePath = $windowsModule
 $OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $transcriptStarted = $false
 $stage = 'starting installer'
+$release = $null
+$releaseId = $null
+$target = $null
+$activated = $false
+
+# Only remove real directories immediately inside the managed releases folder.
+# Never recurse through a junction or symbolic link.
+function Remove-ManagedDirectory {
+  param([string]$Directory, [string]$Parent, [string]$ExpectedName)
+  $parentItem = Get-Item -LiteralPath $Parent -Force -ErrorAction Stop
+  $item = Get-Item -LiteralPath $Directory -Force -ErrorAction Stop
+  if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+      -not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Name -cne $ExpectedName) { throw 'Cleanup target is not a managed directory.' }
+  $parentPath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Parent).Path).TrimEnd('\')
+  $resolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Directory).Path).TrimEnd('\')
+  if ([IO.Path]::GetDirectoryName($resolved) -ine $parentPath -or $resolved -ine [IO.Path]::GetFullPath((Join-Path $parentPath $ExpectedName)).TrimEnd('\')) { throw 'Cleanup target is outside the managed directory.' }
+  foreach ($child in Get-ChildItem -LiteralPath $resolved -Force -Recurse -ErrorAction Stop) {
+    if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cleanup target contains a junction or symbolic link.' }
+  }
+  Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop
+}
+
+function Remove-OldReleases {
+  param([string]$Root, [string]$Current, [string]$Previous)
+  if ($Current -notmatch '^[0-9a-f]{32}$' -or $Previous -notmatch '^[0-9a-f]{32}$') { throw 'Release identifiers could not be verified.' }
+  $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+  $releases = Join-Path $Root 'releases'
+  $releasesItem = Get-Item -LiteralPath $releases -Force -ErrorAction Stop
+  if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($releasesItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Installation directory contains a junction or symbolic link.' }
+  $rootPath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Root).Path).TrimEnd('\')
+  $releasesPath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $releases).Path).TrimEnd('\')
+  if ([IO.Path]::GetDirectoryName($releasesPath) -ine $rootPath) { throw 'Releases directory is outside the installation.' }
+  $marker = Join-Path $rootPath 'current.txt'
+  if ([IO.File]::ReadAllText($marker).Trim() -cne $Current) { throw 'The active release changed during cleanup.' }
+
+  # Avoid touching releases in use by any running process, including background
+  # Git or Node jobs from another agent window. Fail closed if inspection fails.
+  $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  $unknown = @($processes | Where-Object { $_.Name -match '^(node|git|cmd|powershell|pwsh)\.exe$' -and (-not $_.ExecutablePath -or -not $_.CommandLine) })
+  if ($unknown.Count) { throw 'Could not inspect all running Node, Git, and shell processes.' }
+  $removed = 0; $skipped = 0
+  foreach ($item in Get-ChildItem -LiteralPath $releasesPath -Directory -Force -ErrorAction Stop) {
+    if ($item.Name -cnotmatch '^[0-9a-f]{32}$' -or $item.Name -ceq $Current -or $item.Name -ceq $Previous) { continue }
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $skipped++; continue }
+    $candidate = [IO.Path]::GetFullPath($item.FullName).TrimEnd('\')
+    if ([IO.Path]::GetDirectoryName($candidate) -ine $releasesPath) { $skipped++; continue }
+    $active = $false
+    foreach ($process in $processes) {
+      if (($process.ExecutablePath -and $process.ExecutablePath.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase)) -or
+          ($process.CommandLine -and $process.CommandLine.IndexOf($candidate, [StringComparison]::OrdinalIgnoreCase) -ge 0)) { $active = $true; break }
+    }
+    if ($active) { $skipped++; continue }
+    try {
+      $metadataPath = Join-Path $candidate 'release.json'
+      $manifestPath = Join-Path $candidate 'app\package.json'
+      if (Test-Path -LiteralPath $metadataPath) {
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if (-not $metadata.version -or $manifest.name -cne 'chatgpt-coder' -or $manifest.version -cne $metadata.version) { throw 'Unrecognised release metadata.' }
+      } else {
+        # An interrupted installer may not have written its metadata yet. Only
+        # remove old directories with the exact layout created by the installer.
+        if (([DateTime]::UtcNow - $item.LastWriteTimeUtc).TotalHours -lt 6) { throw 'Incomplete release is too recent.' }
+        $names = @(Get-ChildItem -LiteralPath $candidate -Force -ErrorAction Stop | Select-Object -ExpandProperty Name)
+        if (-not ($names -contains 'app') -or -not ($names -contains 'runtime') -or -not ($names -contains 'download') -or @($names | Where-Object { $_ -notin @('app', 'runtime', 'download', 'git', 'chatgpt-coder.exe') }).Count) { throw 'Unrecognised incomplete release.' }
+        if (Test-Path -LiteralPath $manifestPath) {
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.name -cne 'chatgpt-coder') { throw 'Unrecognised incomplete release manifest.' }
+        }
+      }
+      if ([IO.File]::ReadAllText($marker).Trim() -cne $Current) { throw 'The active release changed during cleanup.' }
+      Remove-ManagedDirectory -Directory $candidate -Parent $releasesPath -ExpectedName $item.Name
+      $removed++
+      Write-Host "[cleanup] Removed old release $removed."
+    } catch {
+      $skipped++
+      Write-Warning "Cleanup skipped release $($item.Name): $($_.Exception.Message)"
+    }
+  }
+  Write-Host "[cleanup] Removed $removed old release(s); kept the current and rollback releases. Skipped: $skipped."
+}
 
 function Invoke-Checked {
   param([string]$Executable, [string[]]$Arguments)
@@ -230,6 +311,11 @@ try {
     Pop-Location
   }
 
+  # Downloaded archives and extracted staging copies are no longer needed once
+  # the private runtime and Git are installed in this new release.
+  try { Remove-ManagedDirectory -Directory $downloadDir -Parent $release -ExpectedName 'download' }
+  catch { Write-Warning ("Could not remove installation downloads: " + $_.Exception.Message) }
+
   $stage = 'registering the executable and PATH'
   Write-Host '[7/7] Creating the executable and registering PATH...'
   $launcher = Join-Path $target 'chatgpt-coder.exe'
@@ -266,9 +352,12 @@ try {
     Remove-Item -LiteralPath $markerBackup -Force -ErrorAction SilentlyContinue
   }
   else { [IO.File]::Move($markerTemp, $marker) }
+  $activated = $true
 
   if ($Update) {
     Write-Host "Update installed: $($package.version). Restart chatgpt-coder to use it."
+    try { Remove-OldReleases -Root $target -Current $releaseId -Previous $previousRelease }
+    catch { Write-Warning ("Old release cleanup was skipped: " + $_.Exception.Message) }
     exit 0
   }
 
@@ -308,7 +397,7 @@ public static class ChatgptCoderEnvironmentBroadcast {
   Write-Host 'Open a NEW terminal, cd to any project folder, then run: chatgpt-coder'
   Write-Host 'In the harness run /connect to configure the OpenAI tunnel and connector.'
   Write-Host 'Web search requires the SearXNG JSON API. See the messages above and README.md.'
-  Write-Host 'Previous releases are retained under releases; credentials and sessions were not removed.'
+  Write-Host 'The previous release is kept for rollback; credentials and sessions were not removed.'
 } catch {
   $failure = "Installation failed while ${stage}: " + $_.Exception.Message
   Write-Host $failure -ForegroundColor Red
@@ -316,5 +405,16 @@ public static class ChatgptCoderEnvironmentBroadcast {
   if ($logPath) { Write-Host "Installation log: $logPath" }
   exit 1
 } finally {
+  if (-not $activated -and $release -and $target -and $releaseId -match '^[0-9a-f]{32}$' -and (Test-Path -LiteralPath $release)) {
+    try {
+      $markerPath = Join-Path $target 'current.txt'
+      $selected = if (Test-Path -LiteralPath $markerPath) { [IO.File]::ReadAllText($markerPath).Trim() } else { '' }
+      $rootItem = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+      if ($selected -ne $releaseId -and -not ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Remove-ManagedDirectory -Directory $release -Parent (Join-Path $target 'releases') -ExpectedName $releaseId
+        Write-Host '[cleanup] Removed the incomplete release from this failed installation.'
+      }
+    } catch { Write-Warning ("Could not remove the incomplete release: " + $_.Exception.Message) }
+  }
   if ($transcriptStarted) { Stop-Transcript | Out-Null }
 }

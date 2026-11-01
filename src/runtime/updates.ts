@@ -310,7 +310,7 @@ async function runChild(executable: string, args: string[], report?: (message: s
       output = (output + text).slice(-40_000);
       if (stream === "stdout") stdoutText = (stdoutText + text).slice(-40_000);
       else stderrText = (stderrText + text).slice(-40_000);
-      if (report && /\[\d\/\d\]|Update installed|failed|error/i.test(text)) report(text.trim().slice(-300));
+      if (report && /\[\d\/\d\]|\[cleanup\]|Update installed|cleanup.*skipped|failed|error/i.test(text)) report(text.trim().slice(-300));
     };
     child.stdout.on("data", (chunk: Buffer) => record(stdout, chunk, "stdout"));
     child.stderr.on("data", (chunk: Buffer) => record(stderr, chunk, "stderr"));
