@@ -278,6 +278,7 @@ export class Orchestrator {
     this.config.approvalMode = mode;
     this.runtime.approvals.mode = mode;
     this.runtime.context.config.approvalMode = mode;
+    if (mode === "never") this.runtime.approvals.allowAll();
     this.events.emit({
       type: "notice",
       level: "info",
@@ -472,7 +473,7 @@ export class Orchestrator {
           break;
         }
         this.events.emit({ type: "notice", level: "info", text: "Goal remains active; continuing the task…" });
-        const continuation = `The user goal is still active: ${this.runtime.goal.current.objective}\nContinue the unfinished work using the results already obtained. Do not repeat completed work. Do not retry a denied action without a fresh explicit user request and confirmation. When all requirements are actually achieved, call update_goal with complete and evidence. If genuinely blocked by an external condition or required user input, call update_goal with blocked and explain why.\n${goalReportingInstructions}`;
+        const continuation = `The user goal is still active: ${this.runtime.goal.current.objective}\nContinue the unfinished work using the results already obtained. Do not repeat completed work. Do not retry a denied action unless the user explicitly asks to reconsider it; follow the current approval mode. When all requirements are actually achieved, call update_goal with complete and evidence. If genuinely blocked by an external condition or required user input, call update_goal with blocked and explain why.\n${goalReportingInstructions}`;
         let nextPrompt = continuation;
         if (this.contextTokens + estimateTokens(continuation) > this.config.context.maxTokens * 0.8 && this.turnCount > 0) {
           await this.compactConversation(controller.signal);
@@ -492,7 +493,7 @@ export class Orchestrator {
       while (!goalTurn && this.browser.responseEndedAfterTool && continuationIsSafe() && continuations < 2) {
         continuations += 1;
         this.events.emit({ type: "notice", level: "info", text: `ChatGPT stopped after a tool call with the plan unfinished. Continuing the same task (${continuations}/2)…` });
-        const continuation = "Your previous response stopped immediately after a tool call while the task plan is unfinished. Continue the same user request using the tool results already obtained. Do not repeat completed work or retry a denied action without a fresh explicit user request and confirmation. If you are blocked or need user input, explain that instead. Update the plan and summarize the result when finished.";
+        const continuation = "Your previous response stopped immediately after a tool call while the task plan is unfinished. Continue the same user request using the tool results already obtained. Do not repeat completed work or retry a denied action unless the user explicitly asks to reconsider it; follow the current approval mode. If you are blocked or need user input, explain that instead. Update the plan and summarize the result when finished.";
         this.contextTokens += estimateTokens(continuation);
         answer = await this.browser.send(continuation, controller.signal, { continueChat: true, canRecoverStall: continuationIsSafe });
         controller.signal.throwIfAborted();

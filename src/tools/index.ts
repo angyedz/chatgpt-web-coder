@@ -194,7 +194,7 @@ export const toolDefinitions: ToolDefinition[] = [
             ? process.env.HARNESS_SHELL || "powershell.exe"
             : process.env.HARNESS_SHELL || "/bin/bash",
         approvalMode: ctx.config.approvalMode,
-        approvalModeDescription: ctx.approvals.mode === "never" ? "Ordinary actions run without confirmation; require_approval=true on exec_command or SSH tools requests a one-time confirmation." : "Ordinary actions request confirmation.",
+        approvalModeDescription: ctx.approvals.mode === "never" ? "YOLO: harness tool calls, including SSH, are automatically approved without prompting." : "Tool calls requiring approval prompt the user.",
         searxng: ctx.config.searxng.url,
         agentsMd: await exists(path.join(ctx.workspace, "AGENTS.md")),
         gitRepository: await exists(path.join(ctx.workspace, ".git")),
@@ -207,7 +207,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: "exec_command",
     title: "Run a shell command",
     description:
-      "Run a shell command in the workspace. Set require_approval=true for a one-time confirmation, including in approval mode never. Use it if the user explicitly asks to retry a previously denied command. Set background=true for long-running servers and jobs; the returned session survives cancellation of the current turn. Use timeout_ms for an optional execution deadline. Poll with write_stdin or inspect_exec_session; never start a duplicate. On Windows the shell is PowerShell.",
+      "Run a shell command in the workspace. In approval mode never (YOLO) harness approval is automatic. In ask mode the user is prompted. Set background=true for long-running servers and jobs; the returned session survives cancellation of the current turn. Use timeout_ms for an optional execution deadline. Poll with write_stdin or inspect_exec_session; never start a duplicate. On Windows the shell is PowerShell.",
     inputSchema: {
       cmd: z.string().min(1).describe("Command line to execute."),
       workdir: z
@@ -222,7 +222,7 @@ export const toolDefinitions: ToolDefinition[] = [
         .optional()
         .describe("How long to wait before returning a session id. Default 10000."),
       background: z.boolean().optional().describe("Run as a background job; return quickly and keep it running after the turn."),
-      require_approval: z.boolean().optional().describe("Request confirmation for this exact command even when approval mode is never."),
+      require_approval: z.boolean().optional().describe("Legacy field; approval always follows the current mode, and never (YOLO) never prompts."),
       timeout_ms: z.number().int().min(100).max(2_147_000_000).optional().describe("Stop the process tree after this many milliseconds. Omit for no deadline."),
       max_output_chars: z
         .number()
@@ -254,7 +254,6 @@ export const toolDefinitions: ToolDefinition[] = [
         `Run in ${relativePath(ctx.workspace, workdir)}:\n${oneLine(cmd, 240)}`,
         70_000,
         ctx.approvalScope,
-        boolArg(args, "require_approval", false),
       );
       if (!approval.allowed) {
         return errorText(`Command was not started. Approval outcome: ${approval.reason ?? "denied by the user"}.`);

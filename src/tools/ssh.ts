@@ -43,7 +43,7 @@ function sftpQuote(value: string): string {
 
 async function approved(ctx: ToolContext, tool: string, args: Record<string, unknown>, summary: string): Promise<{ allowed: boolean; reason?: string }> {
   ctx.turnSignal?.throwIfAborted();
-  const result = await ctx.approvals.request(tool, args, summary, 70_000, ctx.approvalScope, args.require_approval === true);
+  const result = await ctx.approvals.request(tool, args, summary, 70_000, ctx.approvalScope);
   if (result.allowed) ctx.turnSignal?.throwIfAborted();
   return result;
 }
@@ -59,11 +59,11 @@ function format(result: Awaited<ReturnType<ToolContext["exec"]["runExecutable"]>
 export const sshTools: ToolDefinition[] = [
   {
     name: "ssh_exec", title: "Run a command over SSH",
-    description: "Run a non-interactive command on an SSH host using the user's OpenSSH config, agent or key. The host key must already be trusted. Set require_approval=true to ask for this command even in never mode, including when the user explicitly asks to retry a denied action. Use background=true for long-running commands, then inspect or stop the returned exec session. Never put passwords or private keys in tool arguments.",
+    description: "Run a non-interactive command on an SSH host using the user's OpenSSH config, agent or key. The host key must already be trusted. Harness approval is automatic in never (YOLO) mode and requested in ask mode. Use background=true for long-running commands, then inspect or stop the returned exec session. Never put passwords or private keys in tool arguments.",
     inputSchema: {
       ...connectionSchema,
       command: z.string().min(1).max(16000).describe("Command executed by the remote shell."),
-      require_approval: z.boolean().optional().describe("Request one-time confirmation even in approval mode never."),
+      require_approval: z.boolean().optional().describe("Legacy field; approval always follows the current mode, and never (YOLO) never prompts."),
       background: z.boolean().optional().describe("Keep the SSH process running in the background."),
       yield_time_ms: z.number().int().min(250).max(60000).optional(),
       timeout_ms: z.number().int().min(100).max(2147000000).optional(),
@@ -89,12 +89,12 @@ export const sshTools: ToolDefinition[] = [
   ...(["upload", "download"] as const).map((direction): ToolDefinition => ({
     name: `ssh_${direction}`,
     title: direction === "upload" ? "Upload a file over SFTP" : "Download a file over SFTP",
-    description: `${direction === "upload" ? "Upload a local workspace file to an SSH server" : "Download a remote file into the workspace"} using non-interactive OpenSSH SFTP. The host key must already be trusted. Set require_approval=true for a one-time confirmation in any approval mode, including when the user explicitly asks to retry a denied action. Local paths are confined to the workspace; existing files may be overwritten.`,
+    description: `${direction === "upload" ? "Upload a local workspace file to an SSH server" : "Download a remote file into the workspace"} using non-interactive OpenSSH SFTP. The host key must already be trusted. Harness approval is automatic in never (YOLO) mode and requested in ask mode. Local paths are confined to the workspace; existing files may be overwritten.`,
     inputSchema: {
       ...connectionSchema,
       local_path: z.string().min(1).describe("File path inside the workspace."),
       remote_path: z.string().min(1).describe("File path on the SSH server."),
-      require_approval: z.boolean().optional().describe("Request one-time confirmation even in approval mode never."),
+      require_approval: z.boolean().optional().describe("Legacy field; approval always follows the current mode, and never (YOLO) never prompts."),
       timeout_ms: z.number().int().min(100).max(2147000000).optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },

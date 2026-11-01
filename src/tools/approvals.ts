@@ -2,14 +2,12 @@ import type { ApprovalMode } from "../config.js";
 import type { HarnessEvents } from "../events.js";
 import type { ApprovalRequest } from "../types.js";
 import { newId } from "../utils/ids.js";
-import { createHash } from "node:crypto";
 
 interface PendingApproval {
   request: ApprovalRequest;
   resolve: (allowed: boolean, reason?: string) => void;
   timer: NodeJS.Timeout;
   scope?: string;
-  actionKey: string;
 }
 
 export interface ApprovalOutcome {
@@ -19,7 +17,6 @@ export interface ApprovalOutcome {
 
 export class ApprovalManager {
   private readonly pending = new Map<string, PendingApproval>();
-  private readonly deniedActions = new Set<string>();
 
   constructor(
     private readonly events: HarnessEvents,
@@ -36,12 +33,8 @@ export class ApprovalManager {
     summary: string,
     timeoutMs = 70_000,
     scope?: string,
-    force = false,
   ): Promise<ApprovalOutcome> {
-    const normalized = args && typeof args === "object" && !Array.isArray(args) ? { ...args as Record<string, unknown> } : args;
-    if (normalized && typeof normalized === "object" && !Array.isArray(normalized)) delete (normalized as Record<string, unknown>).require_approval;
-    const actionKey = createHash("sha256").update(JSON.stringify([tool, normalized])).digest("hex");
-    if (this.mode === "never" && !force && !this.deniedActions.has(actionKey)) {
+    if (this.mode === "never") {
       return { allowed: true };
     }
 
@@ -69,7 +62,6 @@ export class ApprovalManager {
       this.pending.set(id, {
         request,
         scope,
-        actionKey,
         timer,
         resolve: (allowed, reason) => resolve({ allowed, reason }),
       });
@@ -82,13 +74,12 @@ export class ApprovalManager {
     if (!entry) return;
     clearTimeout(entry.timer);
     this.pending.delete(id);
-    if (allowed) this.deniedActions.delete(entry.actionKey);
-    else {
-      this.deniedActions.add(entry.actionKey);
-      if (this.deniedActions.size > 500) this.deniedActions.delete(this.deniedActions.values().next().value!);
-    }
     entry.resolve(allowed);
     this.events.emit({ type: "approval-resolved", id, allowed });
+  }
+
+  allowAll(): void {
+    for (const id of [...this.pending.keys()]) this.respond(id, true);
   }
 
   denyAll(reason = "Session is closing"): void {
