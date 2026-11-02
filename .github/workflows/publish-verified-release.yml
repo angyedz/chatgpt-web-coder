@@ -42,9 +42,19 @@ jobs:
           # synthetic PR merge ref. The build embeds this in release-info.json.
           source_sha="$RUN_HEAD_SHA"
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid source commit"; exit 1; }
-          # Old ZIP layouts may contain release-info.json at the archive root.
-          # The trusted workflow_run commit is the canonical source identity.
-          metadata_path="$(unzip -Z1 release/chatgpt-coder-windows.zip | grep -E '(^|/)release-info\\.json
+          # Verify metadata when present; older ZIP layouts do not include it.
+          metadata_path="$(unzip -Z1 release/chatgpt-coder-windows.zip | grep -E '(^|/)release-info[.]json$' | head -n 1 || true)"
+          artifact_tag=""
+          if [ -n "$metadata_path" ]; then
+            metadata="$(unzip -p release/chatgpt-coder-windows.zip "$metadata_path")"
+            artifact_sha="$(printf '%s' "$metadata" | jq -er '.commit | strings')"
+            artifact_tag="$(printf '%s' "$metadata" | jq -er '.tag | strings')"
+            artifact_repo="$(printf '%s' "$metadata" | jq -er '.repository | strings')"
+            [ "$artifact_sha" = "$source_sha" ] || { echo "ZIP/source commit mismatch"; exit 1; }
+            [ "$artifact_repo" = "$GITHUB_REPOSITORY" ] || { echo "ZIP repository mismatch"; exit 1; }
+          else
+            echo "::warning::ZIP has no release-info.json; using verified workflow_run SHA."
+          fi
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid source run"; exit 1; }
           [[ "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || { echo "Invalid run attempt"; exit 1; }
           case "$RUN_EVENT" in
@@ -68,52 +78,6 @@ jobs:
             if [ "$current_main" = "$source_sha" ]; then flags=(--latest); fi
           fi
           if [ -n "$artifact_tag" ]; then [ "$artifact_tag" = "$tag" ] || { echo "ZIP release tag mismatch: $artifact_tag vs $tag"; exit 1; }; fi
-          printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\nПроверенный CI run: %s.\n\n' "$channel" "$version" "$RUN_BRANCH" "$source_sha" "$RUN_ID" > release-notes.md
-          printf '%s\n' '**Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.' '**Из ZIP:** выберите файл командой `/update`, затем `/update apply`.' '' '`SHA256SUMS.txt` содержит SHA-256 проверенного архива.' >> release-notes.md
-          if [ "$channel" = stable ]; then
-            printf '%s\n' '' 'Для стабильных релизов доступно обновление через `/update latest`.' >> release-notes.md
-          else
-            printf '%s\n' '' 'Это сборка ветки pre-release; она доступна через `/update settings channel pre-release` и `/update latest`.' >> release-notes.md
-          fi
-          gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" --target "$source_sha" \
-            --title "chatgpt-coder ${version} · ${channel} · ${source_sha:0:7}" \
-            --notes-file release-notes.md "${flags[@]}"
- | head -n 1 || true)"
-          if [ -n "$metadata_path" ]; then
-            metadata="$(unzip -p release/chatgpt-coder-windows.zip "$metadata_path")"
-            artifact_sha="$(printf '%s' "$metadata" | jq -er '.commit | strings')"
-            artifact_tag="$(printf '%s' "$metadata" | jq -er '.tag | strings')"
-            artifact_repo="$(printf '%s' "$metadata" | jq -er '.repository | strings')"
-            [ "$artifact_sha" = "$source_sha" ] || { echo "ZIP/source commit mismatch"; exit 1; }
-            [ "$artifact_repo" = "$GITHUB_REPOSITORY" ] || { echo "ZIP repository mismatch"; exit 1; }
-          else
-            echo "::warning::ZIP has no release-info.json; using trusted workflow_run SHA."
-            artifact_tag=""
-          fi
-          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid source run"; exit 1; }
-          [[ "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || { echo "Invalid run attempt"; exit 1; }
-          case "$RUN_EVENT" in
-            push|workflow_dispatch) ;;
-            *) echo "Unsupported workflow trigger: $RUN_EVENT"; exit 1 ;;
-          esac
-          case "$RUN_BRANCH" in
-            main|pre-release) ;;
-            *) echo "Only main and pre-release can publish"; exit 1 ;;
-          esac
-
-          version="$(unzip -p release/chatgpt-coder-windows.zip package.json | jq -er '.version | strings | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+([-.+][0-9A-Za-z.-]+)?$"))')"
-          channel=pre-release
-          tag="prerelease-${RUN_ID}-${RUN_ATTEMPT}"
-          flags=(--prerelease --latest=false)
-          if [ "$RUN_BRANCH" = main ]; then
-            channel=stable
-            tag="build-${RUN_ID}-${RUN_ATTEMPT}"
-            flags=(--latest=false)
-            current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-            if [ "$current_main" = "$source_sha" ]; then flags=(--latest); fi
-          fi
-          [ "$artifact_tag" = "$tag" ] || { echo "ZIP release tag mismatch: $artifact_tag vs $tag"; exit 1; }
           printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\nПроверенный CI run: %s.\n\n' "$channel" "$version" "$RUN_BRANCH" "$source_sha" "$RUN_ID" > release-notes.md
           printf '%s\n' '**Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.' '**Из ZIP:** выберите файл командой `/update`, затем `/update apply`.' '' '`SHA256SUMS.txt` содержит SHA-256 проверенного архива.' >> release-notes.md
           if [ "$channel" = stable ]; then
