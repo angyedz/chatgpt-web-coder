@@ -1,5 +1,6 @@
 import { saveConnectionSetting, saveHarnessConfig, saveTunnelApiKey, saveUpdateSetting, readCredential, removeCredential, saveCredential, saveTelegramProfile, type ExternalMcpServer, type HarnessConfig } from "../config.js";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
+import { SubagentManager } from "./subagents.js";
 import { HarnessEvents } from "../events.js";
 import { McpHost } from "../mcp/server.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
@@ -33,6 +34,7 @@ export class Orchestrator {
   readonly runtime: Runtime;
   readonly browser: ChatGptBrowser;
   readonly mcp: McpHost;
+  readonly subagents: SubagentManager;
   readonly sessions: SessionStore;
   tunnel!: TunnelSupervisor;
 
@@ -75,6 +77,7 @@ export class Orchestrator {
     this.runtime.context.browser = this.browser;
     this.runtime.context.beforeToolStart = () => this.browser.snapshotBeforeTool();
     this.mcp = new McpHost(this.runtime.context, config.mcp);
+    this.subagents = new SubagentManager(config, this.browser, this.mcp, this.events);
     this.events.on((event) => {
       if (event.type === "tool-start") this.activeToolCalls.add(event.call.id);
       if (event.type === "tool-end") this.activeToolCalls.delete(event.call.id);
@@ -229,7 +232,7 @@ export class Orchestrator {
 
     if (text.trimStart().startsWith("/") && (text.length <= LARGE_MESSAGE_CHARS || /^\s*\/goal(?:\s|$)/i.test(text))) {
       const command = text.trimStart().slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase();
-      if (this.busy && !["help", "?", "tools", "timer", "timers", "jobs", "job", "status", "telegram"].includes(command ?? "")) {
+      if (this.busy && !["help", "?", "tools", "timer", "timers", "jobs", "job", "status", "telegram", "swarm"].includes(command ?? "")) {
         this.events.emit({ type: "notice", level: "warn", text: "Wait for the current turn to finish or press Esc before running that command." });
         return;
       }
@@ -375,7 +378,7 @@ export class Orchestrator {
   }
 
   approve(id: string, allowed: boolean): void {
-    this.runtime.approvals.respond(id, allowed);
+    if (!this.subagents.approve(id, allowed)) this.runtime.approvals.respond(id, allowed);
   }
 
   setApprovalMode(mode: "ask" | "never"): void {
@@ -398,6 +401,7 @@ export class Orchestrator {
     this.shuttingDown = true;
     this.btwController?.abort();
     await this.btwBrowser?.closeSideChat();
+    await this.subagents.shutdown();
     if (this.updateCheckTimer) clearInterval(this.updateCheckTimer);
     await this.updateOperation?.catch(() => undefined);
     await discardUpdate(this.pendingUpdate);
@@ -698,6 +702,7 @@ export class Orchestrator {
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
+            "Subagents: /swarm start <1-5> <objective> · /swarm status|results|stop [id|all] (manual launch only)",
             "Telegram: /telegram setup · /telegram status|start|stop|unlink (private chat only; one-time pairing required)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
@@ -708,6 +713,38 @@ export class Orchestrator {
           ].join("\n"),
         });
         return;
+
+      case "swarm": {
+        if (!argument || argument.toLowerCase() === "status") {
+          const agents = this.subagents.snapshots;
+          const details = agents.length
+            ? agents.map((agent) => `#${agent.id}  ${agent.role}  · ${agent.status} · ${agent.toolCount} tools\n   ${agent.branch}\n   ${agent.workspace}`).join("\n")
+            : "No subagents launched. Start them explicitly with /swarm start <1-5> <objective>.";
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nNo automatic launch or merge.` });
+          return;
+        }
+        const start = /^start\s+([1-5])\s+([\s\S]+)$/i.exec(argument);
+        if (start) {
+          if (this.busy) throw new Error("Finish or cancel the primary turn before launching subagents.");
+          await this.subagents.start(Number(start[1]), start[2]!);
+          return;
+        }
+        if (/^stop(?:\s+(all|[1-5]))?$/i.test(argument)) {
+          const id = /^stop(?:\s+(all|[1-5]))?$/i.exec(argument)?.[1];
+          this.subagents.stop(id);
+          this.events.emit({ type: "notice", level: "info", text: `Stop requested for subagent ${id ?? "all"}. Existing Git worktrees are preserved.` });
+          return;
+        }
+        if (argument.toLowerCase() === "results") {
+          const agents = this.subagents.snapshots;
+          this.events.emit({ type: "system-message", id: newId("system"), text: agents.length
+            ? agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nBranch: ${agent.branch}\nWorktree: ${agent.workspace}\nTools: ${agent.toolCount}\n${agent.error ?? agent.summary ?? "No result yet."}`).join("\n\n----\n\n")
+            : "No subagent results yet." });
+          return;
+        }
+        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm results · /swarm stop [id|all]" });
+        return;
+      }
 
       case "telegram": {
         const [action = "help"] = argument.split(/\s+/, 1);
