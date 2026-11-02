@@ -9,6 +9,15 @@ import type { BackgroundTaskManager } from "../runtime/tasks.js";
 import type { ExternalMcpManager } from "../mcp/client.js";
 import type { GoalStore } from "../runtime/goals.js";
 import type { AttachmentStore } from "../runtime/attachments.js";
+import type { SubagentSnapshot } from "../types.js";
+
+export interface SubagentControl {
+  readonly snapshots: SubagentSnapshot[];
+  start(count: number, objective: string): Promise<void>;
+  sendMessage(id: string, message: string): Promise<string>;
+  waitFor(timeoutMs?: number): Promise<SubagentSnapshot[]>;
+  stop(id?: string): void;
+}
 
 export interface TextContent {
   type: "text";
@@ -40,6 +49,7 @@ export interface ToolContext {
   timers: TimerManager;
   tasks: BackgroundTaskManager;
   externalMcp: ExternalMcpManager;
+  subagents?: SubagentControl;
   browser?: {
     listInteractiveControls(): Promise<string>;
     interactWithControl(controlId: string, action: "click" | "fill" | "select" | "check" | "uncheck", value?: string): Promise<string>;
