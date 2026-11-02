@@ -4,6 +4,7 @@ import path from "node:path";
 import { harnessHome } from "../utils/paths.js";
 import { discardUpdate, installedReleaseSource, prepareUpdate, type UpdatePackage } from "./updates.js";
 import { APP_VERSION } from "./version.js";
+import type { UpdateChannel } from "../config.js";
 
 const MAX_ARCHIVE = 100 * 1024 * 1024;
 const MAX_METADATA = 2 * 1024 * 1024;
@@ -56,21 +57,51 @@ async function readLimited(response: Response, limit: number): Promise<Buffer> {
   return Buffer.concat(chunks, total);
 }
 
-export async function latestGithubRelease(input: string): Promise<GithubRelease> {
+interface GithubReleaseData {
+  tag_name?: unknown;
+  name?: unknown;
+  target_commitish?: unknown;
+  prerelease?: unknown;
+  draft?: unknown;
+  assets?: Array<{ name?: unknown; browser_download_url?: unknown; digest?: unknown; size?: unknown; state?: unknown }>;
+}
+
+/** Prereleases have a dedicated release tag and are only built from the pre-release branch. */
+export function selectReleaseByChannel(records: GithubReleaseData[], channel: UpdateChannel): GithubReleaseData | undefined {
+  if (channel === "stable") return records.find((release) => release.draft === false && release.prerelease === false);
+  return records.find((release) =>
+    release.draft === false && release.prerelease === true &&
+    typeof release.tag_name === "string" && /^prerelease-[0-9]+-[0-9]+$/.test(release.tag_name),
+  );
+}
+
+export async function latestGithubRelease(input: string, channel: UpdateChannel = "stable"): Promise<GithubRelease> {
   const repository = validateGithubRepository(input);
+  if (channel !== "stable" && channel !== "pre-release") throw new Error("Invalid update channel.");
   const current = await installedReleaseSource();
-  const response = await fetch(`https://api.github.com/repos/${repository}/releases/latest`, {
+  const endpoint = channel === "stable" ? "releases/latest" : "releases?per_page=100";
+  const response = await fetch("https://api.github.com/repos/" + repository + "/" + endpoint, {
     headers: { Accept: "application/vnd.github+json", "User-Agent": "chatgpt-coder" },
     redirect: "error", signal: AbortSignal.timeout(15000),
   });
-  if (!response.ok) throw new Error(response.status === 404 ? `No public release was found for ${repository}. Check the repository and release visibility.` : `GitHub release request failed (HTTP ${response.status}).`);
-  const data = JSON.parse((await readLimited(response, MAX_METADATA)).toString("utf8")) as { tag_name?: unknown; name?: unknown; target_commitish?: unknown; assets?: Array<{ name?: unknown; browser_download_url?: unknown; digest?: unknown; size?: unknown; state?: unknown }> };
+  if (!response.ok) throw new Error(response.status === 404 ? "No public " + channel + " release was found for " + repository + "." : "GitHub release request failed (HTTP " + response.status + ").");
+  const payload: unknown = JSON.parse((await readLimited(response, MAX_METADATA)).toString("utf8"));
+  let data: GithubReleaseData | undefined;
+  if (channel === "stable") {
+    if (!payload || Array.isArray(payload) || typeof payload !== "object") throw new Error("GitHub returned invalid stable release data.");
+    data = payload as GithubReleaseData;
+    if (data.prerelease === true || data.draft === true) throw new Error("GitHub returned an unexpected prerelease for the stable channel.");
+  } else {
+    if (!Array.isArray(payload)) throw new Error("GitHub returned invalid prerelease data.");
+    data = selectReleaseByChannel(payload, channel);
+    if (!data) throw new Error("No published pre-release build was found. Push a verified build to the pre-release branch first.");
+  }
   const tag = data.tag_name;
   if (typeof tag !== "string" || !tag || tag.length > 200 || /[\x00-\x1f]/.test(tag)) throw new Error("GitHub returned an invalid release tag.");
   const asset = Array.isArray(data.assets) ? data.assets.find((item) => item.name === "chatgpt-coder-windows.zip" && item.state === "uploaded") : undefined;
-  if (!asset || typeof asset.browser_download_url !== "string" || typeof asset.digest !== "string" || !/^sha256:[0-9a-f]{64}$/i.test(asset.digest) || typeof asset.size !== "number" || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > MAX_ARCHIVE) throw new Error("The latest release has no valid Windows ZIP with a GitHub SHA-256 digest.");
+  if (!asset || typeof asset.browser_download_url !== "string" || typeof asset.digest !== "string" || !/^sha256:[0-9a-f]{64}$/i.test(asset.digest) || typeof asset.size !== "number" || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > MAX_ARCHIVE) throw new Error("The selected " + channel + " release has no valid Windows ZIP with a GitHub SHA-256 digest.");
   const url = new URL(asset.browser_download_url);
-  const expectedPath = `/${repository}/releases/download/${tag}/chatgpt-coder-windows.zip`;
+  const expectedPath = "/" + repository + "/releases/download/" + tag + "/chatgpt-coder-windows.zip";
   if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password || decodeURIComponent(url.pathname).toLowerCase() !== expectedPath.toLowerCase()) throw new Error("GitHub returned an unexpected update download URL.");
   const sha256 = asset.digest.slice(7).toLowerCase();
   const sameRepository = current.repository?.toLowerCase() === repository.toLowerCase();
@@ -81,7 +112,7 @@ export async function latestGithubRelease(input: string): Promise<GithubRelease>
   const versionDifference = latestVersion && runningVersion ? latestVersion.reduce((difference, part, index) => difference || part - runningVersion[index]!, 0) : undefined;
   const same = sameRepository && (current.sha256 ? current.sha256.toLowerCase() === sha256 : (commit && current.commit?.toLowerCase() === commit) || (current.tag && current.tag === tag));
   const comparison = same ? "current" : versionDifference !== undefined && versionDifference < 0 ? "older" : sameRepository && (current.sha256 || current.tag || current.commit && commit) || versionDifference !== undefined && versionDifference > 0 ? "different" : "unknown";
-  return { repository, tag, name, url: `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`, downloadUrl: url.href, sha256, size: asset.size, commit, comparison };
+  return { repository, tag, name, url: "https://github.com/" + repository + "/releases/tag/" + encodeURIComponent(tag), downloadUrl: url.href, sha256, size: asset.size, commit, comparison };
 }
 
 async function downloadGithubAsset(initial: string): Promise<Response> {
