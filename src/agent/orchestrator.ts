@@ -702,7 +702,7 @@ export class Orchestrator {
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
-            "Subagents: /swarm start <1-5> <objective> · /swarm status|inspect <id>|results|stop [id|all] (manual launch only)",
+            "Subagents: /swarm start <1-5> <objective> · /swarm status|inspect <id>|results|history|report <run-id>|stop [id|all]",
             "Telegram: /telegram setup · /telegram status|start|stop|unlink (private chat only; one-time pairing required)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
@@ -721,6 +721,21 @@ export class Orchestrator {
             ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools\n   ${agent.activity ?? "idle"} · ${agent.branch}\n   ${agent.workspace}`).join("\n")
             : "No subagents launched. Start them explicitly with /swarm start <1-5> <objective>.";
           this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nNo automatic launch or merge.` });
+          return;
+        }
+        if (argument.toLowerCase() === "history") {
+          const reports = await this.subagents.history();
+          const details = reports.length ? reports.map((report) => {
+            const done = report.agents.filter((agent) => agent.status === "done").length;
+            return `${report.id} · ${done}/${report.agents.length} done · ${new Date(report.savedAt).toLocaleString()}\n  ${report.objective.slice(0, 170)}`;
+          }).join("\n\n") : "No saved runs.";
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SWARM HISTORY\n\n${details}\n\nUse /swarm report <run-id> to inspect a saved run.` });
+          return;
+        }
+        const reportMatch = /^report\s+([a-z0-9-]+)$/i.exec(argument);
+        if (reportMatch) {
+          const report = await this.subagents.report(reportMatch[1]!);
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SWARM REPORT · ${report.id}\nObjective: ${report.objective}\n\n${report.agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nBranch: ${agent.branch}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`).join("\n\n----\n\n")}` });
           return;
         }
         const start = /^start\s+([1-5])\s+([\s\S]+)$/i.exec(argument);
@@ -750,7 +765,7 @@ export class Orchestrator {
             : "No subagent results yet." });
           return;
         }
-        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm inspect <id> · /swarm results · /swarm stop [id|all]" });
+        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm inspect <id> · /swarm results · /swarm history · /swarm report <run-id> · /swarm stop [id|all]" });
         return;
       }
 
