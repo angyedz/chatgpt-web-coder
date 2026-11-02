@@ -402,7 +402,7 @@ export class SubagentManager {
         "You are one explicitly user-launched coding subagent in an isolated local workspace snapshot.",
         `Your role: ${info.role}. Agent ${info.id} of ${this.agents.length}.`,
         `Workspace: ${info.workspace}`,
-        "This workspace is a private copy of the user's current working files, including uncommitted changes. It has no Git metadata.",
+        "This workspace is a private copy of the project files, including uncommitted changes, but excluding Git metadata, dependency caches and credential files such as .env, private keys and cloud credentials.",
         "Treat the linked node_modules directory as read-only. Do not install packages or modify shared dependencies unless the user explicitly asks.",
         "Do not run Git commands. Do not create branches, commits, worktrees, pull requests, push or publish anything.",
         "Do not modify the parent workspace or other agents' workspaces. Work only inside this workspace.",
