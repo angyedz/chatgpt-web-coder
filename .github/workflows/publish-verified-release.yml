@@ -31,21 +31,28 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           PR_SOURCE_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
         run: |
           set -euo pipefail
           (cd release && sha256sum --check SHA256SUMS.txt)
-          source_sha="$SOURCE_SHA"
-          if [ "$RUN_EVENT" = "pull_request" ] && [[ "$PR_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            source_sha="$PR_SOURCE_SHA"
+          # Derive the release commit from the built ZIP itself, not the
+          # synthetic PR merge ref. The build embeds this in release-info.json.
+          metadata="$(unzip -p release/chatgpt-coder-windows.zip prebuilt/release-info.json)"
+          source_sha="$(printf '%s' "$metadata" | jq -er '.commit | strings')"
+          artifact_tag="$(printf '%s' "$metadata" | jq -er '.tag | strings')"
+          artifact_repo="$(printf '%s' "$metadata" | jq -er '.repository | strings')"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid ZIP commit"; exit 1; }
+          [ "$artifact_repo" = "$GITHUB_REPOSITORY" ] || { echo "ZIP repository mismatch"; exit 1; }
+          if [ "$RUN_EVENT" != pull_request ]; then
+            [ "$source_sha" = "$RUN_HEAD_SHA" ] || { echo "ZIP/source commit mismatch"; exit 1; }
+          elif [[ "$PR_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            [ "$source_sha" = "$PR_SOURCE_SHA" ] || { echo "ZIP/PR head mismatch"; exit 1; }
           fi
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid source SHA"; exit 1; }
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid source run"; exit 1; }
           [[ "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || { echo "Invalid run attempt"; exit 1; }
           case "$RUN_EVENT" in
@@ -64,6 +71,7 @@ jobs:
             current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
             if [ "$current_main" = "$source_sha" ]; then flags=(--latest); fi
           fi
+          [ "$artifact_tag" = "$tag" ] || { echo "ZIP release tag mismatch: $artifact_tag vs $tag"; exit 1; }
           printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\nПроверенный CI run: %s.\n\n' "$channel" "$version" "$RUN_BRANCH" "$source_sha" "$RUN_ID" > release-notes.md
           printf '%s\n' '**Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.' '**Из ZIP:** выберите файл командой `/update`, затем `/update apply`.' '' '`SHA256SUMS.txt` содержит SHA-256 проверенного архива.' >> release-notes.md
           if [ "$channel" = stable ]; then
