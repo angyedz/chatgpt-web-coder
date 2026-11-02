@@ -2,7 +2,8 @@ import React from "react";
 import { Box, Text } from "ink";
 import wrapAnsi from "wrap-ansi";
 import type { Goal } from "../../runtime/goals.js";
-import type { PlanStep } from "../../types.js";
+import type { PlanStep, SubagentSnapshot } from "../../types.js";
+import { agentColor, agentSymbol } from "./SubagentStrip.js";
 import { terminalText } from "../terminal-text.js";
 import { theme } from "../theme.js";
 
@@ -16,6 +17,7 @@ interface TaskSidebarProps {
   jobs: number;
   timers: number;
   nextTimerSeconds: number;
+  agents?: SubagentSnapshot[];
 }
 interface Line { text: string; color?: string; bold?: boolean }
 
@@ -29,15 +31,25 @@ function wrapped(value: string, width: number, limit: number): string[] {
   return lines;
 }
 
-export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers, nextTimerSeconds }: TaskSidebarProps) {
+export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers, nextTimerSeconds, agents = [] }: TaskSidebarProps) {
   const inner = Math.max(1, width - 4);
   const capacity = Math.max(0, height - 2);
-  const rows: Line[] = [{ text: "◆  TASK", color: theme.accent, bold: true }];
+  const rows: Line[] = [{ text: "◆  WORKSPACE", color: theme.accent, bold: true }];
   if (capacity >= 20) rows.push({ text: " " });
 
   if (goal) {
     rows.push({ text: `◇  GOAL  ·  ${goal.status}`, color: goal.status === "active" ? theme.accent : goal.status === "complete" ? theme.ok : theme.warn, bold: true });
     for (const line of wrapped(goal.objective, inner, 2)) rows.push({ text: line, color: theme.assistant });
+    if (capacity >= 20) rows.push({ text: " " });
+  }
+  if (agents.length) {
+    const running = agents.filter((agent) => ["preparing", "running"].includes(agent.status)).length;
+    rows.push({ text: `◈  AGENTS  ·  ${running}/${agents.length} active`, color: theme.accentAlt, bold: true });
+    for (const agent of agents) {
+      const name = wrapped(agent.role, Math.max(1, inner - 12), 1)[0] ?? "";
+      rows.push({ text: `${agentSymbol(agent.status)} #${agent.id} ${name} · ${agent.toolCount} tools`, color: agentColor(agent.status) });
+    }
+    rows.push({ text: "  /swarm status · /swarm results", color: theme.dim });
     if (capacity >= 20) rows.push({ text: " " });
   }
   if (jobs || timers) {
