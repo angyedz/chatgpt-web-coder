@@ -68,7 +68,10 @@ try {
     if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_REPOSITORY -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $env:GITHUB_SHA -match '^[a-f0-9]{40}$' -and $env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
       $sourceSha = $env:CHATGPT_CODER_SOURCE_SHA
       if (-not $sourceSha) { $sourceSha = $env:GITHUB_SHA }
-      if ($sourceSha -notmatch '^[a-f0-9]{40}
+      if ($sourceSha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid release source commit SHA.' }
+      if ($env:GITHUB_REF_NAME -eq 'main' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      else { $releaseTag = "preview-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = $releaseTag; commit = $sourceSha } | ConvertTo-Json -Compress
       [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
     }
     Write-Host '[3/4] Compiling Windows launcher...'
