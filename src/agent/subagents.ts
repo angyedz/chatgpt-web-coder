@@ -382,7 +382,7 @@ export class SubagentManager {
       const prompt = [
         "You are one explicitly user-launched coding subagent in an isolated local workspace snapshot.",
         `Your role: ${info.role}. Agent ${info.id} of ${this.agents.length}.`,
-        `Workspace: ${info.workspace}.`,
+        `Workspace: ${info.workspace}`,
         "This workspace is a private copy of the user's current working files, including uncommitted changes. It has no Git metadata.",
         "Treat the linked node_modules directory as read-only. Do not install packages or modify shared dependencies unless the user explicitly asks.",
         "Do not run Git commands. Do not create branches, commits, worktrees, pull requests, push or publish anything.",
