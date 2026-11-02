@@ -488,6 +488,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
         approvalMode={orchestrator.config.approvalMode}
         contextUsage={orchestrator.contextUsage}
         status={status}
+        agents={agents}
       /> : null}
 
       {transcriptHeight > 0 ? <Box width={columns} height={transcriptHeight} flexShrink={0}>
