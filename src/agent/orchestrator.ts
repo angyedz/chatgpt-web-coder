@@ -92,10 +92,6 @@ export class Orchestrator {
           if (this.goalActions.size > 500) this.goalActions.delete(this.goalActions.values().next().value!);
         }
       }
-      if (event.type === "approval-resolved" && !event.allowed && !event.agentId && this.runtime.goal.current?.status === "active") {
-        this.runtime.goal.setStatus("paused", "An approval was denied or timed out. Review the request before /goal resume.");
-        this.cancel();
-      }
       if (event.type === "plan") this.planRevision += 1;
       this.sessions.record(event);
       if (event.type === "goal" && this.busy && event.goal && ["complete", "blocked", "paused"].includes(event.goal.status)) {
@@ -646,11 +642,15 @@ export class Orchestrator {
         });
       }
     } catch (error) {
-      const aborted =
-        controller.signal.aborted ||
-        (error instanceof Error && error.name === "AbortError");
-      if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", aborted ? "Stopped by the user. Use /goal resume to continue." : `Turn failed: ${error instanceof Error ? error.message : String(error)}. Review before /goal resume.`);
-      if (aborted) {
+      const userCancelled = controller.signal.aborted;
+      if (this.runtime.goal.current?.status === "active") {
+        if (userCancelled) {
+          this.runtime.goal.setStatus("paused", "Stopped by the user. Use /goal resume to continue.");
+        } else {
+          this.runtime.goal.setStatus("blocked", `Turn failed: ${error instanceof Error ? error.message : String(error)}. The goal was blocked by this turn error; inspect it and use /goal resume when ready.`);
+        }
+      }
+      if (userCancelled) {
         this.events.emit({
           type: "notice",
           level: "warn",
@@ -718,9 +718,9 @@ export class Orchestrator {
         if (!argument || argument.toLowerCase() === "status") {
           const agents = this.subagents.snapshots;
           const details = agents.length
-            ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools\n   ${agent.activity ?? "idle"} · ${agent.branch}\n   ${agent.workspace}`).join("\n")
+            ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools\n   ${agent.activity ?? "idle"}\n   ${agent.workspace}`).join("\n")
             : "No subagents launched. Start them explicitly with /swarm start <1-5> <objective>.";
-          this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nNo automatic launch or merge.` });
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nWorkers launch only on explicit request. Non-conflicting file changes are integrated automatically; conflicts remain in their local workspaces.` });
           return;
         }
         if (argument.toLowerCase() === "history") {
@@ -735,7 +735,7 @@ export class Orchestrator {
         const reportMatch = /^report\s+([a-z0-9-]+)$/i.exec(argument);
         if (reportMatch) {
           const report = await this.subagents.report(reportMatch[1]!);
-          this.events.emit({ type: "system-message", id: newId("system"), text: `SWARM REPORT · ${report.id}\nObjective: ${report.objective}\n\n${report.agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nBranch: ${agent.branch}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`).join("\n\n----\n\n")}` });
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SWARM REPORT · ${report.id}\nObjective: ${report.objective}\n\n${report.agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`).join("\n\n----\n\n")}` });
           return;
         }
         const start = /^start\s+([1-5])\s+([\s\S]+)$/i.exec(argument);
@@ -747,21 +747,21 @@ export class Orchestrator {
         if (/^stop(?:\s+(all|[1-5]))?$/i.test(argument)) {
           const id = /^stop(?:\s+(all|[1-5]))?$/i.exec(argument)?.[1];
           this.subagents.stop(id);
-          this.events.emit({ type: "notice", level: "info", text: `Stop requested for subagent ${id ?? "all"}. Existing Git worktrees are preserved.` });
+          this.events.emit({ type: "notice", level: "info", text: `Stop requested for subagent ${id ?? "all"}. Existing local workspaces are preserved.` });
           return;
         }
         const inspect = /^inspect\s+([1-5])$/i.exec(argument);
         if (inspect) {
           const agent = this.subagents.snapshots.find((item) => item.id === inspect[1]);
           this.events.emit({ type: "system-message", id: newId("system"), text: agent
-            ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nBranch: ${agent.branch}\nWorktree: ${agent.workspace}\nTools: ${agent.toolCount}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
+            ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated files: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
             : `Subagent #${inspect[1]} does not exist.` });
           return;
         }
         if (argument.toLowerCase() === "results") {
           const agents = this.subagents.snapshots;
           this.events.emit({ type: "system-message", id: newId("system"), text: agents.length
-            ? agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nBranch: ${agent.branch}\nWorktree: ${agent.workspace}\nTools: ${agent.toolCount}\n${agent.error ?? agent.summary ?? agent.preview ?? "No result yet."}`).join("\n\n----\n\n")
+            ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated files: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
             : "No subagent results yet." });
           return;
         }
