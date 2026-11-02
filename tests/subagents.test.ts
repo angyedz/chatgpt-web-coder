@@ -101,7 +101,7 @@ describe("SubagentManager explicit launch boundaries", () => {
       await finished;
       const result = agents.snapshots[0]!;
       expect(result.status).toBe("done");
-      expect(result.branch).toBeUndefined();
+      expect("branch" in result).toBe(false);
       expect(result.changedFiles).toEqual(expect.arrayContaining(["uncommitted.txt", "new-file.txt"]));
       expect(result.conflicts).toEqual([]);
       expect(await readFile(path.join(source, "uncommitted.txt"), "utf8")).toBe("edited by subagent");
