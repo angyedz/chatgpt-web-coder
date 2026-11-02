@@ -30,6 +30,7 @@ type AgentRecord = {
   browser?: ChatGptBrowser;
   task?: Promise<void>;
   approvalIds: Set<string>;
+  lastPreviewPublish?: number;
 };
 
 export class SubagentManager {
@@ -134,7 +135,7 @@ export class SubagentManager {
       agent.runtime?.approvals.denyAll();
       if (agent.browser) void agent.browser.stop().catch(() => undefined);
       if (agent.runtime) void agent.runtime.exec.stopTurn(agent.turnId).catch(() => undefined);
-      agent.info = { ...agent.info, status: "stopped", finishedAt: Date.now() };
+      agent.info = { ...agent.info, status: "stopped", activity: "stopped by user", finishedAt: Date.now() };
     }
     this.publish();
   }
@@ -153,8 +154,18 @@ export class SubagentManager {
     runtime.context.turnSignal = controller.signal;
     const unsubscribe = sideEvents.on((event) => {
       if (event.type === "tool-start") {
-        agent.info = { ...agent.info, toolCount: agent.info.toolCount + 1 };
+        agent.info = { ...agent.info, toolCount: agent.info.toolCount + 1, activity: `${event.call.name} · running` };
         this.publish();
+      } else if (event.type === "tool-end") {
+        agent.info = { ...agent.info, activity: `${event.call.name} · ${event.call.status}` };
+        this.publish();
+      } else if (event.type === "assistant-delta") {
+        agent.info = { ...agent.info, preview: event.text.slice(-1_200) };
+        const now = Date.now();
+        if (now - (agent.lastPreviewPublish ?? 0) > 800) {
+          agent.lastPreviewPublish = now;
+          this.publish();
+        }
       } else if (event.type === "approval") {
         agent.approvalIds.add(event.request.id);
         this.events.emit({ type: "approval", request: { ...event.request, summary: `Agent ${info.id} · ${event.request.summary}` } });
@@ -171,7 +182,7 @@ export class SubagentManager {
       runtime.context.beforeToolStart = () => browser.snapshotBeforeTool();
       controller.signal.throwIfAborted();
       this.mcp.registerTurnContext(turnId, runtime.context);
-      agent.info = { ...agent.info, status: "running" };
+      agent.info = { ...agent.info, status: "running", activity: "ChatGPT working" };
       this.publish();
       const prompt = [
         "You are one explicitly user-launched coding subagent in an isolated Git worktree.",
@@ -188,12 +199,13 @@ export class SubagentManager {
       ].join("\n\n");
       const answer = await browser.send(prompt, controller.signal, { turnId });
       controller.signal.throwIfAborted();
-      agent.info = { ...agent.info, status: "done", summary: answer.slice(-6000), finishedAt: Date.now() };
+      agent.info = { ...agent.info, status: "done", activity: "completed", summary: answer.slice(-6000), preview: undefined, finishedAt: Date.now() };
     } catch (error) {
       const aborted = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
       agent.info = {
         ...agent.info,
         status: aborted ? "stopped" : "failed",
+        activity: aborted ? "cancelled" : "failed",
         error: aborted ? undefined : error instanceof Error ? error.message : String(error),
         finishedAt: Date.now(),
       };
