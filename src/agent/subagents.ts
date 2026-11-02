@@ -171,7 +171,7 @@ export class SubagentManager {
         this.events.emit({ type: "approval", request: { ...event.request, summary: `Agent ${info.id} · ${event.request.summary}` } });
       } else if (event.type === "approval-resolved") {
         agent.approvalIds.delete(event.id);
-        this.events.emit(event);
+        this.events.emit({ ...event, agentId: info.id });
       }
     });
     try {
