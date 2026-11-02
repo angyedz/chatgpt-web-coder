@@ -116,9 +116,9 @@ jobs:
           `SHA256SUMS.txt` содержит SHA-256 архива. Для установки зависимостей требуется интернет.
           EOF
           if [ "$channel" = "stable" ]; then
-            printf '\\n**Автообновление:** выполните `/update latest` и затем `/update apply`.\\n' >> release-notes.md
+            printf '%s\n' '' '**Автообновление:** выполните `/update latest` и затем `/update apply`.' >> release-notes.md
           else
-            printf '\\n**Предварительная сборка:** не включается в `/update latest`; устанавливайте ZIP вручную. Не рекомендуется вместо стабильной сборки без проверки.\\n' >> release-notes.md
+            printf '%s\n' '' '**Предварительная сборка:** не включается в `/update latest`; устанавливайте ZIP вручную. Не рекомендуется вместо стабильной сборки без проверки.' >> release-notes.md
           fi
           gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --target "$source_sha" \
