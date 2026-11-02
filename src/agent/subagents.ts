@@ -133,7 +133,7 @@ async function integrateWorkspaceChanges(
     scanWorkspace(agentWorkspace),
     scanWorkspace(root),
   ]);
-  const candidates: Array<{ relative: string; digest?: string }> = [];
+  const candidates: Array<{ relative: string; before?: string; digest?: string }> = [];
   const conflicts: string[] = [];
   const allPaths = new Set([...baseFiles.keys(), ...agentFiles.keys()]);
 
@@ -148,7 +148,7 @@ async function integrateWorkspaceChanges(
       conflicts.push(relative);
       continue;
     }
-    candidates.push({ relative, digest: after });
+    candidates.push({ relative, before, digest: after });
   }
 
   const applied: string[] = [];
@@ -162,6 +162,8 @@ async function integrateWorkspaceChanges(
       await ensureSafeParent(root, change.relative);
       const existing = await lstat(target).catch(() => undefined);
       if (existing?.isSymbolicLink()) throw new Error("Refusing to write through a symbolic link.");
+      const currentDigest = existing?.isFile() ? createHash("sha256").update(await readFile(target)).digest("hex") : undefined;
+      if (currentDigest !== change.before && currentDigest !== change.digest) throw new Error("The parent file changed during integration.");
       if (change.digest === undefined) {
         if (existing && !existing.isFile()) throw new Error("The target is no longer a regular file.");
         if (existing) await rm(target);
@@ -382,6 +384,7 @@ export class SubagentManager {
         `Your role: ${info.role}. Agent ${info.id} of ${this.agents.length}.`,
         `Workspace: ${info.workspace}.`,
         "This workspace is a private copy of the user's current working files, including uncommitted changes. It has no Git metadata.",
+        "Treat the linked node_modules directory as read-only. Do not install packages or modify shared dependencies unless the user explicitly asks.",
         "Do not run Git commands. Do not create branches, commits, worktrees, pull requests, push or publish anything.",
         "Do not modify the parent workspace or other agents' workspaces. Work only inside this workspace.",
         "Use the supplied MCP tools with the exact turn_id. Respect all approval requests.",
