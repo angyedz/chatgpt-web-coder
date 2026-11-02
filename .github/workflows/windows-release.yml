@@ -2,7 +2,7 @@ name: Windows CI and release
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -69,7 +69,8 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # Publish every successful trusted branch build; fork PRs only run checks.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -88,12 +89,16 @@ jobs:
         run: |
           set -euo pipefail
           (cd release && sha256sum --check SHA256SUMS.txt)
-          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           short_sha="${GITHUB_SHA:0:7}"
-          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-          latest_flag='--latest=false'
-          if [ "$current_main" = "$GITHUB_SHA" ]; then latest_flag='--latest'; fi
-          printf 'Автоматическая сборка версии %s для коммита %s.\n\n' "$VERSION" "$GITHUB_SHA" > release-notes.md
+          channel="preview"
+          tag="preview-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          release_flags=(--prerelease --latest=false)
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            channel="stable"
+            tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            release_flags=(--latest)
+          fi
+          printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\n\n' "$channel" "$VERSION" "$GITHUB_REF_NAME" "$GITHUB_SHA" > release-notes.md
           cat >> release-notes.md <<'EOF'
           **Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.
           **Обновление из GitHub:** в установленном harness выполните `/update latest`, затем подтвердите установку командой `/update apply` и перезапустите программу.
@@ -103,4 +108,5 @@ jobs:
           EOF
           gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "chatgpt-coder ${VERSION} · ${short_sha}" --notes-file release-notes.md "$latest_flag"
+            --title "chatgpt-coder ${VERSION} · ${channel} · ${short_sha}" \
+            --notes-file release-notes.md "${release_flags[@]}"
