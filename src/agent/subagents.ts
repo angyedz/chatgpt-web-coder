@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { copyFile, cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import type { HarnessConfig } from "../config.js";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
@@ -189,6 +189,7 @@ export class SubagentManager {
   private reportId?: string;
   private reportQueue: Promise<void> = Promise.resolve();
   private integrationQueue: Promise<void> = Promise.resolve();
+  private sourceRoot?: string;
 
   constructor(
     private readonly config: HarnessConfig,
@@ -251,6 +252,8 @@ export class SubagentManager {
     this.reportId = undefined;
     this.publish();
     try {
+      const sourceRoot = await realpath(this.config.workspace);
+      this.sourceRoot = sourceRoot;
       const runId = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
       this.reportId = runId;
       const workspaceRoot = path.join(harnessHome(), "swarm-workspaces");
@@ -259,7 +262,7 @@ export class SubagentManager {
         startup.signal.throwIfAborted();
         const id = String(index + 1);
         const workspace = path.join(workspaceRoot, `swarm-${runId}-${id}`);
-        const baseFiles = await createWorkspaceSnapshot(this.config.workspace, workspace, startup.signal);
+        const baseFiles = await createWorkspaceSnapshot(sourceRoot, workspace, startup.signal);
         const record: AgentRecord = {
           info: { id, role: ROLES[index]!, objective, status: "preparing", workspace, toolCount: 0, startedAt: Date.now() },
           controller: new AbortController(),
@@ -331,7 +334,7 @@ export class SubagentManager {
 
   private integrate(agent: AgentRecord): Promise<IntegrationResult> {
     const work = this.integrationQueue.catch(() => undefined).then(() =>
-      integrateWorkspaceChanges(this.config.workspace, agent.info.workspace, agent.baseFiles),
+      integrateWorkspaceChanges(this.sourceRoot ?? this.config.workspace, agent.info.workspace, agent.baseFiles),
     );
     this.integrationQueue = work.then(() => undefined, () => undefined);
     return work;
