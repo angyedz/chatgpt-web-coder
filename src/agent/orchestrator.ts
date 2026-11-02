@@ -740,7 +740,6 @@ export class Orchestrator {
         }
         const start = /^start\s+([1-5])\s+([\s\S]+)$/i.exec(argument);
         if (start) {
-          if (this.busy) throw new Error("Finish or cancel the primary turn before launching subagents.");
           await this.subagents.start(Number(start[1]), start[2]!);
           return;
         }
