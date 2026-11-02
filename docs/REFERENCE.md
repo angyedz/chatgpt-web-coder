@@ -161,7 +161,7 @@ CONTROL_PLANE_API_KEY=sk-...
 | `/yolo` | Отключить аппрувы |
 | `/tools` | Список MCP-инструментов |
 | `/update` | Выбрать ZIP обновления на Windows |
-| `/update check`, `/update latest` | Проверить GitHub Releases или скачать последний выпуск для подтверждения |
+| `/update settings`, `/update settings channel stable\|pre-release` | Показать настройки и выбрать стабильный или предварительный канал обновлений |
 | `/update source [owner/repo]`, `/update autocheck on\|off` | Источник и автоматическая проверка при запуске |
 | `/update <путь>`, `/update apply`, `/update cancel` | Выбрать файл, подтвердить установку или отменить выбор |
 | `/update rollback`, `/update status`, `/update log` | Подготовить откат, показать выбранное обновление или журнал |
