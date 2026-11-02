@@ -226,7 +226,7 @@ export class SubagentManager {
     }));
   }
 
-  private recordChatMessage(agent: AgentRecord, message: SubagentChatMessage): void {
+  private recordChatMessage(agent: AgentRecord, message: SubagentChatMessage, publish = true): void {
     const current = agent.info.messages ?? [];
     const existing = current.find((item) => item.id === message.id);
     const nextMessage: SubagentChatMessage = {
@@ -239,7 +239,7 @@ export class SubagentManager {
       ? current.map((item) => item.id === message.id ? nextMessage : item)
       : [...current, nextMessage].slice(-24);
     agent.info = { ...agent.info, messages: next };
-    this.publish();
+    if (publish) this.publish();
   }
 
   private publish(): void {
@@ -507,7 +507,11 @@ export class SubagentManager {
       if (event.type === "assistant-start") {
         this.recordChatMessage(agent, { id: event.id, role: "assistant", text: "", createdAt: Date.now(), streaming: true });
       } else if (event.type === "assistant-delta") {
-        this.recordChatMessage(agent, { id: event.id, role: "assistant", text: event.text, createdAt: Date.now(), streaming: true });
+        const now = Date.now();
+        const shouldPublish = now - (agent.lastPreviewPublish ?? 0) > 800;
+        if (shouldPublish) agent.lastPreviewPublish = now;
+        agent.info = { ...agent.info, preview: event.text.slice(-1_200) };
+        this.recordChatMessage(agent, { id: event.id, role: "assistant", text: event.text, createdAt: now, streaming: true }, shouldPublish);
       } else if (event.type === "assistant-done") {
         this.recordChatMessage(agent, { id: event.id, role: "assistant", text: event.text, createdAt: Date.now(), streaming: false, interrupted: Boolean(event.error) });
       } else if (event.type === "tool-start") {
@@ -516,13 +520,6 @@ export class SubagentManager {
       } else if (event.type === "tool-end") {
         agent.info = { ...agent.info, activity: `${event.call.name} · ${event.call.status}` };
         this.publish();
-      } else if (event.type === "assistant-delta") {
-        agent.info = { ...agent.info, preview: event.text.slice(-1_200) };
-        const now = Date.now();
-        if (now - (agent.lastPreviewPublish ?? 0) > 800) {
-          agent.lastPreviewPublish = now;
-          this.publish();
-        }
       } else if (event.type === "approval") {
         agent.approvalIds.add(event.request.id);
         this.events.emit({ type: "approval", request: { ...event.request, summary: `Agent ${info.id} · ${event.request.summary}` } });
