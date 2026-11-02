@@ -5,6 +5,7 @@ import path from "node:path";
 import { expandHome, harnessHome } from "./utils/paths.js";
 
 export type ApprovalMode = "ask" | "never";
+export type UpdateChannel = "stable" | "pre-release";
 
 export interface BrowserConfig {
   headless: boolean;
@@ -71,7 +72,7 @@ export interface HarnessConfig {
   approvalMode: ApprovalMode;
   maxOutputChars: number;
   context: { maxTokens: number };
-  updates: { repository: string; autoCheck: boolean };
+  updates: { repository: string; autoCheck: boolean; channel: UpdateChannel };
   browser: BrowserConfig;
   mcp: McpConfig;
   mcpServers: Record<string, ExternalMcpServer>;
@@ -92,7 +93,7 @@ export function defaultConfig(workspace = process.cwd()): HarnessConfig {
     approvalMode: process.env.HARNESS_APPROVAL === "never" ? "never" : "ask",
     maxOutputChars: 30_000,
     context: { maxTokens: 200_000 },
-    updates: { repository: process.env.CHATGPT_CODER_UPDATE_REPOSITORY ?? "angyedz/chatgpt-web-coder", autoCheck: true },
+    updates: { repository: process.env.CHATGPT_CODER_UPDATE_REPOSITORY ?? "angyedz/chatgpt-web-coder", autoCheck: true, channel: "stable" },
     browser: {
       headless: process.env.HARNESS_HEADLESS === "true",
       baseUrl: process.env.CHATGPT_URL ?? "https://chatgpt.com/",
@@ -190,6 +191,9 @@ export function loadConfig(workspace = process.cwd()): HarnessConfig {
   merged = merge(merged, readConfigFile(file));
 
   merged.workspace = workspace;
+  if (merged.updates.channel !== "stable" && merged.updates.channel !== "pre-release") {
+    throw new Error("Invalid update channel in configuration. Use stable or pre-release.");
+  }
   merged.updates.repository = process.env.CHATGPT_CODER_UPDATE_REPOSITORY ?? merged.updates.repository;
   merged.searxng.url =
     process.env.SEARXNG_URL ?? merged.searxng.url;
@@ -249,7 +253,7 @@ export function saveHarnessConfig(config: HarnessConfig): void {
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
-export function saveUpdateSetting(config: HarnessConfig, key: "repository" | "autoCheck", value: string | boolean): void {
+export function saveUpdateSetting(config: HarnessConfig, key: "repository" | "autoCheck" | "channel", value: string | boolean): void {
   const globalFile = globalConfigPath();
   const global = readConfigFile(globalFile) ?? {};
   const settings = (global.updates ?? {}) as Record<string, unknown>;
@@ -384,7 +388,7 @@ export function exampleConfig(): string {
     {
       approvalMode: "ask",
       context: { maxTokens: 200_000 },
-      updates: { repository: "angyedz/chatgpt-web-coder", autoCheck: true },
+      updates: { repository: "angyedz/chatgpt-web-coder", autoCheck: true, channel: "stable" },
       browser: {
         headless: false,
         useTemporaryChat: true,
