@@ -35,6 +35,7 @@ type AgentRecord = {
 export class SubagentManager {
   private agents: AgentRecord[] = [];
   private initializing = false;
+  private startupController?: AbortController;
 
   constructor(
     private readonly config: HarnessConfig,
@@ -62,26 +63,27 @@ export class SubagentManager {
     if (!this.primaryBrowser.isOpen) throw new Error("Connect the primary ChatGPT browser first.");
     if (!this.config.browser.attachConnector) throw new Error("Coding subagents require the configured MCP connector.");
 
-    // Never silently create workers from a goal, model suggestion or startup.
-    // This function is called only by the explicit /swarm start command.
-    const { stdout: rootOutput } = await execGit("git", ["-C", this.config.workspace, "rev-parse", "--show-toplevel"], { timeout: 15_000, windowsHide: true });
-    const root = rootOutput.trim();
-    const { stdout: dirty } = await execGit("git", ["-C", root, "status", "--porcelain"], { timeout: 15_000, windowsHide: true });
-    if (dirty.trim()) throw new Error("The Git working tree has uncommitted changes. Commit or stash them before /swarm start; workers branch from HEAD.");
-
+    // Only /swarm start calls this method; never auto-spawn from an agent prompt.
     this.initializing = true;
+    const startup = new AbortController();
+    this.startupController = startup;
     this.agents = [];
     this.publish();
-    const runId = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
-    const worktreeRoot = path.join(harnessHome(), "worktrees");
     try {
+      const { stdout: rootOutput } = await execGit("git", ["-C", this.config.workspace, "rev-parse", "--show-toplevel"], { timeout: 15_000, windowsHide: true, signal: startup.signal });
+      const root = rootOutput.trim();
+      const { stdout: dirty } = await execGit("git", ["-C", root, "status", "--porcelain"], { timeout: 15_000, windowsHide: true, signal: startup.signal });
+      if (dirty.trim()) throw new Error("The Git working tree has uncommitted changes. Commit or stash them before /swarm start; workers branch from HEAD.");
+      const runId = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+      const worktreeRoot = path.join(harnessHome(), "worktrees");
       await mkdir(worktreeRoot, { recursive: true });
-      // Git worktree operations are serialized to avoid concurrent repository lock contention.
+      // Serialize Git operations to avoid repository lock contention.
       for (let index = 0; index < count; index += 1) {
+        startup.signal.throwIfAborted();
         const id = String(index + 1);
         const branch = `chatgpt-coder/swarm-${runId}-${id}`;
         const workspace = path.join(worktreeRoot, `swarm-${runId}-${id}`);
-        await execGit("git", ["-C", root, "worktree", "add", "-b", branch, workspace, "HEAD"], { timeout: 60_000, windowsHide: true });
+        await execGit("git", ["-C", root, "worktree", "add", "-b", branch, workspace, "HEAD"], { timeout: 60_000, windowsHide: true, signal: startup.signal });
         const record: AgentRecord = {
           info: { id, role: ROLES[index]!, objective, status: "preparing", branch, workspace, toolCount: 0, startedAt: Date.now() },
           controller: new AbortController(),
@@ -91,12 +93,20 @@ export class SubagentManager {
         this.agents.push(record);
         this.publish();
       }
+      startup.signal.throwIfAborted();
+    } catch (error) {
+      for (const agent of this.agents) {
+        agent.info = { ...agent.info, status: startup.signal.aborted ? "stopped" : "failed", finishedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
+      }
+      this.publish();
+      throw error;
     } finally {
       this.initializing = false;
+      this.startupController = undefined;
       this.publish();
     }
 
-    // All tabs are created via Chromium's background target API. No frontmost tab changes.
+    // All workers operate in independent background browser tabs and Git worktrees.
     for (const agent of this.agents) agent.task = this.runAgent(agent);
     this.events.emit({ type: "notice", level: "info", text: `Started ${this.agents.length} isolated subagents in background tabs. Their Git worktrees are not merged automatically.` });
   }
@@ -113,7 +123,11 @@ export class SubagentManager {
 
   stop(id?: string): void {
     const targets = id && id !== "all" ? this.agents.filter((agent) => agent.info.id === id) : this.agents;
-    if (!targets.length) throw new Error(`No subagent with id ${id}.`);
+    if (!targets.length) {
+      if (!id || id === "all") { this.startupController?.abort(); return; }
+      throw new Error(`No subagent with id ${id}.`);
+    }
+    this.startupController?.abort();
     for (const agent of targets) {
       if (!["preparing", "running"].includes(agent.info.status)) continue;
       agent.controller.abort();
