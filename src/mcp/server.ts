@@ -24,6 +24,7 @@ interface Session {
 export class McpHost {
   private httpServer?: Server;
   private readonly sessions = new Map<string, Session>();
+  private readonly workerContexts = new Map<string, ToolContext>();
   private actualPort: number;
   private actualUrl = "";
 
@@ -40,6 +41,15 @@ export class McpHost {
 
   get port(): number {
     return this.actualPort;
+  }
+
+  registerTurnContext(turnId: string, context: ToolContext): void {
+    if (this.workerContexts.has(turnId)) throw new Error("Subagent turn ID is already registered.");
+    this.workerContexts.set(turnId, context);
+  }
+
+  unregisterTurnContext(turnId: string): void {
+    this.workerContexts.delete(turnId);
   }
 
   async start(): Promise<string> {
@@ -98,6 +108,7 @@ export class McpHost {
       await session.server.close().catch(() => undefined);
     }
     this.sessions.clear();
+    this.workerContexts.clear();
     await new Promise<void>((resolve) => {
       if (!this.httpServer) return resolve();
       this.httpServer.close(() => resolve());
@@ -165,7 +176,7 @@ export class McpHost {
         return;
       }
 
-      const server = createMcpServer(this.ctx);
+      const server = createMcpServer(this.ctx, (turnId) => this.workerContexts.get(turnId));
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSessionId) => {
@@ -206,7 +217,7 @@ export class McpHost {
   }
 }
 
-export function createMcpServer(ctx: ToolContext): McpServer {
+export function createMcpServer(ctx: ToolContext, resolveWorker?: (turnId: string) => ToolContext | undefined): McpServer {
   const server = new McpServer(
       { name: "chatgpt-coder", version: APP_VERSION },
     {
@@ -230,15 +241,17 @@ export function createMcpServer(ctx: ToolContext): McpServer {
       async (args: Record<string, unknown>): Promise<CallToolResult> => {
         const callTurnId = typeof args.turn_id === "string" ? args.turn_id : "";
         const { turn_id: _turnId, ...toolArgs } = args;
-        // Bind each tool request to the exact active turn that created it.
-        // This blocks delayed calls from another ChatGPT tab/session.
-        const callSignal = ctx.turnSignal;
-        const validTurn = () => Boolean(callSignal && !callSignal.aborted && ctx.turnSignal === callSignal && ctx.turnId === callTurnId);
-        if (!callTurnId || callTurnId !== ctx.turnId || !callSignal || callSignal.aborted) {
-          return errorText("Rejected stale tool call: start a new request in the active chatgpt-coder session.") as CallToolResult;
+        // Every ChatGPT tab is bound to its own turn, abort signal and workspace.
+        const active = resolveWorker?.(callTurnId) ?? ctx;
+        const callSignal = active.turnSignal;
+        const validTurn = () => Boolean(callSignal && !callSignal.aborted
+          && active.turnSignal === callSignal && active.turnId === callTurnId
+          && (active === ctx ? !resolveWorker?.(callTurnId) : resolveWorker?.(callTurnId) === active));
+        if (!callTurnId || callTurnId !== active.turnId || !callSignal || callSignal.aborted) {
+          return errorText("Rejected stale tool call: no active matching harness turn.") as CallToolResult;
         }
-        const callContext = { ...ctx, turnId: callTurnId, turnSignal: callSignal };
-        await ctx.beforeToolStart?.().catch(() => undefined);
+        const callContext = { ...active, turnId: callTurnId, turnSignal: callSignal };
+        await active.beforeToolStart?.().catch(() => undefined);
         if (!validTurn()) return errorText("The turn was cancelled or replaced before this tool started.") as CallToolResult;
         const call = {
           id: newId("call"),
@@ -247,8 +260,8 @@ export function createMcpServer(ctx: ToolContext): McpServer {
           status: "running" as const,
           startedAt: Date.now(),
         };
-        ctx.events.emit({ type: "tool-start", call });
-        ctx.events.emit({ type: "phase", phase: "tool" });
+        active.events.emit({ type: "tool-start", call });
+        active.events.emit({ type: "phase", phase: "tool" });
 
         try {
           const result = await def.handler(toolArgs, callContext);
@@ -262,7 +275,7 @@ export function createMcpServer(ctx: ToolContext): McpServer {
                 : `[image ${item.mimeType}, ${item.data.length} base64 chars]`,
             )
             .join("\n");
-          ctx.events.emit({
+          active.events.emit({
             type: "tool-end",
             call: {
               ...call,
@@ -274,7 +287,7 @@ export function createMcpServer(ctx: ToolContext): McpServer {
           return finalResult as CallToolResult;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          ctx.events.emit({
+          active.events.emit({
             type: "tool-end",
             call: {
               ...call,

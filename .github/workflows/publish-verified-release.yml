@@ -12,9 +12,8 @@ permissions:
 jobs:
   publish:
     name: Publish verified GitHub Release
-    # Only first-party workflow runs with fully passing checks may publish.
-    # No untrusted fork PR gets a release token or access to this job.
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
+    # ONLY main and pre-release branches publish. PR and feature branches never publish.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') && (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'pre-release')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -32,7 +31,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          PR_SOURCE_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
@@ -42,42 +40,50 @@ jobs:
           (cd release && sha256sum --check SHA256SUMS.txt)
           # Derive the release commit from the built ZIP itself, not the
           # synthetic PR merge ref. The build embeds this in release-info.json.
-          metadata="$(unzip -p release/chatgpt-coder-windows.zip prebuilt/release-info.json)"
-          source_sha="$(printf '%s' "$metadata" | jq -er '.commit | strings')"
-          artifact_tag="$(printf '%s' "$metadata" | jq -er '.tag | strings')"
-          artifact_repo="$(printf '%s' "$metadata" | jq -er '.repository | strings')"
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid ZIP commit"; exit 1; }
-          [ "$artifact_repo" = "$GITHUB_REPOSITORY" ] || { echo "ZIP repository mismatch"; exit 1; }
-          if [ "$RUN_EVENT" != pull_request ]; then
-            [ "$source_sha" = "$RUN_HEAD_SHA" ] || { echo "ZIP/source commit mismatch"; exit 1; }
-          elif [[ "$PR_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            [ "$source_sha" = "$PR_SOURCE_SHA" ] || { echo "ZIP/PR head mismatch"; exit 1; }
+          source_sha="$RUN_HEAD_SHA"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid source commit"; exit 1; }
+          # Verify metadata when present; older ZIP layouts do not include it.
+          metadata_path="$(unzip -Z1 release/chatgpt-coder-windows.zip | grep -E '(^|/)release-info[.]json$' | head -n 1 || true)"
+          artifact_tag=""
+          if [ -n "$metadata_path" ]; then
+            metadata="$(unzip -p release/chatgpt-coder-windows.zip "$metadata_path")"
+            artifact_sha="$(printf '%s' "$metadata" | jq -er '.commit | strings')"
+            artifact_tag="$(printf '%s' "$metadata" | jq -er '.tag | strings')"
+            artifact_repo="$(printf '%s' "$metadata" | jq -er '.repository | strings')"
+            [ "$artifact_sha" = "$source_sha" ] || { echo "ZIP/source commit mismatch"; exit 1; }
+            [ "$artifact_repo" = "$GITHUB_REPOSITORY" ] || { echo "ZIP repository mismatch"; exit 1; }
+          else
+            echo "::warning::ZIP has no release-info.json; using verified workflow_run SHA."
           fi
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid source run"; exit 1; }
           [[ "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || { echo "Invalid run attempt"; exit 1; }
           case "$RUN_EVENT" in
-            push|pull_request|workflow_dispatch) ;;
+            push|workflow_dispatch) ;;
             *) echo "Unsupported workflow trigger: $RUN_EVENT"; exit 1 ;;
+          esac
+          case "$RUN_BRANCH" in
+            main|pre-release) ;;
+            *) echo "Only main and pre-release can publish"; exit 1 ;;
           esac
 
           version="$(unzip -p release/chatgpt-coder-windows.zip package.json | jq -er '.version | strings | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+([-.+][0-9A-Za-z.-]+)?$"))')"
-          channel=preview
-          tag="preview-${RUN_ID}-${RUN_ATTEMPT}"
+          channel=pre-release
+          tag="prerelease-${RUN_ID}-${RUN_ATTEMPT}"
           flags=(--prerelease --latest=false)
-          if [ "$RUN_EVENT" != "pull_request" ] && [ "$RUN_BRANCH" = main ]; then
+          if [ "$RUN_BRANCH" = main ]; then
             channel=stable
             tag="build-${RUN_ID}-${RUN_ATTEMPT}"
             flags=(--latest=false)
             current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
             if [ "$current_main" = "$source_sha" ]; then flags=(--latest); fi
           fi
-          [ "$artifact_tag" = "$tag" ] || { echo "ZIP release tag mismatch: $artifact_tag vs $tag"; exit 1; }
+          if [ -n "$artifact_tag" ]; then [ "$artifact_tag" = "$tag" ] || { echo "ZIP release tag mismatch: $artifact_tag vs $tag"; exit 1; }; fi
           printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\nПроверенный CI run: %s.\n\n' "$channel" "$version" "$RUN_BRANCH" "$source_sha" "$RUN_ID" > release-notes.md
           printf '%s\n' '**Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.' '**Из ZIP:** выберите файл командой `/update`, затем `/update apply`.' '' '`SHA256SUMS.txt` содержит SHA-256 проверенного архива.' >> release-notes.md
           if [ "$channel" = stable ]; then
             printf '%s\n' '' 'Для стабильных релизов доступно обновление через `/update latest`.' >> release-notes.md
           else
-            printf '%s\n' '' 'Это предварительная сборка; `/update latest` её не устанавливает. Используйте ZIP вручную.' >> release-notes.md
+            printf '%s\n' '' 'Это сборка ветки pre-release; она доступна через `/update settings channel pre-release` и `/update latest`.' >> release-notes.md
           fi
           gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --target "$source_sha" \

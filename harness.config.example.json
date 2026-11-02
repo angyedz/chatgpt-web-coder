@@ -6,7 +6,8 @@
   },
   "updates": {
     "repository": "angyedz/chatgpt-web-coder",
-    "autoCheck": true
+    "autoCheck": true,
+    "channel": "stable"
   },
   "browser": {
     "headless": false,

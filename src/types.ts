@@ -71,9 +71,26 @@ export type TelegramSetupState =
   | { stage: "token"; error?: string }
   | { stage: "pairing"; botUsername: string; words: string[] };
 
+export interface SubagentSnapshot {
+  id: string;
+  role: string;
+  objective: string;
+  status: "preparing" | "running" | "done" | "failed" | "stopped";
+  workspace: string;
+  branch: string;
+  toolCount: number;
+  activity?: string;
+  preview?: string;
+  startedAt: number;
+  finishedAt?: number;
+  summary?: string;
+  error?: string;
+}
+
 export type HarnessEvent =
   | { type: "user-message"; id: string; text: string; channel?: "btw" | "telegram" }
   | { type: "telegram-setup"; state?: TelegramSetupState }
+  | { type: "subagents"; agents: SubagentSnapshot[] }
   | { type: "system-message"; id: string; text: string }
   | { type: "assistant-start"; id: string; channel?: "btw" | "telegram" }
   | { type: "assistant-delta"; id: string; text: string; channel?: "btw" | "telegram" }
@@ -93,7 +110,7 @@ export type HarnessEvent =
   | { type: "update-selection"; pending?: { kind: "download" | "local" | "rollback"; version: string } }
   | { type: "mcp-refresh"; reminder?: { name: string; result: "changed" | "unknown" } }
   | { type: "approval"; request: ApprovalRequest }
-  | { type: "approval-resolved"; id: string; allowed: boolean }
+  | { type: "approval-resolved"; id: string; allowed: boolean; agentId?: string }
   | { type: "turn-start"; turnId: string }
   | { type: "turn-end"; turnId: string; ok: boolean }
   | { type: "phase"; phase: TurnPhase }

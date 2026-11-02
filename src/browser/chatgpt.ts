@@ -6,6 +6,7 @@ import { ResponseStream } from "./response-stream.js";
 import { cleanBrowserFallback, extractResponse, removeObservedActivity, removeResponseStatus } from "./response-text.js";
 import { readFallbackText, readMarkdown } from "./markdown.js";
 import { newId } from "../utils/ids.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { readPicker, type PickerKind } from "./picker.js";
 
 export class ChatGptBrowser {
@@ -69,11 +70,45 @@ export class ChatGptBrowser {
     return this.page;
   }
 
-  async openSideChat(events: HarnessEvents): Promise<ChatGptBrowser> {
+  async openSideChat(events: HarnessEvents, options: { attachConnector?: boolean } = {}): Promise<ChatGptBrowser> {
     if (!this.isOpen || !this.context) throw new Error("The main ChatGPT browser is not connected.");
-    const side = new ChatGptBrowser({ ...this.config, attachConnector: false, newChatPerTurn: true, useTemporaryChat: true }, events);
+    const side = new ChatGptBrowser({
+      ...this.config,
+      attachConnector: options.attachConnector ?? false,
+      newChatPerTurn: true,
+      useTemporaryChat: true,
+    }, events);
     side.context = this.context;
-    side.page = await this.context.newPage();
+    // Playwright's headless shell does not support CDP's background option;
+    // a headless page cannot steal OS focus because no window exists.
+    if (this.config.headless) {
+      side.page = await this.context.newPage();
+    } else {
+      // Never call newPage() in headed mode: it can steal the user's focus.
+      // Fail closed if the background target API is unavailable.
+      const browser = this.context.browser();
+      if (!browser) throw new Error("Background tabs require Chromium's browser CDP connection.");
+      const cdp = await browser.newBrowserCDPSession();
+      const url = `about:blank#chatgpt-coder-side-${newId("tab")}`;
+      try {
+        const created = await cdp.send("Target.createTarget", { url, background: true, focus: false });
+        // The initial 'page' event can precede its first URL update; poll for
+        // our unique marker rather than missing the event or using another
+        // worker's simultaneously created tab.
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline) {
+          side.page = this.context.pages().find((page) => !page.isClosed() && page.url() === url);
+          if (side.page) break;
+          await delay(100);
+        }
+        if (!side.page) {
+          await cdp.send("Target.closeTarget", { targetId: created.targetId }).catch(() => undefined);
+          throw new Error("The background tab was not discovered; no foreground fallback was used.");
+        }
+      } finally {
+        await cdp.detach().catch(() => undefined);
+      }
+    }
     try {
       await side.preparePage();
       return side;

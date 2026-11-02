@@ -126,6 +126,38 @@ describe("ChatGptBrowser adapter", () => {
   );
 
   it(
+    "opens an independent side tab without replacing or closing the primary tab",
+    async () => {
+      const config = defaultConfig(userDataDir);
+      config.browser.headless = true;
+      config.browser.baseUrl = baseUrl;
+      config.browser.userDataDir = userDataDir;
+      config.browser.loginTimeoutMs = 10_000;
+      config.browser.responseTimeoutMs = 20_000;
+      config.browser.navigationTimeoutMs = 10_000;
+      config.browser.attachConnector = false;
+
+      browser = new ChatGptBrowser(config.browser, new HarnessEvents());
+      await browser.connect();
+      const primaryPage = browser.currentPage;
+      expect(primaryPage).toBeDefined();
+      const side = await browser.openSideChat(new HarnessEvents());
+      try {
+        expect(side.currentPage).toBeDefined();
+        expect(side.currentPage).not.toBe(primaryPage);
+        expect(browser.currentPage).toBe(primaryPage);
+        const answer = await side.send("side ping", new AbortController().signal);
+        expect(answer).toContain("Mock answer: side ping");
+      } finally {
+        await side.closeSideChat();
+      }
+      expect(browser.isOpen).toBe(true);
+      expect(browser.currentPage).toBe(primaryPage);
+    },
+    50_000,
+  );
+
+  it(
     "attaches the MCP connector through the @ mention menu before sending",
     async () => {
       const config = defaultConfig(userDataDir);

@@ -8,6 +8,7 @@ import type {
   ConnectionState,
   PlanStep,
   SessionInfo,
+  SubagentSnapshot,
   ToolCallView,
   TelegramSetupState,
   TurnPhase,
@@ -21,6 +22,7 @@ import { PlanPanel } from "./components/PlanPanel.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { Transcript } from "./components/Transcript.js";
 import { TaskSidebar } from "./components/TaskSidebar.js";
+import { SubagentStrip } from "./components/SubagentStrip.js";
 import { theme } from "./theme.js";
 import { terminalText } from "./terminal-text.js";
 import { useMouseWheel } from "./useMouseWheel.js";
@@ -56,6 +58,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
+  const [agents, setAgents] = useState<SubagentSnapshot[]>(() => orchestrator.subagents?.snapshots ?? []);
   const [goal, setGoal] = useState(() => initialSession?.goal);
   const [attachments, setAttachments] = useState(() => initialSession?.attachments ?? []);
   const [localSessionId, setLocalSessionId] = useState(() => initialSession?.id ?? "");
@@ -98,6 +101,10 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   useEffect(() => {
     const unsubscribe = orchestrator.events.on((event) => {
       switch (event.type) {
+        case "subagents":
+          setAgents(event.agents);
+          break;
+
         case "user-message":
         case "system-message":
           setScrollOffset(0);
@@ -415,7 +422,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
       return false;
     }
     if (!value.trim() && !attachments.some((item) => item.pending)) return false;
-    if (busy && !/^\s*\/btw(?:\s|$)/i.test(value)) {
+    if (busy && !/^\s*\/(?:btw|swarm)(?:\s|$)/i.test(value)) {
       void orchestrator.submit(value);
       return false;
     }
@@ -440,6 +447,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   const showStatus = rows >= 10;
   const showInput = !approval || rows >= 12;
   const showJobs = Boolean((timerCount || displayedJobCount) && rows >= 20 && !approval);
+  const showAgentStrip = agents.length > 0 && rows >= 16 && !approval;
   const showLive = busy && !approval && rows >= 14;
   const showUpdate = Boolean(displayedUpdate && !busy && !approval && rows >= 8);
   const showGoal = Boolean(displayedGoal && rows >= 16 && !approval);
@@ -454,11 +462,11 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
     "Ctrl+R to dismiss",
   ].flatMap((line) => wrapAnsi(line, Math.max(1, columns - 4), { hard: true }).split("\n")) : [];
   const baseChrome = (showHeader ? 3 : 0) + (showStatus ? 1 : 0) + (showInput ? 3 : 0)
-    + (showLive ? 1 : 0) + (showUpdate ? 1 : 0) + (showAttachments ? 1 : 0)
+    + (showLive ? 1 : 0) + (showAgentStrip ? 1 : 0) + (showUpdate ? 1 : 0) + (showAttachments ? 1 : 0)
     + (approval ? approvalHeight(approval, columns, rows) : 0) + refreshLines.length
     + (telegramSetup ? telegramSetup.stage === "token" ? 4 + (telegramSetup.error ? 1 : 0) : 7 : 0);
   const showSidebar = columns >= 130 && rows >= 22 && !approval && rows - baseChrome >= 10
-    && Boolean(displayedGoal || displayedPlan.length || showJobs || shownNotices.some((notice) => notice.level !== "info"));
+    && Boolean(displayedGoal || displayedPlan.length || agents.length || showJobs || shownNotices.some((notice) => notice.level !== "info"));
   const sidebarWidth = showSidebar ? Math.min(56, Math.max(36, Math.floor(columns / 3))) : 0;
   const chatWidth = columns - sidebarWidth;
   const chrome = baseChrome + (showSidebar ? 0 : (showJobs ? 1 : 0) + (showGoal ? 1 : 0) + shownNotices.length
@@ -480,6 +488,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
         approvalMode={orchestrator.config.approvalMode}
         contextUsage={orchestrator.contextUsage}
         status={status}
+        agents={agents}
       /> : null}
 
       {transcriptHeight > 0 ? <Box width={columns} height={transcriptHeight} flexShrink={0}>
@@ -505,6 +514,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
           jobs={displayedJobCount}
           timers={timerCount}
           nextTimerSeconds={nextTimerSeconds}
+          agents={agents}
         /> : null}
       </Box> : null}
 
@@ -557,6 +567,8 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
 
       {approval ? <ApprovalPrompt request={approval} /> : null}
 
+      {showAgentStrip && !showSidebar ? <SubagentStrip agents={agents} columns={columns} /> : null}
+
       {showLive ? <ActivityBar phase={phase} startedAt={turnStartedAt} /> : null}
 
       {showUpdate && displayedUpdate ? (
@@ -603,7 +615,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
             : telegramSetup?.stage === "pairing"
               ? "Waiting for private-chat pairing · Esc to cancel"
             : busy
-            ? "Working…  /btw <message>  ·  Esc to stop"
+            ? "Working…  /btw <message>  ·  /swarm status  ·  Esc to stop"
             : phase === "waiting-login"
             ? "Sign in to ChatGPT in the browser window…"
             : "Message or /command…  ·  /attach"
