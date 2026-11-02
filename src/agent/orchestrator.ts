@@ -702,7 +702,7 @@ export class Orchestrator {
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
-            "Subagents: /swarm start <1-5> <objective> · /swarm status|results|stop [id|all] (manual launch only)",
+            "Subagents: /swarm start <1-5> <objective> · /swarm status|inspect <id>|results|stop [id|all] (manual launch only)",
             "Telegram: /telegram setup · /telegram status|start|stop|unlink (private chat only; one-time pairing required)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
@@ -718,7 +718,7 @@ export class Orchestrator {
         if (!argument || argument.toLowerCase() === "status") {
           const agents = this.subagents.snapshots;
           const details = agents.length
-            ? agents.map((agent) => `#${agent.id}  ${agent.role}  · ${agent.status} · ${agent.toolCount} tools\n   ${agent.branch}\n   ${agent.workspace}`).join("\n")
+            ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools\n   ${agent.activity ?? "idle"} · ${agent.branch}\n   ${agent.workspace}`).join("\n")
             : "No subagents launched. Start them explicitly with /swarm start <1-5> <objective>.";
           this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nNo automatic launch or merge.` });
           return;
@@ -735,14 +735,22 @@ export class Orchestrator {
           this.events.emit({ type: "notice", level: "info", text: `Stop requested for subagent ${id ?? "all"}. Existing Git worktrees are preserved.` });
           return;
         }
+        const inspect = /^inspect\s+([1-5])$/i.exec(argument);
+        if (inspect) {
+          const agent = this.subagents.snapshots.find((item) => item.id === inspect[1]);
+          this.events.emit({ type: "system-message", id: newId("system"), text: agent
+            ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nBranch: ${agent.branch}\nWorktree: ${agent.workspace}\nTools: ${agent.toolCount}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
+            : `Subagent #${inspect[1]} does not exist.` });
+          return;
+        }
         if (argument.toLowerCase() === "results") {
           const agents = this.subagents.snapshots;
           this.events.emit({ type: "system-message", id: newId("system"), text: agents.length
-            ? agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nBranch: ${agent.branch}\nWorktree: ${agent.workspace}\nTools: ${agent.toolCount}\n${agent.error ?? agent.summary ?? "No result yet."}`).join("\n\n----\n\n")
+            ? agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nBranch: ${agent.branch}\nWorktree: ${agent.workspace}\nTools: ${agent.toolCount}\n${agent.error ?? agent.summary ?? agent.preview ?? "No result yet."}`).join("\n\n----\n\n")
             : "No subagent results yet." });
           return;
         }
-        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm results · /swarm stop [id|all]" });
+        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm inspect <id> · /swarm results · /swarm stop [id|all]" });
         return;
       }
 
