@@ -79,6 +79,8 @@ export interface SubagentSnapshot {
   workspace: string;
   branch: string;
   toolCount: number;
+  activity?: string;
+  preview?: string;
   startedAt: number;
   finishedAt?: number;
   summary?: string;
