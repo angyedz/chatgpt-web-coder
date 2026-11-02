@@ -24,6 +24,10 @@ describe("Windows release policy", () => {
     expect(publish.on.workflow_run.types).toContain("completed");
     expect(publish.jobs.publish.if).toContain("workflow_run.conclusion == 'success'");
     expect(publish.jobs.publish.if).toContain("workflow_run.head_repository.full_name == github.repository");
+    expect(publish.jobs.publish.if).toContain("head_branch == 'main'");
+    expect(publish.jobs.publish.if).toContain("head_branch == 'pre-release'");
+    expect(publish.jobs.publish.if).toContain("workflow_run.event == 'push'");
+    expect(publish.jobs.publish.if).not.toContain("event == 'pull_request'");
     expect(publish.permissions.contents).toBe("write");
     expect(publish.permissions.actions).toBe("read");
     const download = publish.jobs.publish.steps.find((step: any) => step.name.includes("Download"));
@@ -37,5 +41,9 @@ describe("Windows release policy", () => {
     expect(script).toContain("source_sha");
     expect(script).toContain('--target "$source_sha"');
     expect(script).toContain("release/chatgpt-coder-windows.zip");
+    expect(script).toContain("prerelease-");
+    expect(script).toContain('case "$RUN_BRANCH" in');
+    expect(script).toContain("main|pre-release");
+    expect(script).toContain("ZIP release tag mismatch");
   });
 });
