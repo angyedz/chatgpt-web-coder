@@ -101,11 +101,15 @@ jobs:
           printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\n\n' "$channel" "$VERSION" "$GITHUB_REF_NAME" "$GITHUB_SHA" > release-notes.md
           cat >> release-notes.md <<'EOF'
           **Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.
-          **Обновление из GitHub:** в установленном harness выполните `/update latest`, затем подтвердите установку командой `/update apply` и перезапустите программу.
           **Обновление из ZIP:** выберите файл командой `/update`, затем выполните `/update apply` и перезапустите программу.
 
           `SHA256SUMS.txt` содержит SHA-256 архива. Для установки зависимостей требуется интернет.
           EOF
+          if [ "$channel" = "stable" ]; then
+            printf '\\n**Автообновление:** выполните `/update latest` и затем `/update apply`.\\n' >> release-notes.md
+          else
+            printf '\\n**Предварительная сборка:** не включается в `/update latest`; устанавливайте ZIP вручную. Не рекомендуется вместо стабильной сборки без проверки.\\n' >> release-notes.md
+          fi
           gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "chatgpt-coder ${VERSION} · ${channel} · ${short_sha}" \
