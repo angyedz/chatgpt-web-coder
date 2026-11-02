@@ -53,6 +53,8 @@ jobs:
 
       - name: Build Windows installer and update package
         shell: powershell
+        env:
+          CHATGPT_CODER_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.sha }}
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-update.ps1 -OutputPath 'dist\release\chatgpt-coder-windows.zip'
 
       - name: Create SHA-256 checksum
