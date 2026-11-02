@@ -92,7 +92,7 @@ export class Orchestrator {
           if (this.goalActions.size > 500) this.goalActions.delete(this.goalActions.values().next().value!);
         }
       }
-      if (event.type === "approval-resolved" && !event.allowed && this.runtime.goal.current?.status === "active") {
+      if (event.type === "approval-resolved" && !event.allowed && !event.agentId && this.runtime.goal.current?.status === "active") {
         this.runtime.goal.setStatus("paused", "An approval was denied or timed out. Review the request before /goal resume.");
         this.cancel();
       }
