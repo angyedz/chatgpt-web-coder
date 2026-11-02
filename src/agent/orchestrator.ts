@@ -754,14 +754,14 @@ export class Orchestrator {
         if (inspect) {
           const agent = this.subagents.snapshots.find((item) => item.id === inspect[1]);
           this.events.emit({ type: "system-message", id: newId("system"), text: agent
-            ? agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n${agent.error ?? agent.summary ?? agent.preview ?? "No result yet."}`).join("\n\n----\n\n")
+            ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated files: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
             : `Subagent #${inspect[1]} does not exist.` });
           return;
         }
         if (argument.toLowerCase() === "results") {
           const agents = this.subagents.snapshots;
           this.events.emit({ type: "system-message", id: newId("system"), text: agents.length
-            ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated files: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
+            ? agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n${agent.error ?? agent.summary ?? agent.preview ?? "No result yet."}`).join("\n\n----\n\n")
             : "No subagent results yet." });
           return;
         }
