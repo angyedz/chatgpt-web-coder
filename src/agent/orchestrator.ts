@@ -705,7 +705,7 @@ export class Orchestrator {
             "Subagents: /swarm start <1-5> <objective> · /swarm status|inspect <id>|results|history|report <run-id>|stop [id|all]",
             "Telegram: /telegram setup · /telegram status|start|stop|unlink (private chat only; one-time pairing required)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
-            "Updates: /update check|latest · /update (choose ZIP) · /update <path> · /update apply|cancel|rollback|log",
+            "Updates: /update settings [channel stable|pre-release] · /update check|latest · /update apply|cancel|rollback|log",
             "Safety: /approval ask|never · /yolo disables confirmations",
             "Setup: /connect · /doctor · /login · /tunnel · /searxng <url> · /status (Ctrl+D while working)",
             "Tools/context: /tools · /mcp · /skills · /agents [path] · /context [200k] · /compact · /quit",
@@ -1252,6 +1252,32 @@ export class Orchestrator {
   private async handleUpdateCommand(argument: string): Promise<void> {
     const command = argument.toLowerCase();
     const output = (text: string) => this.events.emit({ type: "system-message", id: newId("system"), text });
+    if (command === "settings" || command === "settings show") {
+      output([
+        "UPDATE SETTINGS", "",
+        "Repository: " + this.config.updates.repository,
+        "Channel: " + this.config.updates.channel + (this.config.updates.channel === "stable" ? " (main)" : " (pre-release)"),
+        "Automatic checks: " + (this.config.updates.autoCheck ? "on (every 6 hours)" : "off"), "",
+        "/update settings channel stable",
+        "/update settings channel pre-release",
+        "/update settings autocheck on|off",
+        "/update settings source owner/repository", "",
+        "The channel controls /update check, /update latest and background update notifications.",
+        "No update is installed without /update apply.",
+      ].join("\n"));
+      return;
+    }
+    const settingsArgument = command.startsWith("settings ") ? argument.slice("settings ".length).trim() : argument;
+    const settingsCommand = settingsArgument.toLowerCase();
+    if (settingsCommand.startsWith("channel ")) {
+      const channel = settingsCommand.slice("channel ".length).trim();
+      if (channel !== "stable" && channel !== "pre-release") throw new Error("Usage: /update settings channel stable|pre-release");
+      saveUpdateSetting(this.config, "channel", channel);
+      this.config.updates.channel = channel;
+      this.lastNotifiedUpdate = undefined;
+      output("Update channel set to " + channel + ". Source: " + this.config.updates.repository + ". Use /update check; no update will install without /update apply.");
+      return;
+    }
     if (command === "cancel") {
       await discardUpdate(this.pendingUpdate);
       this.pendingUpdate = undefined;
@@ -1293,19 +1319,19 @@ export class Orchestrator {
       output(`Latest update log\n\n${await updateLog()}`);
       return;
     }
-    if (command === "source") {
-      output(`GitHub update source: ${this.config.updates.repository}\nAutomatic check: ${this.config.updates.autoCheck ? "on" : "off"}\nUse /update source owner/repository to change it, or /update autocheck on|off.`);
+    if (settingsCommand === "source") {
+      output(`GitHub update source: ${this.config.updates.repository}\nChannel: ${this.config.updates.channel}\nAutomatic check: ${this.config.updates.autoCheck ? "on" : "off"}\nUse /update settings to configure.`);
       return;
     }
-    if (command.startsWith("source ")) {
-      const repository = validateGithubRepository(argument.slice("source ".length));
+    if (settingsCommand.startsWith("source ")) {
+      const repository = validateGithubRepository(settingsArgument.slice("source ".length));
       saveUpdateSetting(this.config, "repository", repository);
       this.config.updates.repository = repository;
       output(`GitHub update source: ${repository}. Use /update check to find its latest public release.`);
       return;
     }
-    if (command.startsWith("autocheck ")) {
-      const setting = command.slice("autocheck ".length).trim();
+    if (settingsCommand.startsWith("autocheck ")) {
+      const setting = settingsCommand.slice("autocheck ".length).trim();
       if (setting !== "on" && setting !== "off") throw new Error("Usage: /update autocheck on|off");
       this.config.updates.autoCheck = setting === "on";
       saveUpdateSetting(this.config, "autoCheck", this.config.updates.autoCheck);
@@ -1313,13 +1339,13 @@ export class Orchestrator {
       return;
     }
     if (command === "check") {
-      const release = await latestGithubRelease(this.config.updates.repository);
+      const release = await latestGithubRelease(this.config.updates.repository, this.config.updates.channel);
       output(this.describeGithubRelease(release));
       return;
     }
     if (command === "latest" || command === "download") {
       this.events.emit({ type: "phase", phase: "downloading-update" });
-      const release = await latestGithubRelease(this.config.updates.repository);
+      const release = await latestGithubRelease(this.config.updates.repository, this.config.updates.channel);
       const next = await prepareGithubUpdate(release);
       await discardUpdate(this.pendingUpdate);
       this.pendingUpdate = next;
@@ -1354,15 +1380,15 @@ export class Orchestrator {
       : release.comparison === "older" ? `This release has an older version than the running ${APP_VERSION}; installing it would be a downgrade.`
         : release.comparison === "different" ? "A different GitHub build is available."
           : "The installed build cannot be compared with this release; check the version before installing.";
-    return `GitHub release\n\n${release.name}\nRepository: ${release.repository}\nTag: ${release.tag}\nRunning version: ${APP_VERSION}\n${state}\nSHA-256: ${release.sha256}\n\nUse /update latest to download and review, then /update apply to install. /update still selects a local ZIP.`;
+    return `GitHub release (${this.config.updates.channel})\n\n${release.name}\nRepository: ${release.repository}\nTag: ${release.tag}\nRunning version: ${APP_VERSION}\n${state}\nSHA-256: ${release.sha256}\n\nUse /update latest to download and review, then /update apply to install. /update still selects a local ZIP.`;
   }
 
   private async checkForUpdatesInBackground(): Promise<void> {
     if (this.updateCheckInFlight || !this.config.updates.autoCheck || this.shuttingDown) return;
     this.updateCheckInFlight = true;
     try {
-      const release = await latestGithubRelease(this.config.updates.repository);
-      const identity = `${release.repository.toLowerCase()}:${release.tag}:${release.sha256}`;
+      const release = await latestGithubRelease(this.config.updates.repository, this.config.updates.channel);
+      const identity = `${this.config.updates.channel}:${release.repository.toLowerCase()}:${release.tag}:${release.sha256}`;
       if (!this.shuttingDown && this.config.updates.autoCheck && release.repository === this.config.updates.repository && release.comparison === "different" && this.lastNotifiedUpdate !== identity) {
         this.lastNotifiedUpdate = identity;
         this.events.emit({ type: "notice", level: "info", text: `GitHub update available: ${release.name}. Use /update check or /update latest.` });
