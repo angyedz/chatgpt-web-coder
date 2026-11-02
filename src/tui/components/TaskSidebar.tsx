@@ -48,8 +48,9 @@ export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers,
     for (const agent of agents) {
       const name = wrapped(agent.role, Math.max(1, inner - 12), 1)[0] ?? "";
       rows.push({ text: `${agentSymbol(agent.status)} #${agent.id} ${name} · ${agent.toolCount} tools`, color: agentColor(agent.status) });
+      if (capacity >= 24 && agent.activity) rows.push({ text: `  ↳ ${wrapped(agent.activity, Math.max(1, inner - 4), 1)[0] ?? ""}`, color: theme.dim });
     }
-    rows.push({ text: "  /swarm status · /swarm results", color: theme.dim });
+    rows.push({ text: "  /swarm status · /swarm inspect 1", color: theme.dim });
     if (capacity >= 20) rows.push({ text: " " });
   }
   if (jobs || timers) {
