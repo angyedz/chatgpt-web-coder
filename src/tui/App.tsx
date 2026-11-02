@@ -58,7 +58,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   const [tools, setTools] = useState<ToolCallView[]>(() => initialSession?.tools ?? []);
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
-  const [agents, setAgents] = useState<SubagentSnapshot[]>(() => orchestrator.subagents.snapshots);
+  const [agents, setAgents] = useState<SubagentSnapshot[]>(() => orchestrator.subagents?.snapshots ?? []);
   const [goal, setGoal] = useState(() => initialSession?.goal);
   const [attachments, setAttachments] = useState(() => initialSession?.attachments ?? []);
   const [localSessionId, setLocalSessionId] = useState(() => initialSession?.id ?? "");
