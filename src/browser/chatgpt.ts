@@ -78,25 +78,29 @@ export class ChatGptBrowser {
       useTemporaryChat: true,
     }, events);
     side.context = this.context;
-    // context.newPage() can activate a new browser tab. A background CDP target
-    // does not select the tab or bring the browser window to the foreground.
-    // Fail closed rather than falling back to a focus-stealing newPage().
-    const browser = this.context.browser();
-    if (!browser) throw new Error("Background tabs require Chromium's browser CDP connection.");
-    const cdp = await browser.newBrowserCDPSession();
-    const url = `about:blank#chatgpt-coder-side-${newId("tab")}`;
-    try {
-      const opened = this.context.waitForEvent("page", {
-        predicate: (page) => page.url() === url,
-        timeout: 15_000,
-      });
-      // If target creation fails, this watcher may reject after its timeout;
-      // attach a rejection handler now to prevent an unhandled rejection.
-      void opened.catch(() => undefined);
-      await cdp.send("Target.createTarget", { url, background: true });
-      side.page = await opened;
-    } finally {
-      await cdp.detach().catch(() => undefined);
+    // Playwright's headless shell does not support CDP's background option;
+    // a headless page cannot steal OS focus because no window exists.
+    if (this.config.headless) {
+      side.page = await this.context.newPage();
+    } else {
+      // Never call newPage() in headed mode: it can steal the user's focus.
+      // Fail closed if the background target API is unavailable.
+      const browser = this.context.browser();
+      if (!browser) throw new Error("Background tabs require Chromium's browser CDP connection.");
+      const cdp = await browser.newBrowserCDPSession();
+      const url = `about:blank#chatgpt-coder-side-${newId("tab")}`;
+      try {
+        const opened = this.context.waitForEvent("page", {
+          predicate: (page) => page.url() === url,
+          timeout: 15_000,
+        });
+        // Avoid an unhandled rejection if target creation fails first.
+        void opened.catch(() => undefined);
+        await cdp.send("Target.createTarget", { url, background: true, focus: false });
+        side.page = await opened;
+      } finally {
+        await cdp.detach().catch(() => undefined);
+      }
     }
     try {
       await side.preparePage();
