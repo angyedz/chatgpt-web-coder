@@ -6,6 +6,7 @@ import { ResponseStream } from "./response-stream.js";
 import { cleanBrowserFallback, extractResponse, removeObservedActivity, removeResponseStatus } from "./response-text.js";
 import { readFallbackText, readMarkdown } from "./markdown.js";
 import { newId } from "../utils/ids.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { readPicker, type PickerKind } from "./picker.js";
 
 export class ChatGptBrowser {
@@ -90,14 +91,20 @@ export class ChatGptBrowser {
       const cdp = await browser.newBrowserCDPSession();
       const url = `about:blank#chatgpt-coder-side-${newId("tab")}`;
       try {
-        const opened = this.context.waitForEvent("page", {
-          predicate: (page) => page.url() === url,
-          timeout: 15_000,
-        });
-        // Avoid an unhandled rejection if target creation fails first.
-        void opened.catch(() => undefined);
-        await cdp.send("Target.createTarget", { url, background: true, focus: false });
-        side.page = await opened;
+        const created = await cdp.send("Target.createTarget", { url, background: true, focus: false });
+        // The initial 'page' event can precede its first URL update; poll for
+        // our unique marker rather than missing the event or using another
+        // worker's simultaneously created tab.
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline) {
+          side.page = this.context.pages().find((page) => !page.isClosed() && page.url() === url);
+          if (side.page) break;
+          await delay(100);
+        }
+        if (!side.page) {
+          await cdp.send("Target.closeTarget", { targetId: created.targetId }).catch(() => undefined);
+          throw new Error("The background tab was not discovered; no foreground fallback was used.");
+        }
       } finally {
         await cdp.detach().catch(() => undefined);
       }
