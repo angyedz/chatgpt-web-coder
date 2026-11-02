@@ -216,7 +216,7 @@ export class SubagentManager {
       agents,
     };
     this.reportQueue = this.reportQueue.catch(() => undefined).then(() => saveSwarmReport(report)).catch((error: unknown) => {
-      this.events.emit({ type: "notice", level: "warn", text: \`Could not save subagent report: \${error instanceof Error ? error.message : String(error)}\` });
+      this.events.emit({ type: "notice", level: "warn", text: `Could not save subagent report: ${error instanceof Error ? error.message : String(error)}` });
     });
   }
 
@@ -251,14 +251,14 @@ export class SubagentManager {
     this.reportId = undefined;
     this.publish();
     try {
-      const runId = \`\${Date.now().toString(36)}-\${randomBytes(3).toString("hex")}\`;
+      const runId = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
       this.reportId = runId;
       const workspaceRoot = path.join(harnessHome(), "swarm-workspaces");
       await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
       for (let index = 0; index < count; index += 1) {
         startup.signal.throwIfAborted();
         const id = String(index + 1);
-        const workspace = path.join(workspaceRoot, \`swarm-\${runId}-\${id}\`);
+        const workspace = path.join(workspaceRoot, `swarm-${runId}-${id}`);
         const baseFiles = await createWorkspaceSnapshot(this.config.workspace, workspace, startup.signal);
         const record: AgentRecord = {
           info: { id, role: ROLES[index]!, objective, status: "preparing", workspace, toolCount: 0, startedAt: Date.now() },
@@ -290,7 +290,7 @@ export class SubagentManager {
     // Each worker gets a background ChatGPT tab and a private local copy.
     // Safe, non-conflicting file changes are integrated when that worker finishes.
     for (const agent of this.agents) agent.task = this.runAgent(agent);
-    this.events.emit({ type: "notice", level: "info", text: \`Started \${this.agents.length} isolated subagents in background tabs. Non-conflicting file changes are integrated automatically; conflicting edits remain in each agent workspace.\` });
+    this.events.emit({ type: "notice", level: "info", text: `Started ${this.agents.length} isolated subagents in background tabs. Non-conflicting file changes are integrated automatically; conflicting edits remain in each agent workspace.` });
   }
 
   approve(id: string, allowed: boolean): boolean {
@@ -307,7 +307,7 @@ export class SubagentManager {
     const targets = id && id !== "all" ? this.agents.filter((agent) => agent.info.id === id) : this.agents;
     if (!targets.length) {
       if (!id || id === "all") { this.startupController?.abort(); return; }
-      throw new Error(\`No subagent with id \${id}.\`);
+      throw new Error(`No subagent with id ${id}.`);
     }
     if (!id || id === "all") this.startupController?.abort();
     for (const agent of targets) {
@@ -346,10 +346,10 @@ export class SubagentManager {
     runtime.context.turnSignal = controller.signal;
     const unsubscribe = sideEvents.on((event) => {
       if (event.type === "tool-start") {
-        agent.info = { ...agent.info, toolCount: agent.info.toolCount + 1, activity: \`\${event.call.name} · running\` };
+        agent.info = { ...agent.info, toolCount: agent.info.toolCount + 1, activity: `${event.call.name} · running` };
         this.publish();
       } else if (event.type === "tool-end") {
-        agent.info = { ...agent.info, activity: \`\${event.call.name} · \${event.call.status}\` };
+        agent.info = { ...agent.info, activity: `${event.call.name} · ${event.call.status}` };
         this.publish();
       } else if (event.type === "assistant-delta") {
         agent.info = { ...agent.info, preview: event.text.slice(-1_200) };
@@ -360,7 +360,7 @@ export class SubagentManager {
         }
       } else if (event.type === "approval") {
         agent.approvalIds.add(event.request.id);
-        this.events.emit({ type: "approval", request: { ...event.request, summary: \`Agent \${info.id} · \${event.request.summary}\` } });
+        this.events.emit({ type: "approval", request: { ...event.request, summary: `Agent ${info.id} · ${event.request.summary}` } });
       } else if (event.type === "approval-resolved") {
         agent.approvalIds.delete(event.id);
         this.events.emit({ ...event, agentId: info.id });
@@ -378,8 +378,8 @@ export class SubagentManager {
       this.publish();
       const prompt = [
         "You are one explicitly user-launched coding subagent in an isolated local workspace snapshot.",
-        \`Your role: \${info.role}. Agent \${info.id} of \${this.agents.length}.\`,
-        \`Workspace: \${info.workspace}.\`,
+        `Your role: ${info.role}. Agent ${info.id} of ${this.agents.length}.`,
+        `Workspace: ${info.workspace}.`,
         "This workspace is a private copy of the user's current working files, including uncommitted changes. It has no Git metadata.",
         "Do not run Git commands. Do not create branches, commits, worktrees, pull requests, push or publish anything.",
         "Do not modify the parent workspace or other agents' workspaces. Work only inside this workspace.",
@@ -388,21 +388,21 @@ export class SubagentManager {
         "The harness safely integrates non-conflicting changed files into the parent workspace when you finish. If the parent or another worker changed the same file differently, that file is not overwritten; the conflict is reported and your workspace is preserved.",
         "If your assignment overlaps another agent, focus on your named role and minimize edits outside that scope.",
         "Finish with a concise summary of files changed, tests and failures, and any suggested integration steps.",
-        \`USER-APPROVED SWARM OBJECTIVE\\n\${info.objective}\`,
-      ].join("\\n\\n");
+        `USER-APPROVED SWARM OBJECTIVE\n${info.objective}`,
+      ].join("\n\n");
       const answer = await browser.send(prompt, controller.signal, { turnId });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
       const integrationSummary = integration.applied.length
-        ? \`\${integration.applied.length} file(s) integrated\`
+        ? `${integration.applied.length} file(s) integrated`
         : "no non-conflicting file changes";
       const conflictSummary = integration.conflicts.length
-        ? \`; \${integration.conflicts.length} conflict(s) kept in the isolated workspace\`
+        ? `; ${integration.conflicts.length} conflict(s) kept in the isolated workspace`
         : "";
       agent.info = {
         ...agent.info,
         status: "done",
-        activity: \`completed · \${integrationSummary}\${conflictSummary}\`,
+        activity: `completed · ${integrationSummary}${conflictSummary}`,
         summary: answer.slice(-6_000),
         changedFiles: integration.applied,
         conflicts: integration.conflicts,
