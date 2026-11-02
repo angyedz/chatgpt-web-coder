@@ -12,9 +12,8 @@ permissions:
 jobs:
   publish:
     name: Publish verified GitHub Release
-    # Only first-party workflow runs with fully passing checks may publish.
-    # No untrusted fork PR gets a release token or access to this job.
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
+    # ONLY main and pre-release branches publish. PR and feature branches never publish.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') && (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'pre-release')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -32,7 +31,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          PR_SOURCE_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
@@ -48,23 +46,23 @@ jobs:
           artifact_repo="$(printf '%s' "$metadata" | jq -er '.repository | strings')"
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid ZIP commit"; exit 1; }
           [ "$artifact_repo" = "$GITHUB_REPOSITORY" ] || { echo "ZIP repository mismatch"; exit 1; }
-          if [ "$RUN_EVENT" != pull_request ]; then
-            [ "$source_sha" = "$RUN_HEAD_SHA" ] || { echo "ZIP/source commit mismatch"; exit 1; }
-          elif [[ "$PR_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            [ "$source_sha" = "$PR_SOURCE_SHA" ] || { echo "ZIP/PR head mismatch"; exit 1; }
-          fi
+          [ "$source_sha" = "$RUN_HEAD_SHA" ] || { echo "ZIP/source commit mismatch"; exit 1; }
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid source run"; exit 1; }
           [[ "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || { echo "Invalid run attempt"; exit 1; }
           case "$RUN_EVENT" in
-            push|pull_request|workflow_dispatch) ;;
+            push|workflow_dispatch) ;;
             *) echo "Unsupported workflow trigger: $RUN_EVENT"; exit 1 ;;
+          esac
+          case "$RUN_BRANCH" in
+            main|pre-release) ;;
+            *) echo "Only main and pre-release can publish"; exit 1 ;;
           esac
 
           version="$(unzip -p release/chatgpt-coder-windows.zip package.json | jq -er '.version | strings | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+([-.+][0-9A-Za-z.-]+)?$"))')"
-          channel=preview
-          tag="preview-${RUN_ID}-${RUN_ATTEMPT}"
+          channel=pre-release
+          tag="prerelease-${RUN_ID}-${RUN_ATTEMPT}"
           flags=(--prerelease --latest=false)
-          if [ "$RUN_EVENT" != "pull_request" ] && [ "$RUN_BRANCH" = main ]; then
+          if [ "$RUN_BRANCH" = main ]; then
             channel=stable
             tag="build-${RUN_ID}-${RUN_ATTEMPT}"
             flags=(--latest=false)
@@ -77,7 +75,7 @@ jobs:
           if [ "$channel" = stable ]; then
             printf '%s\n' '' 'Для стабильных релизов доступно обновление через `/update latest`.' >> release-notes.md
           else
-            printf '%s\n' '' 'Это предварительная сборка; `/update latest` её не устанавливает. Используйте ZIP вручную.' >> release-notes.md
+            printf '%s\n' '' 'Это сборка ветки pre-release; она доступна через `/update settings channel pre-release` и `/update latest`.' >> release-notes.md
           fi
           gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --target "$source_sha" \
