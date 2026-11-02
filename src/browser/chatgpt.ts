@@ -69,11 +69,35 @@ export class ChatGptBrowser {
     return this.page;
   }
 
-  async openSideChat(events: HarnessEvents): Promise<ChatGptBrowser> {
+  async openSideChat(events: HarnessEvents, options: { attachConnector?: boolean } = {}): Promise<ChatGptBrowser> {
     if (!this.isOpen || !this.context) throw new Error("The main ChatGPT browser is not connected.");
-    const side = new ChatGptBrowser({ ...this.config, attachConnector: false, newChatPerTurn: true, useTemporaryChat: true }, events);
+    const side = new ChatGptBrowser({
+      ...this.config,
+      attachConnector: options.attachConnector ?? false,
+      newChatPerTurn: true,
+      useTemporaryChat: true,
+    }, events);
     side.context = this.context;
-    side.page = await this.context.newPage();
+    // context.newPage() can activate a new browser tab. A background CDP target
+    // does not select the tab or bring the browser window to the foreground.
+    // Fail closed rather than falling back to a focus-stealing newPage().
+    const browser = this.context.browser();
+    if (!browser) throw new Error("Background tabs require Chromium's browser CDP connection.");
+    const cdp = await browser.newBrowserCDPSession();
+    const url = `about:blank#chatgpt-coder-side-${newId("tab")}`;
+    try {
+      const opened = this.context.waitForEvent("page", {
+        predicate: (page) => page.url() === url,
+        timeout: 15_000,
+      });
+      // If target creation fails, this watcher may reject after its timeout;
+      // attach a rejection handler now to prevent an unhandled rejection.
+      void opened.catch(() => undefined);
+      await cdp.send("Target.createTarget", { url, background: true });
+      side.page = await opened;
+    } finally {
+      await cdp.detach().catch(() => undefined);
+    }
     try {
       await side.preparePage();
       return side;
