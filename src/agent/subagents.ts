@@ -11,6 +11,7 @@ import { createRuntime, type Runtime } from "../runtime/context.js";
 import { harnessHome } from "../utils/paths.js";
 import { newId } from "../utils/ids.js";
 import type { SubagentSnapshot } from "../types.js";
+import { listSwarmReports, readSwarmReport, saveSwarmReport, type SwarmReport } from "./swarm-reports.js";
 
 const execGit = promisify(execFile);
 const MAX_AGENTS = 5;
@@ -37,6 +38,8 @@ export class SubagentManager {
   private agents: AgentRecord[] = [];
   private initializing = false;
   private startupController?: AbortController;
+  private reportId?: string;
+  private reportQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly config: HarnessConfig,
@@ -53,6 +56,31 @@ export class SubagentManager {
     this.events.emit({ type: "subagents", agents: this.snapshots });
   }
 
+  private persistReport(): void {
+    const id = this.reportId;
+    const agents = this.snapshots;
+    if (!id || !agents.length) return;
+    const report: SwarmReport = {
+      id,
+      objective: agents[0]!.objective,
+      savedAt: Date.now(),
+      agents,
+    };
+    this.reportQueue = this.reportQueue.catch(() => undefined).then(() => saveSwarmReport(report)).catch((error: unknown) => {
+      this.events.emit({ type: "notice", level: "warn", text: `Could not save subagent report: ${error instanceof Error ? error.message : String(error)}` });
+    });
+  }
+
+  async history(): Promise<SwarmReport[]> {
+    await this.reportQueue;
+    return listSwarmReports();
+  }
+
+  async report(id: string): Promise<SwarmReport> {
+    await this.reportQueue;
+    return readSwarmReport(id);
+  }
+
   get active(): boolean {
     return this.initializing || this.agents.some((agent) => ["preparing", "running"].includes(agent.info.status));
   }
@@ -66,9 +94,11 @@ export class SubagentManager {
 
     // Only /swarm start calls this method; never auto-spawn from an agent prompt.
     this.initializing = true;
+    await this.reportQueue;
     const startup = new AbortController();
     this.startupController = startup;
     this.agents = [];
+    this.reportId = undefined;
     this.publish();
     try {
       const { stdout: rootOutput } = await execGit("git", ["-C", this.config.workspace, "rev-parse", "--show-toplevel"], { timeout: 15_000, windowsHide: true, signal: startup.signal });
@@ -76,6 +106,7 @@ export class SubagentManager {
       const { stdout: dirty } = await execGit("git", ["-C", root, "status", "--porcelain"], { timeout: 15_000, windowsHide: true, signal: startup.signal });
       if (dirty.trim()) throw new Error("The Git working tree has uncommitted changes. Commit or stash them before /swarm start; workers branch from HEAD.");
       const runId = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+      this.reportId = runId;
       const worktreeRoot = path.join(harnessHome(), "worktrees");
       await mkdir(worktreeRoot, { recursive: true });
       // Serialize Git operations to avoid repository lock contention.
@@ -100,11 +131,13 @@ export class SubagentManager {
         agent.info = { ...agent.info, status: startup.signal.aborted ? "stopped" : "failed", finishedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
       }
       this.publish();
+      this.persistReport();
       throw error;
     } finally {
       this.initializing = false;
       this.startupController = undefined;
       this.publish();
+      this.persistReport();
     }
 
     // All workers operate in independent background browser tabs and Git worktrees.
@@ -138,11 +171,13 @@ export class SubagentManager {
       agent.info = { ...agent.info, status: "stopped", activity: "stopped by user", finishedAt: Date.now() };
     }
     this.publish();
+    this.persistReport();
   }
 
   async shutdown(): Promise<void> {
     this.stop("all");
     await Promise.allSettled(this.agents.map((agent) => agent.task).filter((task): task is Promise<void> => Boolean(task)));
+    await this.reportQueue;
   }
 
   private async runAgent(agent: AgentRecord): Promise<void> {
@@ -222,6 +257,7 @@ export class SubagentManager {
       await runtime.exec.dispose().catch(() => undefined);
       unsubscribe();
       this.publish();
+      this.persistReport();
     }
   }
 }
