@@ -2,7 +2,7 @@ name: Windows CI and release
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -21,6 +21,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # For trusted in-repository PRs, build the exact head commit that is released.
+          # Fork PRs continue to test GitHub's merge ref and cannot publish.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -69,7 +72,8 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # Same-repo PRs can publish previews; fork PRs never get a write token.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,23 +88,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
           (cd release && sha256sum --check SHA256SUMS.txt)
-          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          short_sha="${GITHUB_SHA:0:7}"
-          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-          latest_flag='--latest=false'
-          if [ "$current_main" = "$GITHUB_SHA" ]; then latest_flag='--latest'; fi
-          printf 'Автоматическая сборка версии %s для коммита %s.\n\n' "$VERSION" "$GITHUB_SHA" > release-notes.md
+          source_sha="$GITHUB_SHA"
+          source_ref="$GITHUB_REF_NAME"
+          channel="preview"
+          tag="preview-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          release_flags=(--prerelease --latest=false)
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            source_sha="$PR_HEAD_SHA"
+            source_ref="$GITHUB_HEAD_REF"
+            tag="preview-pr-${PR_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          elif [ "$GITHUB_REF_NAME" = "main" ]; then
+            channel="stable"
+            tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            release_flags=(--latest)
+          fi
+          printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\n\n' "$channel" "$VERSION" "$source_ref" "$source_sha" > release-notes.md
           cat >> release-notes.md <<'EOF'
           **Установка:** распакуйте `chatgpt-coder-windows.zip` и запустите `install.cmd`.
-          **Обновление из GitHub:** в установленном harness выполните `/update latest`, затем подтвердите установку командой `/update apply` и перезапустите программу.
           **Обновление из ZIP:** выберите файл командой `/update`, затем выполните `/update apply` и перезапустите программу.
 
           `SHA256SUMS.txt` содержит SHA-256 архива. Для установки зависимостей требуется интернет.
           EOF
+          if [ "$channel" = "stable" ]; then
+            printf '%s\n' '' '**Автообновление:** выполните `/update latest` и затем `/update apply`.' >> release-notes.md
+          else
+            printf '%s\n' '' '**Предварительная сборка:** не включается в `/update latest`; устанавливайте ZIP вручную. Не рекомендуется вместо стабильной сборки без проверки.' >> release-notes.md
+          fi
           gh release create "$tag" release/chatgpt-coder-windows.zip release/SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "chatgpt-coder ${VERSION} · ${short_sha}" --notes-file release-notes.md "$latest_flag"
+            --repo "$GITHUB_REPOSITORY" --target "$source_sha" \
+            --title "chatgpt-coder ${VERSION} · ${channel} · ${source_sha:0:7}" \
+            --notes-file release-notes.md "${release_flags[@]}"
