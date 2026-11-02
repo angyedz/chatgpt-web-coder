@@ -110,7 +110,7 @@ export type HarnessEvent =
   | { type: "update-selection"; pending?: { kind: "download" | "local" | "rollback"; version: string } }
   | { type: "mcp-refresh"; reminder?: { name: string; result: "changed" | "unknown" } }
   | { type: "approval"; request: ApprovalRequest }
-  | { type: "approval-resolved"; id: string; allowed: boolean }
+  | { type: "approval-resolved"; id: string; allowed: boolean; agentId?: string }
   | { type: "turn-start"; turnId: string }
   | { type: "turn-end"; turnId: string; ok: boolean }
   | { type: "phase"; phase: TurnPhase }
