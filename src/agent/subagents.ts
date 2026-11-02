@@ -32,6 +32,7 @@ type AgentRecord = {
   task?: Promise<void>;
   approvalIds: Set<string>;
   lastPreviewPublish?: number;
+  settled?: boolean;
 };
 
 export class SubagentManager {
@@ -82,7 +83,7 @@ export class SubagentManager {
   }
 
   get active(): boolean {
-    return this.initializing || this.agents.some((agent) => ["preparing", "running"].includes(agent.info.status));
+    return this.initializing || this.agents.some((agent) => !agent.settled);
   }
 
   async start(count: number, objective: string): Promise<void> {
@@ -121,6 +122,7 @@ export class SubagentManager {
           controller: new AbortController(),
           turnId: newId("turn"),
           approvalIds: new Set(),
+          settled: false,
         };
         this.agents.push(record);
         this.publish();
@@ -161,7 +163,7 @@ export class SubagentManager {
       if (!id || id === "all") { this.startupController?.abort(); return; }
       throw new Error(`No subagent with id ${id}.`);
     }
-    this.startupController?.abort();
+    if (!id || id === "all") this.startupController?.abort();
     for (const agent of targets) {
       if (!["preparing", "running"].includes(agent.info.status)) continue;
       agent.controller.abort();
@@ -256,6 +258,7 @@ export class SubagentManager {
       await runtime.externalMcp.close().catch(() => undefined);
       await runtime.exec.dispose().catch(() => undefined);
       unsubscribe();
+      agent.settled = true;
       this.publish();
       this.persistReport();
     }
