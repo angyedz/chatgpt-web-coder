@@ -23,6 +23,13 @@ const IGNORED_PATHS = new Set([
   ".git", ".svn", ".hg", "node_modules", "dist", "coverage", ".cache", ".turbo",
   ".next", ".nuxt", ".output", ".venv", "venv", "__pycache__", ".pytest_cache",
   ".mypy_cache", ".ruff_cache", "target", "release", "artifacts", "tmp", ".tmp",
+  ".ssh", ".aws", ".azure", ".kube", ".gnupg", ".docker", ".terraform", "secrets", "credentials",
+]);
+const SAFE_ENV_FILES = new Set([".env.example", ".env.sample", ".env.template"]);
+const SENSITIVE_FILES = new Set([
+  ".npmrc", ".pypirc", ".netrc", ".git-credentials", "id_rsa", "id_ed25519",
+  "credentials.json", "client_secret.json", "service-account.json", "token.json",
+  "access_token", "refresh_token", "terraform.tfstate",
 ]);
 
 type WorkspaceManifest = Map<string, string>;
@@ -43,7 +50,19 @@ type AgentRecord = {
 
 function isIgnored(relative: string, stateRelative?: string): boolean {
   const normalized = relative.split(path.sep).filter(Boolean);
-  if (normalized.some((part) => IGNORED_PATHS.has(part.toLowerCase()))) return true;
+  const lower = normalized.map((part) => part.toLowerCase());
+  if (lower.some((part) => IGNORED_PATHS.has(part))) return true;
+  if (lower.includes(".config") && lower.includes("gcloud")) return true;
+  const filename = lower.at(-1);
+  if (filename && (
+    filename === ".env" ||
+    (filename.startsWith(".env.") && !SAFE_ENV_FILES.has(filename)) ||
+    SENSITIVE_FILES.has(filename) ||
+    filename.startsWith("secrets.") ||
+    filename.endsWith(".secret") ||
+    /\.(?:pem|key|p12|pfx|jks|keystore|ppk|asc)$/i.test(filename) ||
+    filename.endsWith(".tfstate")
+  )) return true;
   if (stateRelative) {
     const state = stateRelative.split(path.sep).filter(Boolean);
     if (normalized.length >= state.length && state.every((part, index) => normalized[index] === part)) return true;
