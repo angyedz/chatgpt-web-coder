@@ -66,7 +66,43 @@ try {
     New-Item -ItemType Directory -Path $prebuilt | Out-Null
     Move-Item -LiteralPath (Join-Path $stage 'dist') -Destination (Join-Path $prebuilt 'dist')
     if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_REPOSITORY -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $env:GITHUB_SHA -match '^[a-f0-9]{40}$' -and $env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
-      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"; commit = $env:GITHUB_SHA } | ConvertTo-Json -Compress
+      $sourceSha = $env:CHATGPT_CODER_SOURCE_SHA
+      if (-not $sourceSha) { $sourceSha = $env:GITHUB_SHA }
+      if ($sourceSha -notmatch '^[a-f0-9]{40}
+      [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
+    }
+    Write-Host '[3/4] Compiling Windows launcher...'
+    & $compiler /nologo /target:exe ("/out:" + (Join-Path $prebuilt 'chatgpt-coder.exe')) (Join-Path $stage 'scripts\windows-launcher.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
+    Write-Host '[4/4] Creating update ZIP...'
+    New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($output)) | Out-Null
+    $files = @($inputs + 'prebuilt') | ForEach-Object { Join-Path $stage $_ }
+    Compress-Archive -LiteralPath $files -DestinationPath $output -CompressionLevel Optimal
+    $size = (Get-Item -LiteralPath $output).Length
+    if ($size -gt 100MB) { throw "Update exceeds the 100 MB limit: $output" }
+    $sha = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
+    Write-Host "Update ZIP: $output"
+    Write-Host "Version: $($package.version)"
+    Write-Host "SHA-256: $sha"
+    Write-Host 'In the installed harness use /update, select this ZIP, and run /update apply.'
+  } finally { Pop-Location }
+} catch {
+  Write-Host ("Build failed: " + $_.Exception.Message) -ForegroundColor Red
+  if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
+  exit 1
+} finally {
+  if ($stage -and $stageRoot -and (Test-Path -LiteralPath $stage)) {
+    $item = Get-Item -LiteralPath $stage -Force
+    $resolved = (Resolve-Path -LiteralPath $stage).Path
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and [IO.Path]::GetDirectoryName($resolved) -ieq $stageRoot -and $item.Name -match '^chatgpt-coder-build-[0-9a-f]{32}$') {
+      Remove-Item -LiteralPath $resolved -Recurse -Force
+    } else { Write-Warning "Build staging directory was not removed: $stage" }
+  }
+}
+) { throw 'Invalid release source commit SHA.' }
+      if ($env:GITHUB_REF_NAME -eq 'main' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      else { $releaseTag = "preview-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = $releaseTag; commit = $sourceSha } | ConvertTo-Json -Compress
       [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
     }
     Write-Host '[3/4] Compiling Windows launcher...'
