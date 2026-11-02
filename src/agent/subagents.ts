@@ -180,8 +180,6 @@ async function integrateWorkspaceChanges(
   return { applied, conflicts: [...new Set(conflicts)].sort() };
 }
 
-type AgentWorkspace = { workspace: string; baseFiles: WorkspaceManifest };
-
 export class SubagentManager {
   private agents: AgentRecord[] = [];
   private initializing = false;
