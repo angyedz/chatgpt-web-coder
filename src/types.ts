@@ -77,13 +77,14 @@ export interface SubagentSnapshot {
   objective: string;
   status: "preparing" | "running" | "done" | "failed" | "stopped";
   workspace: string;
-  branch: string;
   toolCount: number;
   activity?: string;
   preview?: string;
   startedAt: number;
   finishedAt?: number;
   summary?: string;
+  changedFiles?: string[];
+  conflicts?: string[];
   error?: string;
 }
 

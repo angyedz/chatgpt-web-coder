@@ -65,4 +65,40 @@ describe("goal completion", () => {
       await rm(temporaryHome, { recursive: true, force: true });
     }
   });
+  it("does not pause or cancel the whole goal when one approval is denied or times out", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-goal-approval-"));
+    vi.stubEnv("CHATGPT_CODER_HOME", temporaryHome);
+    const orchestrator = new Orchestrator(defaultConfig(temporaryHome));
+    const stop = vi.spyOn(orchestrator.browser, "stop").mockResolvedValue();
+    try {
+      orchestrator.runtime.goal.start("Finish the project");
+      orchestrator.events.emit({ type: "approval-resolved", id: "approval-denied", allowed: false });
+      orchestrator.events.emit({ type: "approval-resolved", id: "approval-timeout", allowed: false });
+      expect(orchestrator.runtime.goal.current?.status).toBe("active");
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      await orchestrator.sessions.flush();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("marks an actual turn failure as blocked, not as a user pause", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-goal-error-"));
+    vi.stubEnv("CHATGPT_CODER_HOME", temporaryHome);
+    const orchestrator = new Orchestrator(defaultConfig(temporaryHome));
+    vi.spyOn(orchestrator.browser, "send").mockRejectedValue(new Error("temporary browser transport failure"));
+    try {
+      await orchestrator.submit("/goal Finish the project");
+      expect(orchestrator.runtime.goal.current?.status).toBe("blocked");
+      expect(orchestrator.runtime.goal.current?.detail).toContain("temporary browser transport failure");
+      expect(orchestrator.runtime.goal.current?.status).not.toBe("paused");
+      expect(orchestrator.isBusy).toBe(false);
+    } finally {
+      await orchestrator.sessions.flush();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
 });
