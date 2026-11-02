@@ -8,7 +8,7 @@ import type { McpHost } from "../mcp/server.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
 import { harnessHome, isInside } from "../utils/paths.js";
 import { newId } from "../utils/ids.js";
-import type { SubagentSnapshot } from "../types.js";
+import type { SubagentChatMessage, SubagentSnapshot } from "../types.js";
 import { listSwarmReports, readSwarmReport, saveSwarmReport, type SwarmReport } from "./swarm-reports.js";
 
 const MAX_AGENTS = 5;
@@ -23,6 +23,13 @@ const IGNORED_PATHS = new Set([
   ".git", ".svn", ".hg", "node_modules", "dist", "coverage", ".cache", ".turbo",
   ".next", ".nuxt", ".output", ".venv", "venv", "__pycache__", ".pytest_cache",
   ".mypy_cache", ".ruff_cache", "target", "release", "artifacts", "tmp", ".tmp",
+  ".ssh", ".aws", ".azure", ".kube", ".gnupg", ".docker", ".terraform", "secrets", "credentials",
+]);
+const SAFE_ENV_FILES = new Set([".env.example", ".env.sample", ".env.template"]);
+const SENSITIVE_FILES = new Set([
+  ".npmrc", ".pypirc", ".netrc", ".git-credentials", "id_rsa", "id_ed25519",
+  "credentials.json", "client_secret.json", "service-account.json", "token.json",
+  "access_token", "refresh_token", "terraform.tfstate",
 ]);
 
 type WorkspaceManifest = Map<string, string>;
@@ -35,6 +42,8 @@ type AgentRecord = {
   baseFiles: WorkspaceManifest;
   runtime?: Runtime;
   browser?: ChatGptBrowser;
+  sideEvents?: HarnessEvents;
+  unsubscribe?: () => void;
   task?: Promise<void>;
   approvalIds: Set<string>;
   lastPreviewPublish?: number;
@@ -43,7 +52,19 @@ type AgentRecord = {
 
 function isIgnored(relative: string, stateRelative?: string): boolean {
   const normalized = relative.split(path.sep).filter(Boolean);
-  if (normalized.some((part) => IGNORED_PATHS.has(part.toLowerCase()))) return true;
+  const lower = normalized.map((part) => part.toLowerCase());
+  if (lower.some((part) => IGNORED_PATHS.has(part))) return true;
+  if (lower.includes(".config") && lower.includes("gcloud")) return true;
+  const filename = lower.at(-1);
+  if (filename && (
+    filename === ".env" ||
+    (filename.startsWith(".env.") && !SAFE_ENV_FILES.has(filename)) ||
+    SENSITIVE_FILES.has(filename) ||
+    filename.startsWith("secrets.") ||
+    filename.endsWith(".secret") ||
+    /\.(?:pem|key|p12|pfx|jks|keystore|ppk|asc)$/i.test(filename) ||
+    filename.endsWith(".tfstate")
+  )) return true;
   if (stateRelative) {
     const state = stateRelative.split(path.sep).filter(Boolean);
     if (normalized.length >= state.length && state.every((part, index) => normalized[index] === part)) return true;
@@ -199,7 +220,26 @@ export class SubagentManager {
   ) {}
 
   get snapshots(): SubagentSnapshot[] {
-    return this.agents.map((agent) => ({ ...agent.info }));
+    return this.agents.map((agent) => ({
+      ...agent.info,
+      messages: agent.info.messages?.map((message) => ({ ...message })),
+    }));
+  }
+
+  private recordChatMessage(agent: AgentRecord, message: SubagentChatMessage): void {
+    const current = agent.info.messages ?? [];
+    const existing = current.find((item) => item.id === message.id);
+    const nextMessage: SubagentChatMessage = {
+      ...existing,
+      ...message,
+      createdAt: existing?.createdAt ?? message.createdAt,
+      text: message.text.slice(-4_000),
+    };
+    const next = existing
+      ? current.map((item) => item.id === message.id ? nextMessage : item)
+      : [...current, nextMessage].slice(-24);
+    agent.info = { ...agent.info, messages: next };
+    this.publish();
   }
 
   private publish(): void {
@@ -248,6 +288,10 @@ export class SubagentManager {
     await this.reportQueue;
     const startup = new AbortController();
     this.startupController = startup;
+    await Promise.all(this.agents.map(async (agent) => {
+      await agent.browser?.closeSideChat().catch(() => undefined);
+      agent.unsubscribe?.();
+    }));
     this.agents = [];
     this.reportId = undefined;
     this.publish();
@@ -328,27 +372,145 @@ export class SubagentManager {
   async shutdown(): Promise<void> {
     this.stop("all");
     await Promise.allSettled(this.agents.map((agent) => agent.task).filter((task): task is Promise<void> => Boolean(task)));
+    await Promise.all(this.agents.map(async (agent) => {
+      await agent.browser?.closeSideChat().catch(() => undefined);
+      agent.unsubscribe?.();
+      agent.browser = undefined;
+      agent.sideEvents = undefined;
+    }));
     await this.reportQueue;
     await this.integrationQueue;
   }
 
   private integrate(agent: AgentRecord): Promise<IntegrationResult> {
-    const work = this.integrationQueue.catch(() => undefined).then(() =>
-      integrateWorkspaceChanges(this.sourceRoot ?? this.config.workspace, agent.info.workspace, agent.baseFiles),
-    );
+    const work = this.integrationQueue.catch(() => undefined).then(async () => {
+      const result = await integrateWorkspaceChanges(this.sourceRoot ?? this.config.workspace, agent.info.workspace, agent.baseFiles);
+      if (result.applied.length) {
+        const latest = await scanWorkspace(agent.info.workspace);
+        for (const relative of result.applied) {
+          const digest = latest.get(relative);
+          if (digest === undefined) agent.baseFiles.delete(relative);
+          else agent.baseFiles.set(relative, digest);
+        }
+      }
+      return result;
+    });
     this.integrationQueue = work.then(() => undefined, () => undefined);
     return work;
+  }
+
+  async open(id: string): Promise<void> {
+    const agent = this.agents.find((item) => item.info.id === id);
+    if (!agent) throw new Error(`No subagent with id ${id}.`);
+    if (!agent.browser?.isOpen) throw new Error(`Subagent ${id} has no open ChatGPT tab.`);
+    await agent.browser.bringToFront();
+  }
+
+  sendMessage(id: string, message: string): Promise<string> {
+    const agent = this.agents.find((item) => item.info.id === id);
+    if (!agent) throw new Error(`No subagent with id ${id}.`);
+    if (!message.trim()) throw new Error("Usage: /swarm message <id> <instruction>");
+    if (!agent.settled || agent.info.status === "running") throw new Error(`Subagent ${id} is already working.`);
+    if (!agent.browser?.isOpen || !agent.sideEvents) throw new Error(`Subagent ${id} has no reusable ChatGPT chat.`);
+    const task = this.runFollowup(agent, message.trim());
+    agent.task = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  async waitFor(timeoutMs = 120_000): Promise<SubagentSnapshot[]> {
+    if (!this.active) return this.snapshots;
+    return new Promise((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        unsubscribe();
+        resolve(this.snapshots);
+      };
+      const unsubscribe = this.events.on((event) => {
+        if (event.type === "subagents" && !this.active) finish();
+      });
+      timer = setTimeout(finish, Math.max(1_000, Math.min(timeoutMs, 300_000)));
+      if (!this.active) finish();
+    });
+  }
+
+  private async runFollowup(agent: AgentRecord, message: string): Promise<string> {
+    const browser = agent.browser!;
+    const events = agent.sideEvents!;
+    const controller = new AbortController();
+    const turnId = newId("turn");
+    const config: HarnessConfig = { ...this.config, workspace: agent.info.workspace, browser: { ...this.config.browser } };
+    const runtime = createRuntime(config, events, turnId);
+    agent.controller = controller;
+    agent.turnId = turnId;
+    agent.runtime = runtime;
+    agent.settled = false;
+    runtime.context.turnSignal = controller.signal;
+    runtime.context.browser = browser;
+    runtime.context.beforeToolStart = () => browser.snapshotBeforeTool();
+    agent.info = { ...agent.info, status: "running", activity: "Orchestrator sent a follow-up", error: undefined, finishedAt: undefined };
+    this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: message, createdAt: Date.now() });
+    let registered = false;
+    try {
+      this.mcp.registerTurnContext(turnId, runtime.context);
+      registered = true;
+      const answer = await browser.send(message, controller.signal, { turnId, continueChat: true });
+      controller.signal.throwIfAborted();
+      const integration = await this.integrate(agent);
+      agent.info = {
+        ...agent.info,
+        status: "done",
+        activity: `follow-up completed · ${integration.applied.length} file(s) integrated${integration.conflicts.length ? `; ${integration.conflicts.length} conflict(s)` : ""}`,
+        summary: answer.slice(-6_000),
+        changedFiles: [...new Set([...(agent.info.changedFiles ?? []), ...integration.applied])],
+        conflicts: integration.conflicts,
+        finishedAt: Date.now(),
+      };
+      return answer;
+    } catch (error) {
+      const aborted = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
+      agent.info = {
+        ...agent.info,
+        status: aborted ? "stopped" : "failed",
+        activity: aborted ? "follow-up cancelled" : "follow-up failed",
+        error: aborted ? undefined : error instanceof Error ? error.message : String(error),
+        finishedAt: Date.now(),
+      };
+      throw error;
+    } finally {
+      if (registered) this.mcp.unregisterTurnContext(turnId);
+      for (const approvalId of agent.approvalIds) runtime.approvals.respond(approvalId, false);
+      runtime.approvals.denyAll();
+      await runtime.exec.stopTurn(turnId).catch(() => undefined);
+      runtime.timers.dispose();
+      await runtime.externalMcp.close().catch(() => undefined);
+      await runtime.exec.dispose().catch(() => undefined);
+      agent.runtime = undefined;
+      agent.settled = true;
+      this.publish();
+      this.persistReport();
+    }
   }
 
   private async runAgent(agent: AgentRecord): Promise<void> {
     const { info, controller, turnId } = agent;
     const sideEvents = new HarnessEvents();
+    agent.sideEvents = sideEvents;
     const config: HarnessConfig = { ...this.config, workspace: info.workspace, browser: { ...this.config.browser } };
     const runtime = createRuntime(config, sideEvents, turnId);
     agent.runtime = runtime;
     runtime.context.turnSignal = controller.signal;
-    const unsubscribe = sideEvents.on((event) => {
-      if (event.type === "tool-start") {
+    agent.unsubscribe = sideEvents.on((event) => {
+      if (event.type === "assistant-start") {
+        this.recordChatMessage(agent, { id: event.id, role: "assistant", text: "", createdAt: Date.now(), streaming: true });
+      } else if (event.type === "assistant-delta") {
+        this.recordChatMessage(agent, { id: event.id, role: "assistant", text: event.text, createdAt: Date.now(), streaming: true });
+      } else if (event.type === "assistant-done") {
+        this.recordChatMessage(agent, { id: event.id, role: "assistant", text: event.text, createdAt: Date.now(), streaming: false, interrupted: Boolean(event.error) });
+      } else if (event.type === "tool-start") {
         agent.info = { ...agent.info, toolCount: agent.info.toolCount + 1, activity: `${event.call.name} · running` };
         this.publish();
       } else if (event.type === "tool-end") {
@@ -383,7 +545,7 @@ export class SubagentManager {
         "You are one explicitly user-launched coding subagent in an isolated local workspace snapshot.",
         `Your role: ${info.role}. Agent ${info.id} of ${this.agents.length}.`,
         `Workspace: ${info.workspace}`,
-        "This workspace is a private copy of the user's current working files, including uncommitted changes. It has no Git metadata.",
+        "This workspace is a private copy of the project files, including uncommitted changes, but excluding Git metadata, dependency caches and credential files such as .env, private keys and cloud credentials.",
         "Treat the linked node_modules directory as read-only. Do not install packages or modify shared dependencies unless the user explicitly asks.",
         "Do not run Git commands. Do not create branches, commits, worktrees, pull requests, push or publish anything.",
         "Do not modify the parent workspace or other agents' workspaces. Work only inside this workspace.",
@@ -394,6 +556,7 @@ export class SubagentManager {
         "Finish with a concise summary of files changed, tests and failures, and any suggested integration steps.",
         `USER-APPROVED SWARM OBJECTIVE\n${info.objective}`,
       ].join("\n\n");
+      this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: info.objective, createdAt: Date.now() });
       const answer = await browser.send(prompt, controller.signal, { turnId });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
@@ -428,12 +591,11 @@ export class SubagentManager {
         runtime.approvals.respond(approvalId, false);
       }
       runtime.approvals.denyAll();
-      await agent.browser?.closeSideChat().catch(() => undefined);
       await runtime.exec.stopTurn(turnId).catch(() => undefined);
       runtime.timers.dispose();
       await runtime.externalMcp.close().catch(() => undefined);
       await runtime.exec.dispose().catch(() => undefined);
-      unsubscribe();
+      agent.runtime = undefined;
       agent.settled = true;
       this.publish();
       this.persistReport();
