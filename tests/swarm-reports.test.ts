@@ -24,7 +24,6 @@ const sample: SwarmReport = {
     objective: "Check quality",
     status: "done",
     workspace: "/temporary/isolated-worktree",
-    branch: "chatgpt-coder/swarm-run-123-1",
     toolCount: 7,
     startedAt: 1739999999000,
     finishedAt: 1740000000000,
