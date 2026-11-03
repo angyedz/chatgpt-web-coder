@@ -276,6 +276,11 @@ export class TelegramBot {
 
   private async startMessageDashboard(): Promise<void> {
     // A fresh card for EACH owner message; only this new card is edited while tools run.
+    this.requestPrompt = "";
+    this.answer = "";
+    this.currentTool = "";
+    this.toolQueue = [];
+    this.phase = "Ready";
     this.dashboardMessageId = 0;
     this.lastRendered = "";
     this.lastKeyboard = "";
