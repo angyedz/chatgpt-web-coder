@@ -7,6 +7,7 @@ type BotInternals = {
   running: boolean;
   lastEditAt: number;
   onMessage(message: { message_id: number; chat: { id: number; type: string }; from: { id: number }; text: string }, updateId: number): Promise<void>;
+  onCallback(callback: { id: string; from: { id: number }; data: string; message: { message_id: number; chat: { id: number; type: string } } }, updateId: number): Promise<void>;
   flushDashboard(): Promise<void>;
 };
 
@@ -91,6 +92,20 @@ describe("Telegram interactive session cards", () => {
       expect(requests.at(-1)?.body.message_id).toBe(cardId);
       expect(requests.at(-1)?.body.text).toContain("exec_command");
       expect(requests.at(-1)?.body.text).not.toContain("read_file");
+    } finally { await bot.stop(); }
+  });
+
+  it("changes to the chosen saved chat and persists the choice", async () => {
+    const { internals, requests, message, bot, callbacks } = setup();
+    try {
+      await internals.onMessage(message(1, "/sessions"), 1);
+      await internals.onCallback({ id: "callback1", from: { id: 42 }, data: `ss:${betaSession.id}`, message: { message_id: 100, chat: { id: 42, type: "private" } } }, 2);
+      expect(callbacks.saveProfile).toHaveBeenCalledWith({ selectedSessionId: betaSession.id });
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      const latest = requests.filter((item) => item.method === "editMessageText").at(-1)?.body.text;
+      expect(latest).toContain("/projects/beta");
+      expect(latest).toContain("Beta");
     } finally { await bot.stop(); }
   });
 
