@@ -26,6 +26,7 @@ export interface TelegramBotCallbacks {
   selectedSession(): TelegramSessionChoice;
   listSessions(): Promise<TelegramSessionChoice[]>;
   chooseSession(id: string): Promise<TelegramSessionChoice>;
+  resetSession(): void;
   createSession(folder: string): Promise<TelegramSessionChoice>;
   folderList(): Promise<string[]>;
   isRootSelected(): boolean;
@@ -112,7 +113,7 @@ export class TelegramBot {
     if (this.identity) {
       if (this.identity.selectedSessionId) {
         try { await this.callbacks.chooseSession(this.identity.selectedSessionId); }
-        catch { this.callbacks.saveProfile({ selectedSessionId: "" }); }
+        catch { this.callbacks.resetSession(); this.callbacks.saveProfile({ selectedSessionId: "" }); }
       }
       await this.updateDashboard(true);
     }
