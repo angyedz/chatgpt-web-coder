@@ -443,7 +443,7 @@ export class TelegramBot {
       case "tool-start":
         if (this.requestActive) {
           const tool = `⚙️ ${event.call.name} · running`;
-          if (!this.currentTool) this.currentTool = tool;
+          if (!this.currentTool || this.lastRendered.includes(escapeLimited(this.currentTool, 180))) this.currentTool = tool;
           else this.toolQueue.push(tool);
           if (this.toolQueue.length > 120) this.toolQueue.shift();
         } else this.phase = `Local · using ${event.call.name}`;
@@ -500,7 +500,13 @@ export class TelegramBot {
     const text = this.renderDashboard();
     const keyboard = this.renderKeyboard();
     const keyboardKey = JSON.stringify(keyboard);
-    if (text === this.lastRendered && keyboardKey === this.lastKeyboard) return;
+    if (text === this.lastRendered && keyboardKey === this.lastKeyboard) {
+      if (this.toolQueue.length) {
+        this.currentTool = this.toolQueue.shift()!;
+        this.queueDashboard();
+      }
+      return;
+    }
     const wait = EDIT_INTERVAL_MS - (Date.now() - this.lastEditAt);
     if (wait > 0) {
       this.editTimer = setTimeout(() => { this.editTimer = undefined; void this.flushDashboard(); }, wait);
