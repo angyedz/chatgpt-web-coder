@@ -56,13 +56,13 @@ describe("Telegram saved chat routing", () => {
     const { alpha, beta, storeA, storeB } = await setup();
     const config = defaultConfig(alpha);
     config.browser.attachConnector = true;
-    const sideEvents = new HarnessEvents();
+    let sideEvents: HarnessEvents | undefined;
     let emitted: string[] = [];
     const sideBrowser = {
       send: vi.fn(async (_message: string, _signal: AbortSignal, options: { turnId: string }) => {
-        sideEvents.emit({ type: "assistant-start", id: "assistant-tg", channel: "telegram" });
-        sideEvents.emit({ type: "assistant-delta", id: "assistant-tg", text: "Reply for beta folder", channel: "telegram" });
-        sideEvents.emit({ type: "assistant-done", id: "assistant-tg", text: "Reply for beta folder", channel: "telegram" });
+        sideEvents!.emit({ type: "assistant-start", id: "assistant-tg", channel: "telegram" });
+        sideEvents!.emit({ type: "assistant-delta", id: "assistant-tg", text: "Reply for beta folder", channel: "telegram" });
+        sideEvents!.emit({ type: "assistant-done", id: "assistant-tg", text: "Reply for beta folder", channel: "telegram" });
         return "Reply for beta folder";
       }),
       setResponseChannel: vi.fn(),
@@ -72,7 +72,7 @@ describe("Telegram saved chat routing", () => {
     };
     const browser = {
       isOpen: true,
-      openSideChat: vi.fn(async () => sideBrowser),
+      openSideChat: vi.fn(async (events: HarnessEvents) => { sideEvents = events; return sideBrowser; }),
     } as unknown as ChatGptBrowser;
     const mcp = {
       registerTurnContext: vi.fn(),
