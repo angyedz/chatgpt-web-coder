@@ -370,7 +370,7 @@ export class TelegramBot {
       this.lastNotice = "Status refreshed.";
     } else if (data === "sessions") {
       await this.loadSessionMenu();
-    } else if (/^sp:\\d+$/.test(data)) {
+    } else if (/^sp:\d+$/.test(data)) {
       this.sessionPage = Math.max(0, Number(data.slice(3)));
       this.queueDashboard();
     } else if (data.startsWith("ss:")) {
@@ -379,7 +379,7 @@ export class TelegramBot {
       this.folderMenu = await this.callbacks.folderList();
       this.sessionMenu = [];
       this.lastNotice = "Choose a folder to create a new chat.";
-    } else if (/^fo:\\d+$/.test(data)) {
+    } else if (/^fo:\d+$/.test(data)) {
       const folder = this.folderMenu[Number(data.slice(3))];
       if (folder) await this.createSession(folder);
     } else if (data === "stop") {
