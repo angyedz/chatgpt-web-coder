@@ -35,6 +35,7 @@ interface SessionWorker {
  */
 export class TelegramSessionBridge {
   private selectedId: string | undefined;
+  private selectedChoice?: TelegramSessionChoice;
   private readonly workers = new Map<string, SessionWorker>();
   private readonly approvals = new Map<string, Runtime>();
   private sending = new Set<string>();
@@ -57,7 +58,7 @@ export class TelegramSessionBridge {
     const root = this.rootSession();
     const worker = this.selectedId ? this.workers.get(this.selectedId) : undefined;
     if (worker) return this.describe(worker.store.snapshot);
-    return this.describe(root);
+    return this.selectedChoice ?? this.describe(root);
   }
 
   get isRootSelected(): boolean {
@@ -92,6 +93,7 @@ export class TelegramSessionBridge {
     const info = await stat(choice.workspace);
     if (!info.isDirectory()) throw new Error("The session's project folder no longer exists.");
     this.selectedId = choice.id;
+    this.selectedChoice = choice;
     return choice;
   }
 
@@ -101,12 +103,10 @@ export class TelegramSessionBridge {
     const info = await stat(workspace);
     if (!info.isDirectory()) throw new Error("Choose an existing project directory.");
     const store = new SessionStore(workspace, (error) => this.emit({ type: "notice", level: "error", text: `Telegram session storage: ${error.message}` }));
-    // initialize creates a new session on first use; create another only when a prior active exists.
-    const hadPrevious = await store.initialize();
-    if (hadPrevious) await store.create();
-    await store.flush();
-    this.selectedId = store.id;
-    return this.describe(store.snapshot);
+    const created = await store.createDetached();
+    this.selectedId = created.id;
+    this.selectedChoice = this.describe(created);
+    return this.selectedChoice;
   }
 
   async folderList(): Promise<string[]> {
@@ -114,8 +114,9 @@ export class TelegramSessionBridge {
   }
 
   submit(text: string): boolean {
-    if (!text.trim() || !this.selectedId || this.busy) return false;
+    if (!text.trim() || this.busy) return false;
     if (this.isRootSelected) return this.submitRoot(text);
+    if (!this.selectedId) return false;
     if (this.sending.has(this.selectedId)) return false;
     const id = this.selectedId;
     this.sending.add(id);
@@ -163,8 +164,7 @@ export class TelegramSessionBridge {
     if (!this.rootBrowser.isOpen) throw new Error("The main browser is not connected yet.");
     const events = new HarnessEvents();
     const store = new SessionStore(choice.workspace, (error) => this.emit({ type: "notice", level: "error", text: error.message }));
-    await store.initialize();
-    await store.open(choice.id);
+    await store.loadDetached(choice.id);
     const browser = await this.rootBrowser.openSideChat(events, { attachConnector: true });
     browser.setResponseChannel("telegram");
     const worker: SessionWorker = {
