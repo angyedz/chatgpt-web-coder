@@ -69,7 +69,7 @@ export class SessionStore {
       const directory = path.join(root, folder.name);
       const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
-        if (!entry.isFile() || !/^[0-9a-f-]{36}\\.json$/i.test(entry.name)) continue;
+        if (!entry.isFile() || !/^[0-9a-f-]{36}\.json$/i.test(entry.name)) continue;
         try {
           const data: unknown = JSON.parse(await readFile(path.join(directory, entry.name), "utf8"));
           if (!data || typeof data !== "object") continue;
