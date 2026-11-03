@@ -435,8 +435,9 @@ export class TelegramBot {
         this.queueDashboard();
         break;
       case "assistant-delta":
+      case "assistant-done":
         if (!this.requestActive || event.channel !== "telegram") return;
-        this.phase = "Responding";
+        this.phase = event.type === "assistant-done" && event.error ? "Error" : "Responding";
         this.answer = event.text;
         this.queueDashboard();
         break;
