@@ -121,7 +121,12 @@ export class TelegramSessionBridge {
     const id = this.selectedId;
     this.sending.add(id);
     void this.run(id, text).catch((error: unknown) => {
-      this.emit({ type: "notice", level: "error", text: `Telegram session: ${error instanceof Error ? error.message : String(error)}` });
+      const turnId = newId("telegram-error");
+      const details = error instanceof Error ? error.message : String(error);
+      this.emit({ type: "turn-start", turnId });
+      this.emit({ type: "assistant-done", id: newId("telegram-error"), text: `Cannot run selected session: ${details}`, error: details, channel: "telegram" });
+      this.emit({ type: "turn-end", turnId, ok: false });
+      this.emit({ type: "notice", level: "error", text: `Telegram session: ${details}` });
     }).finally(() => this.sending.delete(id));
     return true;
   }
@@ -207,10 +212,11 @@ export class TelegramSessionBridge {
       registered = true;
       worker.events.emit({ type: "turn-start", turnId });
       worker.events.emit({ type: "phase", phase: "sending" });
+      const history = worker.hasSent ? "" : sessionHandoff(worker.store.snapshot);
       worker.events.emit({ type: "user-message", id: newId("telegram-user"), text: message, channel: "telegram" });
       let ok = false;
       try {
-        const prompt = worker.hasSent ? message : `${sessionHandoff(worker.store.snapshot)}\n\nNEW USER MESSAGE FROM TELEGRAM:\n${message}`;
+        const prompt = worker.hasSent ? message : `${history}\n\nNEW USER MESSAGE FROM TELEGRAM:\n${message}`;
         const answer = await worker.browser.send(prompt, controller.signal, { turnId, continueChat: worker.hasSent });
         worker.hasSent = true;
         controller.signal.throwIfAborted();
