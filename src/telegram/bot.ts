@@ -587,6 +587,7 @@ export class TelegramBot {
       `📂 <code>${escapeLimited(this.callbacks.selectedSession().workspace, 180)}</code>`,
       "",
       `<b>${escapeLimited(this.phase, 70)}</b>`,
+      ...(this.currentTool ? ["", `<b>Tool</b>  ${escapeLimited(this.currentTool, 140)}`] : []),
       ...(this.requestPrompt ? ["", "<b>Request</b>", escapeLimited(this.requestPrompt.replaceAll(this.token, "[redacted]"), 500)] : []),
       ...(this.answer ? ["", "<b>Latest response</b>", escapeLimited(this.answer.replaceAll(this.token, "[redacted]"), 1500)] : []),
       ...(this.lastNotice ? ["", `ℹ️ ${escapeLimited(this.lastNotice, 160)}`] : []),
