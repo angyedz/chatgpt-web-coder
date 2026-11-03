@@ -71,6 +71,15 @@ export type TelegramSetupState =
   | { stage: "token"; error?: string }
   | { stage: "pairing"; botUsername: string; words: string[] };
 
+export interface SubagentChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  createdAt: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+}
+
 export interface SubagentSnapshot {
   id: string;
   role: string;
@@ -83,6 +92,7 @@ export interface SubagentSnapshot {
   startedAt: number;
   finishedAt?: number;
   summary?: string;
+  messages?: SubagentChatMessage[];
   changedFiles?: string[];
   conflicts?: string[];
   error?: string;

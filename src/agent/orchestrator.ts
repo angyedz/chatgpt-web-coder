@@ -25,6 +25,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { chooseAttachment, imagePathFromPaste } from "../runtime/attachments.js";
 import { stat } from "node:fs/promises";
 import { TelegramBot } from "../telegram/bot.js";
+import { TelegramSessionBridge } from "../telegram/sessions.js";
 import { createTelegramPairingWords } from "../telegram/pairing.js";
 
 const LARGE_MESSAGE_CHARS = 12_000;
@@ -67,6 +68,7 @@ export class Orchestrator {
   private lastNotifiedUpdate?: string;
   private readonly pickerChoices: Record<"model" | "effort", string[]> = { model: [], effort: [] };
   private telegramBot?: TelegramBot;
+  private telegramSessions?: TelegramSessionBridge;
 
   constructor(public readonly config: HarnessConfig) {
     this.runtime = createRuntime(config, this.events);
@@ -78,6 +80,7 @@ export class Orchestrator {
     this.runtime.context.beforeToolStart = () => this.browser.snapshotBeforeTool();
     this.mcp = new McpHost(this.runtime.context, config.mcp);
     this.subagents = new SubagentManager(config, this.browser, this.mcp, this.events);
+    this.runtime.context.subagents = this.subagents;
     this.events.on((event) => {
       if (event.type === "tool-start") this.activeToolCalls.add(event.call.id);
       if (event.type === "tool-end") this.activeToolCalls.delete(event.call.id);
@@ -295,15 +298,35 @@ export class Orchestrator {
       this.telegramBot = undefined;
       await previous.stop();
     }
+    if (this.telegramSessions) await this.telegramSessions.shutdown();
     let bot: TelegramBot;
+    const bridge = new TelegramSessionBridge(
+      this.config,
+      this.browser,
+      this.mcp,
+      () => this.currentSession,
+      () => this.busy,
+      () => this.phaseState,
+      (text) => this.submitFromTelegram(text),
+      () => this.cancel(),
+      (event) => bot?.onExternalSessionEvent(event),
+    );
+    this.telegramSessions = bridge;
     bot = new TelegramBot(token, identity, pairingWords, {
       events: this.events,
       workspace: this.config.workspace,
-      getBusy: () => this.busy,
-      getPhase: () => this.phaseState,
-      submit: (text) => this.submitFromTelegram(text),
-      cancel: () => this.cancel(),
-      approve: (id, allowed) => this.approve(id, allowed),
+      selectedSession: () => bridge.selected,
+      listSessions: () => bridge.list(),
+      chooseSession: (id) => bridge.choose(id),
+      resetSession: () => bridge.resetSelection(),
+      createSession: (folder) => bridge.create(folder),
+      folderList: () => bridge.folderList(),
+      isRootSelected: () => bridge.isRootSelected,
+      getBusy: () => bridge.busy,
+      getPhase: () => bridge.phase,
+      submit: (text) => bridge.submit(text),
+      cancel: () => bridge.cancel(),
+      approve: (id, allowed) => { if (!bridge.approve(id, allowed)) this.approve(id, allowed); },
       onStatus: (state, detail) => this.events.emit({ type: "status", key: "telegram", state: state === "up" ? "up" : state === "starting" ? "starting" : state === "error" ? "error" : "off", detail }),
       onPaired: async (profile) => {
         saveCredential("TELEGRAM_BOT_TOKEN", token);
@@ -362,7 +385,7 @@ export class Orchestrator {
     if (!this.currentTurn || this.currentTurn.signal.aborted) return;
     const turnId = this.currentTurnId ?? this.runtime.context.turnId;
     if (this.browser.hasActiveResponse || this.activeToolCalls.size > 0) this.followupStopTurns.add(turnId);
-    if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", "Stopped by the user. Use /goal resume to continue.");
+    if (this.runtime.goal.current?.status === "active") this.runtime.goal.pauseByUser("Stopped by the user. Use /goal resume to continue.");
     this.currentTurn.abort();
     this.runtime.approvals.denyForeground();
     for (const taskId of this.runtime.tasks.cancelTurn(turnId)) this.runtime.approvals.denyScope(taskId);
@@ -402,7 +425,7 @@ export class Orchestrator {
     await this.updateOperation?.catch(() => undefined);
     await discardUpdate(this.pendingUpdate);
     this.pendingUpdate = undefined;
-    if (this.runtime.goal.current?.status === "active") this.runtime.goal.setStatus("paused", "Harness closed. Use /goal resume to continue.");
+    if (this.runtime.goal.current?.status === "active") this.runtime.goal.pauseByUser("Harness closed. Use /goal resume to continue.");
     this.currentTurn?.abort();
     this.captureSessionRuntime();
     await this.sessions.flush().catch(() => undefined);
@@ -410,6 +433,8 @@ export class Orchestrator {
     this.runtime.approvals.denyAll();
     await this.telegramBot?.stop().catch(() => undefined);
     this.telegramBot = undefined;
+    await this.telegramSessions?.shutdown().catch(() => undefined);
+    this.telegramSessions = undefined;
     await this.browser.close().catch(() => undefined);
     await this.tunnel?.stop().catch(() => undefined);
     await this.mcp.stop().catch(() => undefined);
@@ -645,7 +670,7 @@ export class Orchestrator {
       const userCancelled = controller.signal.aborted;
       if (this.runtime.goal.current?.status === "active") {
         if (userCancelled) {
-          this.runtime.goal.setStatus("paused", "Stopped by the user. Use /goal resume to continue.");
+          this.runtime.goal.setStatus("blocked", "The turn was aborted without an explicit user pause request. Review the interruption and use /goal resume when ready.");
         } else {
           this.runtime.goal.setStatus("blocked", `Turn failed: ${error instanceof Error ? error.message : String(error)}. The goal was blocked by this turn error; inspect it and use /goal resume when ready.`);
         }
@@ -702,7 +727,7 @@ export class Orchestrator {
             "Sessions: /sessions · /session open <id> · /session new · /session rename <title> · /session info|job <id>",
             "Goals: /goal <objective> · /goal resume [message] · /goal status|pause|cancel (Esc pauses while working)",
             "Side question: /btw <question> · /btw cancel (separate ChatGPT tab, main task continues)",
-            "Subagents: /swarm start <1-5> <objective> · /swarm status|inspect <id>|results|history|report <run-id>|stop [id|all]",
+            "Subagents: /swarm start <1-5> <objective> · /swarm status|inspect <id>|chat <id>|open <id>|message <id> <text>|results|history|report <run-id>|stop [id|all]",
             "Telegram: /telegram setup · /telegram status|start|stop|unlink (private chat only; one-time pairing required)",
             "Attachments: /attach [path] · /attach folder|clipboard · /attachments · /detach <id>|all",
             "Updates: /update settings [channel stable|pre-release] · /update check|latest · /update apply|cancel|rollback|log",
@@ -718,7 +743,7 @@ export class Orchestrator {
         if (!argument || argument.toLowerCase() === "status") {
           const agents = this.subagents.snapshots;
           const details = agents.length
-            ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools\n   ${agent.activity ?? "idle"}\n   ${agent.workspace}`).join("\n")
+            ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools · ${agent.messages?.length ?? 0} chat messages\n   ${agent.activity ?? "idle"}\n   ${agent.workspace}`).join("\n")
             : "No subagents launched. Start them explicitly with /swarm start <1-5> <objective>.";
           this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nWorkers launch only on explicit request. Non-conflicting file changes are integrated automatically; conflicts remain in their local workspaces.` });
           return;
@@ -730,6 +755,27 @@ export class Orchestrator {
             return `${report.id} · ${done}/${report.agents.length} done · ${new Date(report.savedAt).toLocaleString()}\n  ${report.objective.slice(0, 170)}`;
           }).join("\n\n") : "No saved runs.";
           this.events.emit({ type: "system-message", id: newId("system"), text: `SWARM HISTORY\n\n${details}\n\nUse /swarm report <run-id> to inspect a saved run.` });
+          return;
+        }
+        const open = /^open\s+([1-5])$/i.exec(argument);
+        if (open) {
+          await this.subagents.open(open[1]!);
+          this.events.emit({ type: "notice", level: "info", text: `Opened subagent #${open[1]} ChatGPT tab. Foreground focus changed only because you requested it.` });
+          return;
+        }
+        const message = /^message\s+([1-5])\s+([\s\S]+)$/i.exec(argument);
+        if (message) {
+          const answer = await this.subagents.sendMessage(message[1]!, message[2]!);
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENT #${message[1]} · FOLLOW-UP RESULT\n\n${answer}` });
+          return;
+        }
+        const chat = /^chat\s+([1-5])$/i.exec(argument);
+        if (chat) {
+          const agent = this.subagents.snapshots.find((item) => item.id === chat[1]);
+          const transcript = agent?.messages?.map((item) => `${item.role === "user" ? "YOU" : "AGENT"}\n${item.text}`).join("\n\n") ?? "";
+          this.events.emit({ type: "system-message", id: newId("system"), text: agent
+            ? `SUBAGENT #${agent.id} · CHAT HISTORY [${agent.status}]\n\n${transcript.slice(-16_000) || "No chat messages recorded yet."}`
+            : `Subagent #${chat[1]} does not exist.` });
           return;
         }
         const reportMatch = /^report\s+([a-z0-9-]+)$/i.exec(argument);
@@ -764,7 +810,7 @@ export class Orchestrator {
             : "No subagent results yet." });
           return;
         }
-        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm inspect <id> · /swarm results · /swarm history · /swarm report <run-id> · /swarm stop [id|all]" });
+        this.events.emit({ type: "notice", level: "warn", text: "Usage: /swarm start <1-5> <objective> · /swarm status · /swarm inspect <id> · /swarm chat <id> · /swarm open <id> · /swarm message <id> <text> · /swarm results · /swarm history · /swarm report <run-id> · /swarm stop [id|all]" });
         return;
       }
 
@@ -840,7 +886,7 @@ export class Orchestrator {
         if (!action || action === "status") {
           this.events.emit({ type: "system-message", id: newId("system"), text: goal ? `Goal · ${goal.status}\n\n${goal.objective}${goal.detail ? `\n\n${goal.detail}` : ""}` : "No goal. Start one with /goal <objective>." });
         } else if (action === "pause") {
-          if (goal?.status === "active") this.runtime.goal.setStatus("paused", "Paused by the user.");
+          if (goal?.status === "active") this.runtime.goal.pauseByUser("Paused by the user.");
           else this.events.emit({ type: "notice", level: "warn", text: "There is no active goal to pause." });
         } else if (action === "cancel") {
           if (goal && !["complete", "cancelled"].includes(goal.status)) this.runtime.goal.setStatus("cancelled", "Cancelled by the user.");

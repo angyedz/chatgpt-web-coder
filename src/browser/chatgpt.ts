@@ -70,6 +70,11 @@ export class ChatGptBrowser {
     return this.page;
   }
 
+  /** Bring this chat tab to the foreground only after an explicit user request. */
+  async bringToFront(): Promise<void> {
+    await this.requirePage().bringToFront();
+  }
+
   async openSideChat(events: HarnessEvents, options: { attachConnector?: boolean } = {}): Promise<ChatGptBrowser> {
     if (!this.isOpen || !this.context) throw new Error("The main ChatGPT browser is not connected.");
     const side = new ChatGptBrowser({

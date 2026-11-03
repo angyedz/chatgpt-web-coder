@@ -33,9 +33,10 @@ export function SubagentStrip({ agents, columns }: { agents: SubagentSnapshot[];
         <Text key={agent.id} color={agentColor(agent.status)}>
           {agentSymbol(agent.status)} <Text color={theme.assistant}>#{agent.id}</Text>
           {columns >= 90 ? <Text color={theme.dim}> {agent.role.split(" ")[0]?.toLowerCase()}</Text> : null}
+          {columns >= 110 ? <Text color={theme.dim}> {agent.messages?.length ?? 0} msg</Text> : null}
         </Text>
       ))}
-      {columns >= 75 ? <Text color={theme.dim}>/swarm results</Text> : null}
+      {columns >= 75 ? <Text color={theme.dim}>/swarm chat &lt;id&gt; · /swarm open &lt;id&gt;</Text> : null}
     </Box>
   );
 }

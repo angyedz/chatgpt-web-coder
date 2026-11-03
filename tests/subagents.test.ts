@@ -29,15 +29,17 @@ function completion(events: HarnessEvents): Promise<void> {
 
 function browserFor(send: (prompt: string) => Promise<string>): ChatGptBrowser {
   const side = {
+    isOpen: true,
     send,
+    bringToFront: vi.fn(async () => undefined),
     snapshotBeforeTool: async () => undefined,
-    closeSideChat: async () => undefined,
+    closeSideChat: vi.fn(async () => undefined),
     stop: async () => undefined,
   };
-  return {
+  return Object.assign({
     isOpen: true,
     openSideChat: async () => side,
-  } as unknown as ChatGptBrowser;
+  }, { sideChat: side }) as unknown as ChatGptBrowser;
 }
 
 function mcpHost(): McpHost {
@@ -109,6 +111,40 @@ describe("SubagentManager explicit launch boundaries", () => {
       await expect(lstat(path.join(agentWorkspace, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await agents.shutdown();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps completed child chats open and supports explicit focus and follow-up messages", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-swarm-chat-"));
+    const source = path.join(temporaryHome, "project");
+    await mkdir(source, { recursive: true });
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(temporaryHome, "harness-home"));
+    const events = new HarnessEvents();
+    const finished = completion(events);
+    const sent: string[] = [];
+    const browser = browserFor(async (prompt) => {
+      sent.push(prompt);
+      return sent.length === 1 ? "Initial child result." : "Follow-up child result.";
+    }) as ChatGptBrowser & { sideChat: { bringToFront: ReturnType<typeof vi.fn>; closeSideChat: ReturnType<typeof vi.fn> } };
+    const config = defaultConfig(source);
+    config.browser.attachConnector = true;
+    const agents = new SubagentManager(config, browser, mcpHost(), events);
+    try {
+      await agents.start(1, "Inspect the project");
+      await finished;
+      expect(agents.snapshots[0]?.status).toBe("done");
+      expect(agents.snapshots[0]?.messages?.some((message) => message.role === "user" && message.text === "Inspect the project")).toBe(true);
+      await agents.open("1");
+      expect(browser.sideChat.bringToFront).toHaveBeenCalledOnce();
+      await expect(agents.sendMessage("1", "Please verify the result again.")).resolves.toBe("Follow-up child result.");
+      expect(agents.snapshots[0]?.status).toBe("done");
+      expect(agents.snapshots[0]?.messages?.some((message) => message.role === "user" && message.text === "Please verify the result again.")).toBe(true);
+      expect(sent).toHaveLength(2);
+    } finally {
+      await agents.shutdown();
+      expect(browser.sideChat.closeSideChat).toHaveBeenCalledOnce();
       vi.unstubAllEnvs();
       await rm(temporaryHome, { recursive: true, force: true });
     }

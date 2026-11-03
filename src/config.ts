@@ -65,6 +65,7 @@ export interface TelegramConfig {
   botUsername: string;
   dashboardMessageId: number;
   updateOffset: number;
+  selectedSessionId?: string;
 }
 
 export interface HarnessConfig {
