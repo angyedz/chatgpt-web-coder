@@ -25,6 +25,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { chooseAttachment, imagePathFromPaste } from "../runtime/attachments.js";
 import { stat } from "node:fs/promises";
 import { TelegramBot } from "../telegram/bot.js";
+import { TelegramSessionBridge } from "../telegram/sessions.js";
 import { createTelegramPairingWords } from "../telegram/pairing.js";
 
 const LARGE_MESSAGE_CHARS = 12_000;
@@ -67,6 +68,7 @@ export class Orchestrator {
   private lastNotifiedUpdate?: string;
   private readonly pickerChoices: Record<"model" | "effort", string[]> = { model: [], effort: [] };
   private telegramBot?: TelegramBot;
+  private telegramSessions?: TelegramSessionBridge;
 
   constructor(public readonly config: HarnessConfig) {
     this.runtime = createRuntime(config, this.events);
@@ -296,15 +298,34 @@ export class Orchestrator {
       this.telegramBot = undefined;
       await previous.stop();
     }
+    if (this.telegramSessions) await this.telegramSessions.shutdown();
     let bot: TelegramBot;
+    const bridge = new TelegramSessionBridge(
+      this.config,
+      this.browser,
+      this.mcp,
+      () => this.currentSession,
+      () => this.busy,
+      () => this.phaseState,
+      (text) => this.submitFromTelegram(text),
+      () => this.cancel(),
+      (event) => bot?.onExternalSessionEvent(event),
+    );
+    this.telegramSessions = bridge;
     bot = new TelegramBot(token, identity, pairingWords, {
       events: this.events,
       workspace: this.config.workspace,
-      getBusy: () => this.busy,
-      getPhase: () => this.phaseState,
-      submit: (text) => this.submitFromTelegram(text),
-      cancel: () => this.cancel(),
-      approve: (id, allowed) => this.approve(id, allowed),
+      selectedSession: () => bridge.selected,
+      listSessions: () => bridge.list(),
+      chooseSession: (id) => bridge.choose(id),
+      createSession: (folder) => bridge.create(folder),
+      folderList: () => bridge.folderList(),
+      isRootSelected: () => bridge.isRootSelected,
+      getBusy: () => bridge.busy,
+      getPhase: () => bridge.phase,
+      submit: (text) => bridge.submit(text),
+      cancel: () => bridge.cancel(),
+      approve: (id, allowed) => { if (!bridge.approve(id, allowed)) this.approve(id, allowed); },
       onStatus: (state, detail) => this.events.emit({ type: "status", key: "telegram", state: state === "up" ? "up" : state === "starting" ? "starting" : state === "error" ? "error" : "off", detail }),
       onPaired: async (profile) => {
         saveCredential("TELEGRAM_BOT_TOKEN", token);
@@ -411,6 +432,8 @@ export class Orchestrator {
     this.runtime.approvals.denyAll();
     await this.telegramBot?.stop().catch(() => undefined);
     this.telegramBot = undefined;
+    await this.telegramSessions?.shutdown().catch(() => undefined);
+    this.telegramSessions = undefined;
     await this.browser.close().catch(() => undefined);
     await this.tunnel?.stop().catch(() => undefined);
     await this.mcp.stop().catch(() => undefined);
