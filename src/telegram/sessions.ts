@@ -170,7 +170,12 @@ export class TelegramSessionBridge {
 
   private async workerFor(choice: TelegramSessionChoice): Promise<SessionWorker> {
     const existing = this.workers.get(choice.id);
-    if (existing) return existing;
+    if (existing?.browser.isOpen) return existing;
+    if (existing) {
+      await existing.browser.closeSideChat().catch(() => undefined);
+      existing.unsubscribe();
+      this.workers.delete(choice.id);
+    }
     if (!this.rootBrowser.isOpen) throw new Error("The main browser is not connected yet.");
     const events = new HarnessEvents();
     const store = new SessionStore(choice.workspace, (error) => this.emit({ type: "notice", level: "error", text: error.message }));
