@@ -37,6 +37,7 @@ function setup() {
       return selected;
     },
     createSession: async () => betaSession,
+    resetSession: vi.fn(),
     folderList: async () => [rootSession.workspace, betaSession.workspace],
     isRootSelected: () => selected.id === rootSession.id,
     getBusy: () => false,
