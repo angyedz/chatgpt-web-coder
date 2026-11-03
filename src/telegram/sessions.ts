@@ -84,6 +84,11 @@ export class TelegramSessionBridge {
     return all.sort((a, b) => b.updatedAt - a.updatedAt).map((session) => this.describe(session));
   }
 
+  resetSelection(): void {
+    this.selectedId = undefined;
+    this.selectedChoice = undefined;
+  }
+
   async choose(id: string): Promise<TelegramSessionChoice> {
     if (this.busy) throw new Error("Stop the current Telegram task before switching sessions.");
     const options = await this.list();
