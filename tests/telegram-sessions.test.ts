@@ -36,7 +36,8 @@ async function setup() {
 describe("Telegram saved chat routing", () => {
   it("indexes chats from every project folder and retains the original active session pointers", async () => {
     const { alpha, beta, storeA, storeB, home } = await setup();
-    const originalActive = await readFile(path.join(home, "home", "sessions", (await import("node:crypto")).createHash("sha256").update(alpha).digest("hex").slice(0, 20), "active"), "utf8");
+    const folderKey = (await import("node:crypto")).createHash("sha256").update(process.platform === "win32" ? path.resolve(alpha).toLowerCase() : path.resolve(alpha)).digest("hex").slice(0, 20);
+    const originalActive = await readFile(path.join(home, "home", "sessions", folderKey, "active"), "utf8");
     const all = await SessionStore.listAll();
     expect(all.map((item) => item.workspace)).toEqual(expect.arrayContaining([alpha, beta]));
     expect(all.map((item) => item.id)).toEqual(expect.arrayContaining([storeA.id, storeB.id]));
@@ -46,7 +47,7 @@ describe("Telegram saved chat routing", () => {
     await detached.createDetached();
     expect(detached.snapshot.workspace).toBe(alpha);
     expect(detached.id).not.toBe(storeA.id);
-    const stillActive = await readFile(path.join(home, "home", "sessions", (await import("node:crypto")).createHash("sha256").update(alpha).digest("hex").slice(0, 20), "active"), "utf8");
+    const stillActive = await readFile(path.join(home, "home", "sessions", folderKey, "active"), "utf8");
     expect(stillActive).toBe(originalActive);
     expect((await SessionStore.listAll()).some((item) => item.id === detached.id)).toBe(true);
   });
