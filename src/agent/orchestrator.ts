@@ -318,6 +318,7 @@ export class Orchestrator {
       selectedSession: () => bridge.selected,
       listSessions: () => bridge.list(),
       chooseSession: (id) => bridge.choose(id),
+      resetSession: () => bridge.resetSelection(),
       createSession: (folder) => bridge.create(folder),
       folderList: () => bridge.folderList(),
       isRootSelected: () => bridge.isRootSelected,
