@@ -128,6 +128,21 @@ export class SessionStore {
     catch (error) { this.current = previous; throw error; }
   }
 
+  /** Read a session for a remote client without replacing the foreground workspace's active pointer. */
+  async loadDetached(id: string): Promise<void> {
+    if (this.current.id === id) return;
+    this.current = await this.read(id);
+  }
+
+  /** Create a session bound to this folder without changing the foreground active session. */
+  async createDetached(): Promise<SavedSession> {
+    await this.flush();
+    this.current = freshSession(path.resolve(this.workspace));
+    this.enqueueSnapshot();
+    await this.flush();
+    return this.snapshot;
+  }
+
   async create(): Promise<void> {
     await this.flush();
     const previous = this.current;
