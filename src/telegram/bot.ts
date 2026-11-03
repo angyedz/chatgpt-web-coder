@@ -2,11 +2,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { HarnessEvents } from "../events.js";
 import type { ApprovalRequest, HarnessEvent, TurnPhase } from "../types.js";
 import type { TelegramConfig } from "../config.js";
+import type { TelegramSessionChoice } from "./sessions.js";
 
 const API = "https://api.telegram.org/bot";
 const MAX_MESSAGE = 4096;
 const MAX_PROMPT = 3500;
-const EDIT_INTERVAL_MS = 3000;
+const EDIT_INTERVAL_MS = 950;
 const PROMPT_COOLDOWN_MS = 3000;
 const POLL_TIMEOUT_SECONDS = 25;
 
@@ -22,6 +23,13 @@ interface TelegramKeyboard { inline_keyboard: { text: string; callback_data: str
 export interface TelegramBotCallbacks {
   events: HarnessEvents;
   workspace: string;
+  selectedSession(): TelegramSessionChoice;
+  listSessions(): Promise<TelegramSessionChoice[]>;
+  chooseSession(id: string): Promise<TelegramSessionChoice>;
+  resetSession(): void;
+  createSession(folder: string): Promise<TelegramSessionChoice>;
+  folderList(): Promise<string[]>;
+  isRootSelected(): boolean;
   getBusy(): boolean;
   getPhase(): TurnPhase;
   submit(text: string): boolean;
@@ -62,6 +70,12 @@ export class TelegramBot {
   private editTimer?: NodeJS.Timeout;
   private editRevision = 0;
   private editing = false;
+  private sessionMenu: TelegramSessionChoice[] = [];
+  private sessionPage = 0;
+  private folderMenu: string[] = [];
+  private currentTool = "";
+  private toolQueue: string[] = [];
+  private externalRequest = false;
 
   constructor(token: string, identity: TelegramConfig | undefined, pairingWords: readonly string[] | undefined, private readonly callbacks: TelegramBotCallbacks) {
     this.token = token;
@@ -87,13 +101,20 @@ export class TelegramBot {
           { command: "start", description: "Open harness controls" },
           { command: "help", description: "Show available commands" },
           { command: "status", description: "Show harness status" },
-          { command: "stop", description: "Stop the current task" },
+          { command: "sessions", description: "Select any saved chat" },
+          { command: "folders", description: "Show saved project folders" },
+          { command: "new", description: "Start a chat bound to a project folder" },
+          { command: "stop", description: "Stop the selected task" },
         ]
       : [{ command: "pair", description: "Pair this private chat with the local harness" }];
     await this.api("setMyCommands", { commands });
     this.running = true;
     this.callbacks.onStatus("up", response.username ? `@${response.username}` : response.first_name);
     if (this.identity) {
+      if (this.identity.selectedSessionId) {
+        try { await this.callbacks.chooseSession(this.identity.selectedSessionId); }
+        catch { this.callbacks.resetSession(); this.callbacks.saveProfile({ selectedSessionId: "" }); }
+      }
       await this.updateDashboard(true);
     }
     this.polling = this.pollLoop();
@@ -171,19 +192,40 @@ export class TelegramBot {
     if (!this.isOwner(message.from.id, message.chat.id)) return;
     this.persistOffset(updateId);
     if (!text) return;
+    await this.startMessageDashboard();
     const commandMatch = /^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(text);
     const command = commandMatch?.[1]?.toLowerCase();
     if (command) {
       switch (command) {
         case "start":
         case "help":
-          this.lastNotice = "Use /status to check the harness, /stop to cancel its current task, or send a message to start work.";
+          this.lastNotice = "Use /sessions to select a chat, /new <folder> to create one, /status to refresh, /stop to cancel, or send a task.";
           this.queueDashboard();
           return;
         case "status":
           this.lastNotice = "Status refreshed.";
           this.queueDashboard();
           return;
+        case "sessions":
+          await this.loadSessionMenu();
+          return;
+        case "folders":
+          this.folderMenu = await this.callbacks.folderList();
+          this.sessionMenu = [];
+          this.lastNotice = this.folderMenu.length ? "Choose a folder below to create a new chat, or use /new <absolute path>." : "No folders found. Use /new <absolute path>.";
+          this.queueDashboard();
+          return;
+        case "session":
+          if (!commandMatch?.[2]?.trim()) { await this.loadSessionMenu(); return; }
+          await this.selectSession(commandMatch[2].trim());
+          return;
+        case "new":
+        case "folder": {
+          const folder = commandMatch?.[2]?.trim();
+          if (!folder) { this.lastNotice = "Usage: /new <absolute project-folder path>"; this.queueDashboard(); return; }
+          await this.createSession(folder);
+          return;
+        }
         case "stop":
         case "cancel":
           if (!this.callbacks.getBusy()) this.lastNotice = "There is no active task to stop.";
@@ -191,7 +233,7 @@ export class TelegramBot {
           this.queueDashboard();
           return;
         default:
-          this.lastNotice = "Unknown command. Use /help, /status, /stop, or send a task as a regular message.";
+          this.lastNotice = "Unknown command. Use /sessions, /folders, /new <folder>, /status, /stop, or send a task.";
           this.queueDashboard();
           return;
       }
@@ -219,7 +261,10 @@ export class TelegramBot {
     }
     this.lastPromptAt = now;
     this.requestActive = true;
+    this.externalRequest = !this.callbacks.isRootSelected();
     this.requestPrompt = text;
+    this.currentTool = "";
+    this.toolQueue = [];
     this.answer = "";
     this.lastNotice = "Task sent to the harness.";
     this.phase = "Sending";
@@ -228,6 +273,66 @@ export class TelegramBot {
       this.lastNotice = "The harness is busy. Use /stop or wait for the current task to finish.";
     }
     this.queueDashboard();
+  }
+
+  private async startMessageDashboard(): Promise<void> {
+    // A fresh card for EACH owner message; only this new card is edited while tools run.
+    this.requestPrompt = "";
+    this.answer = "";
+    this.currentTool = "";
+    this.toolQueue = [];
+    this.phase = "Ready";
+    this.dashboardMessageId = 0;
+    this.lastRendered = "";
+    this.lastKeyboard = "";
+    this.lastEditAt = 0;
+    this.callbacks.saveProfile({ dashboardMessageId: 0 });
+    await this.updateDashboard(true);
+  }
+
+  private async loadSessionMenu(): Promise<void> {
+    this.sessionMenu = await this.callbacks.listSessions();
+    this.folderMenu = [];
+    this.sessionPage = 0;
+    this.lastNotice = this.sessionMenu.length ? `Saved chats: ${this.sessionMenu.length}. Select one below; its project folder is preserved.` : "No saved chats found.";
+    this.queueDashboard();
+  }
+
+  private async selectSession(id: string): Promise<void> {
+    try {
+      const choice = await this.callbacks.chooseSession(id);
+      this.callbacks.saveProfile({ selectedSessionId: choice.id });
+      this.lastNotice = `Selected: ${choice.title.slice(0, 70)} · ${choice.workspace.slice(0, 120)}`;
+      this.requestPrompt = "";
+      this.answer = "";
+      this.currentTool = "";
+      this.toolQueue = [];
+      this.sessionMenu = [];
+      this.folderMenu = [];
+    } catch (error) {
+      this.lastNotice = `Cannot select chat: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    this.queueDashboard();
+  }
+
+  private async createSession(folder: string): Promise<void> {
+    try {
+      const choice = await this.callbacks.createSession(folder);
+      this.callbacks.saveProfile({ selectedSessionId: choice.id });
+      this.lastNotice = `New chat created in ${choice.workspace.slice(0, 120)}`;
+      this.requestPrompt = "";
+      this.answer = "";
+      this.sessionMenu = [];
+      this.folderMenu = [];
+    } catch (error) {
+      this.lastNotice = `Cannot create chat: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    this.queueDashboard();
+  }
+
+  /** Events from a non-foreground workspace runner must not pollute the main session. */
+  onExternalSessionEvent(event: HarnessEvent): void {
+    if (this.requestActive && this.externalRequest) this.processAgentEvent(event);
   }
 
   private async tryPair(message: TelegramMessage, text: string, updateId: number): Promise<void> {
@@ -264,6 +369,20 @@ export class TelegramBot {
     const data = callback.data ?? "";
     if (data === "status") {
       this.lastNotice = "Status refreshed.";
+    } else if (data === "sessions") {
+      await this.loadSessionMenu();
+    } else if (/^sp:\d+$/.test(data)) {
+      this.sessionPage = Math.max(0, Number(data.slice(3)));
+      this.queueDashboard();
+    } else if (data.startsWith("ss:")) {
+      await this.selectSession(data.slice(3));
+    } else if (data === "folders") {
+      this.folderMenu = await this.callbacks.folderList();
+      this.sessionMenu = [];
+      this.lastNotice = "Choose a folder to create a new chat.";
+    } else if (/^fo:\d+$/.test(data)) {
+      const folder = this.folderMenu[Number(data.slice(3))];
+      if (folder) await this.createSession(folder);
     } else if (data === "stop") {
       if (this.callbacks.getBusy()) { this.callbacks.cancel(); this.lastNotice = "Stopping the active task…"; }
       else this.lastNotice = "There is no active task to stop.";
@@ -294,6 +413,11 @@ export class TelegramBot {
   }
 
   private onAgentEvent(event: HarnessEvent): void {
+    if (!this.identity || (this.requestActive && this.externalRequest)) return;
+    this.processAgentEvent(event);
+  }
+
+  private processAgentEvent(event: HarnessEvent): void {
     if (!this.identity) return;
     switch (event.type) {
       case "turn-start":
@@ -312,13 +436,25 @@ export class TelegramBot {
         this.queueDashboard();
         break;
       case "assistant-delta":
+      case "assistant-done":
         if (!this.requestActive || event.channel !== "telegram") return;
-        this.phase = "Responding";
+        this.phase = event.type === "assistant-done" && event.error ? "Error" : "Responding";
         this.answer = event.text;
         this.queueDashboard();
         break;
       case "tool-start":
-        if (!this.requestActive) this.phase = `Local · using ${event.call.name}`;
+        if (this.requestActive) {
+          const tool = `⚙️ ${event.call.name} · running`;
+          if (!this.currentTool || this.lastRendered.includes(escapeLimited(this.currentTool, 180))) this.currentTool = tool;
+          else this.toolQueue.push(tool);
+          if (this.toolQueue.length > 120) this.toolQueue.shift();
+        } else this.phase = `Local · using ${event.call.name}`;
+        this.queueDashboard();
+        break;
+      case "tool-end":
+        if (this.requestActive && this.currentTool.includes(event.call.name)) {
+          this.currentTool = `${event.call.status === "ok" ? "✅" : event.call.status === "denied" ? "⛔" : "⚠️"} ${event.call.name} · ${event.call.status}`;
+        }
         this.queueDashboard();
         break;
       case "approval":
@@ -366,7 +502,13 @@ export class TelegramBot {
     const text = this.renderDashboard();
     const keyboard = this.renderKeyboard();
     const keyboardKey = JSON.stringify(keyboard);
-    if (text === this.lastRendered && keyboardKey === this.lastKeyboard) return;
+    if (text === this.lastRendered && keyboardKey === this.lastKeyboard) {
+      if (this.toolQueue.length) {
+        this.currentTool = this.toolQueue.shift()!;
+        this.queueDashboard();
+      }
+      return;
+    }
     const wait = EDIT_INTERVAL_MS - (Date.now() - this.lastEditAt);
     if (wait > 0) {
       this.editTimer = setTimeout(() => { this.editTimer = undefined; void this.flushDashboard(); }, wait);
@@ -416,17 +558,22 @@ export class TelegramBot {
     } finally {
       this.editing = false;
     }
-    if (revision !== this.editRevision) this.queueDashboard();
+    if (this.toolQueue.length) {
+      this.currentTool = this.toolQueue.shift()!;
+      this.queueDashboard();
+    } else if (revision !== this.editRevision) this.queueDashboard();
   }
 
   private renderDashboard(): string {
     const lines = [
       "🤖 <b>chatgpt-coder</b>",
-      `📂 <code>${escapeLimited(this.callbacks.workspace, 350)}</code>`,
+      `📂 <code>${escapeLimited(this.callbacks.selectedSession().workspace, 350)}</code>`,
+      `💬 <b>${escapeLimited(this.callbacks.selectedSession().title, 100)}</b> · <code>${this.callbacks.selectedSession().id.slice(0, 8)}</code>`,
       "",
       `${this.requestActive ? "⏳" : this.phase === "Completed" ? "✅" : this.phase === "Stopped or failed" ? "⚠️" : "🟢"} <b>${escapeLimited(this.requestActive ? this.phase : this.phase, 80)}</b>`,
     ];
     if (this.requestPrompt) lines.push("", "<b>Request</b>", `<blockquote>${formatTelegramText(this.requestPrompt.replaceAll(this.token, "[redacted]"), 500)}</blockquote>`);
+    if (this.currentTool) lines.push("", `<b>Tool</b>  ${escapeLimited(this.currentTool, 180)}`);
     if (this.answer) lines.push("", "<b>Latest response</b>", `<blockquote>${formatTelegramText(this.answer.replaceAll(this.token, "[redacted]"), 1600)}</blockquote>`);
     if (this.pendingApprovals.size) {
       const approval = this.pendingApprovals.values().next().value as ApprovalRequest | undefined;
@@ -437,9 +584,10 @@ export class TelegramBot {
     if (rendered.length <= MAX_MESSAGE) return rendered;
     const safeFallback = [
       "🤖 <b>chatgpt-coder</b>",
-      `📂 <code>${escapeLimited(this.callbacks.workspace, 180)}</code>`,
+      `📂 <code>${escapeLimited(this.callbacks.selectedSession().workspace, 180)}</code>`,
       "",
       `<b>${escapeLimited(this.phase, 70)}</b>`,
+      ...(this.currentTool ? ["", `<b>Tool</b>  ${escapeLimited(this.currentTool, 140)}`] : []),
       ...(this.requestPrompt ? ["", "<b>Request</b>", escapeLimited(this.requestPrompt.replaceAll(this.token, "[redacted]"), 500)] : []),
       ...(this.answer ? ["", "<b>Latest response</b>", escapeLimited(this.answer.replaceAll(this.token, "[redacted]"), 1500)] : []),
       ...(this.lastNotice ? ["", `ℹ️ ${escapeLimited(this.lastNotice, 160)}`] : []),
@@ -449,9 +597,25 @@ export class TelegramBot {
 
   private renderKeyboard(): TelegramKeyboard {
     const rows: TelegramKeyboard["inline_keyboard"] = [[
+      { text: "💬 Sessions", callback_data: "sessions" },
+      { text: "📁 Folders", callback_data: "folders" },
+    ], [
       { text: "↻ Status", callback_data: "status" },
       { text: "■ Stop", callback_data: "stop" },
     ]];
+    if (this.sessionMenu.length) {
+      const pages = Math.max(1, Math.ceil(this.sessionMenu.length / 5));
+      this.sessionPage = Math.min(this.sessionPage, pages - 1);
+      for (const item of this.sessionMenu.slice(this.sessionPage * 5, this.sessionPage * 5 + 5)) {
+        rows.push([{ text: `${item.id === this.callbacks.selectedSession().id ? "●" : "○"} ${item.title.slice(0, 24)} · ${item.workspace.split(/[\\/]/).pop()?.slice(0, 18) ?? ""}`, callback_data: `ss:${item.id}` }]);
+      }
+      if (pages > 1) rows.push([
+        { text: "◀", callback_data: `sp:${Math.max(0, this.sessionPage - 1)}` },
+        { text: `${this.sessionPage + 1}/${pages}`, callback_data: `sp:${this.sessionPage}` },
+        { text: "▶", callback_data: `sp:${Math.min(pages - 1, this.sessionPage + 1)}` },
+      ]);
+    }
+    if (this.folderMenu.length) this.folderMenu.slice(0, 12).forEach((folder, index) => rows.push([{ text: `📁 ${folder.split(/[\\/]/).pop()?.slice(0, 32) ?? folder}`, callback_data: `fo:${index}` }]));
     const approval = this.pendingApprovals.values().next().value as ApprovalRequest | undefined;
     if (approval) rows.push([
       { text: "✓ Approve", callback_data: `approval:${approval.id}:yes` },

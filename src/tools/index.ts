@@ -83,6 +83,76 @@ export const toolDefinitions: ToolDefinition[] = [
   ...extensionTools,
   ...sshTools,
   {
+    name: "delegate_subagents",
+    title: "Delegate work to coding subagents",
+    description: "Launch 1–5 child coding agents in separate background ChatGPT tabs. Use only when the user explicitly requested or authorized multi-agent delegation; never launch subagents automatically without that authorization. Each agent receives a private workspace snapshot and does not use Git.",
+    inputSchema: {
+      count: z.number().int().min(1).max(5).describe("Number of child agents to launch."),
+      objective: z.string().min(1).max(12_000).describe("The shared task; give each agent a distinct role in the orchestrator's plan."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    handler: async (args, ctx) => {
+      if (!ctx.subagents) return errorText("Subagent delegation is available only in the root orchestrator.");
+      try {
+        const count = numberArg(args, "count", 1);
+        const objective = stringArg(args, "objective");
+        await ctx.subagents.start(count, objective);
+        return text(`Started ${count} subagent(s). Use wait_subagents and list_subagents to collect and inspect their work.`);
+      } catch (error) {
+        return errorText(error instanceof Error ? error.message : String(error));
+      }
+    },
+  },
+  {
+    name: "list_subagents",
+    title: "List child coding agents",
+    description: "Inspect the current child agents, their statuses, tool activity, summaries, workspace integration results and recent chat history.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    handler: async (_args, ctx) => ctx.subagents
+      ? text(safeJson(ctx.subagents.snapshots, ctx.config.maxOutputChars))
+      : errorText("Subagent control is available only in the root orchestrator."),
+  },
+  {
+    name: "wait_subagents",
+    title: "Wait for child coding agents",
+    description: "Wait until all currently launched child agents finish or the timeout expires, then return their latest results and chat history.",
+    inputSchema: {
+      timeout_ms: z.number().int().min(1_000).max(300_000).optional().describe("Maximum wait in milliseconds; defaults to 120000."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    handler: async (args, ctx) => ctx.subagents
+      ? text(safeJson(await ctx.subagents.waitFor(numberArg(args, "timeout_ms", 120_000)), ctx.config.maxOutputChars))
+      : errorText("Subagent control is available only in the root orchestrator."),
+  },
+  {
+    name: "message_subagent",
+    title: "Send an instruction to a child agent",
+    description: "Send a follow-up instruction to an existing child agent in its original ChatGPT conversation. Use this to clarify, redirect or request revisions after checking its current status.",
+    inputSchema: {
+      id: z.string().regex(/^[1-5]$/).describe("Child agent ID."),
+      message: z.string().min(1).max(12_000).describe("Follow-up instruction."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    handler: async (args, ctx) => {
+      if (!ctx.subagents) return errorText("Subagent control is available only in the root orchestrator.");
+      try { return text(await ctx.subagents.sendMessage(stringArg(args, "id"), stringArg(args, "message"))); }
+      catch (error) { return errorText(error instanceof Error ? error.message : String(error)); }
+    },
+  },
+  {
+    name: "stop_subagents",
+    title: "Stop child coding agents",
+    description: "Stop one child agent or all current child agents. Their workspaces and already integrated changes are preserved.",
+    inputSchema: { id: z.string().regex(/^[1-5]$/).optional().describe("Optional child ID; omit to stop all.") },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    handler: async (args, ctx) => {
+      if (!ctx.subagents) return errorText("Subagent control is available only in the root orchestrator.");
+      try { ctx.subagents.stop(typeof args.id === "string" ? args.id : undefined); return text("Stop requested; existing workspaces are preserved."); }
+      catch (error) { return errorText(error instanceof Error ? error.message : String(error)); }
+    },
+  },
+  {
     name: "list_attachments", title: "List user attachments",
     description: "List files, large user texts and folders explicitly attached to this local session. File attachments are also sent to ChatGPT when uploaded successfully.",
     inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false },

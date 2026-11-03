@@ -9,6 +9,8 @@ import { Orchestrator } from "../src/agent/orchestrator.js";
 import { McpHost } from "../src/mcp/server.js";
 import { createRuntime } from "../src/runtime/context.js";
 import { findTool } from "../src/tools/index.js";
+import { GoalStore } from "../src/runtime/goals.js";
+import { HarnessEvents } from "../src/events.js";
 
 describe("goal completion", () => {
   it("exposes update_goal through MCP and rejects completion until the plan is done", async () => {
@@ -101,4 +103,35 @@ describe("goal completion", () => {
     }
   });
 
+});
+
+
+describe("goal pause ownership", () => {
+  it("only enters paused through an explicit user pause", () => {
+    const goal = new GoalStore(new HarnessEvents());
+    goal.start("Keep working");
+    expect(() => goal.setStatus("paused", "unexpected")).toThrow("explicit user pause");
+    expect(goal.current?.status).toBe("active");
+    goal.pauseByUser();
+    expect(goal.current?.status).toBe("paused");
+  });
+
+  it("marks an unowned abort as blocked rather than silently pausing", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-goal-abort-"));
+    vi.stubEnv("CHATGPT_CODER_HOME", temporaryHome);
+    const orchestrator = new Orchestrator(defaultConfig(temporaryHome));
+    vi.spyOn(orchestrator.browser, "send").mockImplementation(async () => {
+      (orchestrator as unknown as { currentTurn?: AbortController }).currentTurn?.abort();
+      throw new DOMException("unexpected abort", "AbortError");
+    });
+    try {
+      await orchestrator.submit("/goal Keep working");
+      expect(orchestrator.runtime.goal.current?.status).toBe("blocked");
+      expect(orchestrator.runtime.goal.current?.detail).toContain("without an explicit user pause");
+    } finally {
+      await orchestrator.sessions.flush();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
 });

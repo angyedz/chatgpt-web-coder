@@ -47,10 +47,11 @@ export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers,
     rows.push({ text: `◈  AGENTS  ·  ${running}/${agents.length} active`, color: theme.accentAlt, bold: true });
     for (const agent of agents) {
       const name = wrapped(agent.role, Math.max(1, inner - 12), 1)[0] ?? "";
-      rows.push({ text: `${agentSymbol(agent.status)} #${agent.id} ${name} · ${agent.toolCount} tools`, color: agentColor(agent.status) });
+      rows.push({ text: `${agentSymbol(agent.status)} #${agent.id} ${name} · ${agent.status} · ${agent.toolCount} tools · ${agent.messages?.length ?? 0} msgs`, color: agentColor(agent.status) });
       if (capacity >= 24 && agent.activity) rows.push({ text: `  ↳ ${wrapped(agent.activity, Math.max(1, inner - 4), 1)[0] ?? ""}`, color: theme.dim });
     }
-    rows.push({ text: "  /swarm status · /swarm inspect 1", color: theme.dim });
+    rows.push({ text: "  /swarm status · /swarm inspect <id>", color: theme.dim });
+    if (capacity >= 20) rows.push({ text: "  /swarm chat <id> · /swarm open <id> · /swarm message <id>", color: theme.dim });
     if (capacity >= 20) rows.push({ text: " " });
   }
   if (jobs || timers) {

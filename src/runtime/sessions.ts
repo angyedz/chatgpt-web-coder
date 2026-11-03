@@ -54,6 +54,37 @@ export class SessionStore {
     this.current = freshSession(canonical);
   }
 
+  /** Discover every saved chat, across all project folders, without changing the active session. */
+  static async listAll(): Promise<SavedSession[]> {
+    const root = path.join(harnessHome(), "sessions");
+    let folders;
+    try { folders = await readdir(root, { withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const sessions: SavedSession[] = [];
+    for (const folder of folders) {
+      if (!folder.isDirectory() || !/^[a-f0-9]{20}$/.test(folder.name)) continue;
+      const directory = path.join(root, folder.name);
+      const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^[0-9a-f-]{36}\.json$/i.test(entry.name)) continue;
+        try {
+          const data: unknown = JSON.parse(await readFile(path.join(directory, entry.name), "utf8"));
+          if (!data || typeof data !== "object") continue;
+          const session = data as SavedSession;
+          if (session.version !== 1 || session.id + ".json" !== entry.name || typeof session.workspace !== "string" || !path.isAbsolute(session.workspace) || !Array.isArray(session.messages) || !Array.isArray(session.tools) || !Array.isArray(session.plan)) continue;
+          const canonical = path.resolve(session.workspace);
+          const key = createHash("sha256").update(process.platform === "win32" ? canonical.toLowerCase() : canonical).digest("hex").slice(0, 20);
+          if (key !== folder.name) continue;
+          sessions.push(session);
+        } catch { /* Ignore corrupted historical files; never make the bot select them. */ }
+      }
+    }
+    return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
   get snapshot(): SavedSession { return structuredClone(this.current); }
   get id(): string { return this.current.id; }
 
@@ -95,6 +126,21 @@ export class SessionStore {
     this.markInterrupted();
     try { await this.persistCurrent(); }
     catch (error) { this.current = previous; throw error; }
+  }
+
+  /** Read a session for a remote client without replacing the foreground workspace's active pointer. */
+  async loadDetached(id: string): Promise<void> {
+    if (this.current.id === id) return;
+    this.current = await this.read(id);
+  }
+
+  /** Create a session bound to this folder without changing the foreground active session. */
+  async createDetached(): Promise<SavedSession> {
+    await this.flush();
+    this.current = freshSession(path.resolve(this.workspace));
+    this.enqueueSnapshot();
+    await this.flush();
+    return this.snapshot;
   }
 
   async create(): Promise<void> {

@@ -19,6 +19,13 @@ export class GoalStore {
     this.emit();
   }
   setStatus(status: Goal["status"], detail?: string): void {
+    if (status === "paused") throw new Error("Goals can only be paused through an explicit user pause.");
+    this.transition(status, detail);
+  }
+  pauseByUser(detail = "Paused by the user."): void {
+    this.transition("paused", detail);
+  }
+  private transition(status: Goal["status"], detail?: string): void {
     if (!this.goal) throw new Error("There is no goal in this session.");
     this.goal = { ...this.goal, status, detail, updatedAt: Date.now() };
     this.emit();
