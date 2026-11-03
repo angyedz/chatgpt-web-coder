@@ -259,8 +259,11 @@ export class ExecSessionManager {
     if (session.killPromise) return session.killPromise;
     session.killPromise = (async () => {
       const stopped = await killTree(session.child);
-      await Promise.race([session.exitPromise, sleep(1500)]);
-      if (!stopped || session.running) {
+      await Promise.race([session.exitPromise, sleep(3000)]);
+      // taskkill may report a non-zero exit code if the process exited
+      // while being killed. The observed close event is authoritative:
+      // successful termination must not be reported as a failed cancel.
+      if (session.running) {
         session.killPromise = undefined;
         return false;
       }
