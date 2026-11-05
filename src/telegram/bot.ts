@@ -33,6 +33,7 @@ export interface TelegramBotCallbacks {
   getBusy(): boolean;
   getPhase(): TurnPhase;
   submit(text: string): boolean;
+  command(text: string): Promise<string>;
   cancel(): void;
   approve(id: string, allowed: boolean): void;
   onStatus(state: "starting" | "up" | "off" | "error", detail?: string): void;
@@ -105,6 +106,12 @@ export class TelegramBot {
           { command: "folders", description: "Show saved project folders" },
           { command: "new", description: "Start a chat bound to a project folder" },
           { command: "stop", description: "Stop the selected task" },
+          { command: "session", description: "Open, rename or inspect a chat" },
+          { command: "update", description: "Manage harness updates" },
+          { command: "swarm", description: "Control subagents" },
+          { command: "goal", description: "Manage a harness goal" },
+          { command: "model", description: "Select ChatGPT model" },
+          { command: "effort", description: "Select thinking effort" },
         ]
       : [{ command: "pair", description: "Pair this private chat with the local harness" }];
     await this.api("setMyCommands", { commands });
@@ -193,18 +200,19 @@ export class TelegramBot {
     this.persistOffset(updateId);
     if (!text) return;
     await this.startMessageDashboard();
-    const commandMatch = /^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(text);
+    const commandMatch = /^\/(\w+)(?:@(\w+))?(?:\s+([\s\S]*))?$/.exec(text);
+    if (commandMatch?.[2] && commandMatch[2].toLowerCase() !== this.botUsername.toLowerCase()) return;
     const command = commandMatch?.[1]?.toLowerCase();
+    const argument = commandMatch?.[3]?.trim() ?? "";
     if (command) {
       switch (command) {
         case "start":
-        case "help":
-          this.lastNotice = "Use /sessions to select a chat, /new <folder> to create one, /status to refresh, /stop to cancel, or send a task.";
+          this.lastNotice = "Commands work here too: /help, /update, /goal, /swarm, /model, /effort, /session, /new <absolute path>, /folders, /stop. Selected sessions use separate project folders.";
           this.queueDashboard();
           return;
+        case "help":
         case "status":
-          this.lastNotice = "Status refreshed.";
-          this.queueDashboard();
+          await this.runHarnessCommand("/" + command + (argument ? " " + argument : ""));
           return;
         case "sessions":
           await this.loadSessionMenu();
@@ -215,14 +223,25 @@ export class TelegramBot {
           this.lastNotice = this.folderMenu.length ? "Choose a folder below to create a new chat, or use /new <absolute path>." : "No folders found. Use /new <absolute path>.";
           this.queueDashboard();
           return;
-        case "session":
-          if (!commandMatch?.[2]?.trim()) { await this.loadSessionMenu(); return; }
-          await this.selectSession(commandMatch[2].trim());
+        case "session": {
+          if (!argument || argument.toLowerCase() === "list") { await this.loadSessionMenu(); return; }
+          if (argument.toLowerCase() === "new") { await this.createSession(this.callbacks.selectedSession().workspace); return; }
+          const open = /^open\s+([a-f0-9-]+)$/i.exec(argument);
+          if (open) { await this.selectSession(open[1]!); return; }
+          if (/^(?:rename|info|job)(?:\s|$)/i.test(argument)) {
+            await this.runHarnessCommand("/session " + argument);
+            return;
+          }
+          await this.selectSession(argument);
+          return;
+        }
+        case "clear":
+          await this.createSession(this.callbacks.selectedSession().workspace);
           return;
         case "new":
         case "folder": {
-          const folder = commandMatch?.[2]?.trim();
-          if (!folder) { this.lastNotice = "Usage: /new <absolute project-folder path>"; this.queueDashboard(); return; }
+          let folder = argument || this.callbacks.selectedSession().workspace;
+          if (command === "folder" && /^create\s+/i.test(argument)) folder = "--create " + argument.replace(/^create\s+/i, "");
           await this.createSession(folder);
           return;
         }
@@ -233,8 +252,7 @@ export class TelegramBot {
           this.queueDashboard();
           return;
         default:
-          this.lastNotice = "Unknown command. Use /sessions, /folders, /new <folder>, /status, /stop, or send a task.";
-          this.queueDashboard();
+          await this.runHarnessCommand("/" + command + (argument ? " " + argument : ""));
           return;
       }
     }
@@ -273,6 +291,40 @@ export class TelegramBot {
       this.lastNotice = "The harness is busy. Use /stop or wait for the current task to finish.";
     }
     this.queueDashboard();
+  }
+
+  /** Execute the real command rather than sending it as a model prompt. */
+  private async runHarnessCommand(text: string): Promise<void> {
+    if (this.requestActive || this.callbacks.getBusy()) {
+      this.lastNotice = "A task is still running. Use /stop first, or retry the command when it is idle.";
+      this.queueDashboard();
+      return;
+    }
+    if (text.includes(this.token)) {
+      this.lastNotice = "Bot tokens must never be submitted in a Telegram command.";
+      this.queueDashboard();
+      return;
+    }
+    this.requestActive = true;
+    this.externalRequest = !this.callbacks.isRootSelected();
+    this.requestPrompt = text;
+    this.answer = "";
+    this.phase = "Running command";
+    this.queueDashboard();
+    try {
+      this.answer = await this.callbacks.command(text);
+      this.phase = "Completed";
+      const selected = this.callbacks.selectedSession();
+      if (this.identity?.selectedSessionId !== selected.id) {
+        this.callbacks.saveProfile({ selectedSessionId: selected.id });
+      }
+    } catch (error) {
+      this.answer = "Command failed: " + safeDetail(error, this.token);
+      this.phase = "Error";
+    } finally {
+      this.requestActive = false;
+      this.queueDashboard();
+    }
   }
 
   private async startMessageDashboard(): Promise<void> {
