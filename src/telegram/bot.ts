@@ -90,6 +90,8 @@ export class TelegramBot {
   private modelOptions: string[] = [];
   private effortOptions: string[] = [];
   private swarmCount = 3;
+  private selectedAgent = 1;
+  private optionPage = 0;
 
   constructor(token: string, identity: TelegramConfig | undefined, pairingWords: readonly string[] | undefined, private readonly callbacks: TelegramBotCallbacks) {
     this.token = token;
@@ -538,6 +540,7 @@ export class TelegramBot {
       attach: "Укажи путь к файлу или folder <путь> для каталога.",
       timer: "Напиши длительность, метку и необязательную команду: 5m проверить или 5m -- npm test.",
       job: "Введи ID процесса или stop <id>, bg <id>.",
+      "agent-message": `Напиши сообщение для субагента #${this.selectedAgent}.`,
       switch: "Введи ID сохранённой сессии.",
     };
     this.awaitingInput = kind;
@@ -603,6 +606,9 @@ export class TelegramBot {
         case "job":
           void this.runHarnessCommand("/job " + value);
           return;
+        case "agent-message":
+          void this.runHarnessCommand("/swarm message " + this.selectedAgent + " " + value);
+          return;
       }
     } catch (error) {
       this.lastNotice = "Ошибка ввода: " + safeDetail(error, this.token);
@@ -642,9 +648,10 @@ export class TelegramBot {
     }
     if (data.startsWith("nav:")) {
       const panel = data.slice(4);
-      const valid: TelegramPanel[] = ["home", "sessions", "folders", "actions", "models", "effort", "swarm", "jobs", "updates", "tools", "settings"];
+      const valid: TelegramPanel[] = ["home", "sessions", "folders", "actions", "models", "effort", "swarm", "agent", "jobs", "updates", "tools", "settings"];
       if (!valid.includes(panel as TelegramPanel)) return true;
       this.panel = panel as TelegramPanel;
+      if (panel === "models" || panel === "effort") this.optionPage = 0;
       if (panel === "sessions") await this.loadSessionMenu();
       else if (panel === "folders") {
         this.folderMenu = await this.callbacks.folderList();
@@ -655,13 +662,23 @@ export class TelegramBot {
     }
     if (data.startsWith("ask:")) {
       const kind = data.slice(4) as TelegramPrompt;
-      const valid: TelegramPrompt[] = ["task", "folder", "create-folder", "goal", "rename", "swarm", "command", "btw", "attach", "timer", "job", "switch"];
+      const valid: TelegramPrompt[] = ["task", "folder", "create-folder", "goal", "rename", "swarm", "command", "btw", "attach", "timer", "job", "switch", "agent-message"];
       if (valid.includes(kind)) await this.promptFor(kind);
       return true;
     }
     if (data.startsWith("load:")) {
       const kind = data.slice(5);
       if (kind === "model" || kind === "effort") await this.loadPickerChoices(kind);
+      return true;
+    }
+    if (/^agent:[1-5]$/.test(data)) {
+      this.selectedAgent = Number(data.slice("agent:".length));
+      this.panel = "agent";
+      this.lastNotice = "Выбран субагент #" + this.selectedAgent;
+      return true;
+    }
+    if (/^(?:mp|ep):\d+$/.test(data)) {
+      this.optionPage = Math.max(0, Number(data.slice(3)));
       return true;
     }
     if (/^swarm:[1-5]$/.test(data)) {
@@ -695,6 +712,10 @@ export class TelegramBot {
         return true;
       }
       const commands: Record<string, string> = {
+        "agent-inspect": "/swarm inspect " + this.selectedAgent,
+        "agent-chat": "/swarm chat " + this.selectedAgent,
+        "agent-open": "/swarm open " + this.selectedAgent,
+        "agent-stop": "/swarm stop " + this.selectedAgent,
         status: "/status", "session-info": "/session info",
         "goal-status": "/goal status", "goal-resume": "/goal resume",
         "goal-pause": "/goal pause", "goal-cancel": "/goal cancel",
@@ -713,7 +734,7 @@ export class TelegramBot {
       };
       const command = commands[key];
       if (!command) return true;
-      if (new Set(["update-apply", "update-rollback", "approval-never", "goal-cancel", "swarm-stop", "compact"]).has(key)) {
+      if (new Set(["update-apply", "update-rollback", "approval-never", "goal-cancel", "swarm-stop", "agent-stop", "compact"]).has(key)) {
         this.confirmation = command;
         this.lastNotice = "Подтверди действие кнопкой.";
       } else void this.runHarnessCommand(command);
@@ -995,6 +1016,8 @@ export class TelegramBot {
       confirmation: this.confirmation,
       selectedId: this.callbacks.selectedSession().id,
       swarmCount: this.swarmCount,
+      selectedAgent: this.selectedAgent,
+      optionPage: this.optionPage,
       pendingReplies: this.delivery?.pendingCount ?? 0,
     });
   }
