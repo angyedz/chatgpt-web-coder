@@ -334,6 +334,14 @@ export class ChatGptBrowser {
     return result;
   }
 
+  /** Apply per-session picker overrides without changing the main harness configuration. */
+  setPickerPreference(kind: PickerKind, label: string): void {
+    if (kind === "model") this.config.modelLabel = label;
+    else this.config.effortLabel = label;
+    if (!label) delete this.appliedPicker[kind];
+    this.refreshSession();
+  }
+
   refreshSession(): void { this.emitSession(); }
 
   setResponseChannel(channel?: "telegram"): void { this.responseChannel = channel; }
