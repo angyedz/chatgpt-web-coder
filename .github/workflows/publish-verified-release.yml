@@ -74,8 +74,19 @@ jobs:
             channel=stable
             tag="build-${RUN_ID}-${RUN_ATTEMPT}"
             flags=(--latest=false)
-            current_main="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-            if [ "$current_main" = "$source_sha" ]; then flags=(--latest); fi
+            # Prefer the newest successfully VERIFIED build, not only builds
+            # whose commit remains the main HEAD by the time the ZIP finishes.
+            # Otherwise continuous pushes leave /releases/latest stuck on old code.
+            latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            if [[ "$latest_tag" =~ ^build-([0-9]+)-([0-9]+)$ ]]; then
+              previous_run="${BASH_REMATCH[1]}"
+              previous_attempt="${BASH_REMATCH[2]}"
+              if (( RUN_ID > previous_run || (RUN_ID == previous_run && RUN_ATTEMPT > previous_attempt) )); then
+                flags=(--latest)
+              fi
+            else
+              flags=(--latest)
+            fi
           fi
           if [ -n "$artifact_tag" ]; then [ "$artifact_tag" = "$tag" ] || { echo "ZIP release tag mismatch: $artifact_tag vs $tag"; exit 1; }; fi
           printf 'Автоматическая %s-сборка версии %s.\nВетка: %s\nКоммит: %s\nПроверенный CI run: %s.\n\n' "$channel" "$version" "$RUN_BRANCH" "$source_sha" "$RUN_ID" > release-notes.md
