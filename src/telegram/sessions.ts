@@ -171,6 +171,48 @@ export class TelegramSessionBridge {
           return "Recorded " + job.kind + " " + job.id + " · " + job.status + "\n" + job.description + "\n\n" + (job.output || "(no saved output)");
         }
       }
+      if (name === "goal") {
+        const store = await this.selectedStore();
+        const old = store.snapshot.goal;
+        const lower = argument.toLowerCase();
+        if (!argument || lower === "status") {
+          return old ? "Selected session goal: " + old.status + "\n" + old.objective + (old.detail ? "\n" + old.detail : "") : "No goal in the selected session.";
+        }
+        if (lower === "pause" || lower === "cancel") {
+          if (!old) throw new Error("There is no goal in this session.");
+          if (this.busy) throw new Error("Use /stop to interrupt the running Telegram turn first.");
+          store.record({ type: "goal", goal: { ...old, status: lower === "pause" ? "paused" : "cancelled", detail: "Changed from Telegram by the owner.", updatedAt: Date.now() } });
+          await store.flush();
+          return "Selected session goal " + (lower === "pause" ? "paused" : "cancelled") + ".";
+        }
+        if (this.busy) throw new Error("A task in the selected session is already running.");
+        let objective = argument;
+        if (lower === "resume" || lower.startsWith("resume ")) {
+          if (!old || !["paused", "blocked"].includes(old.status)) throw new Error("No paused or blocked goal to resume.");
+          objective = old.objective;
+          store.record({ type: "goal", goal: { ...old, status: "active", detail: undefined, updatedAt: Date.now() } });
+        } else {
+          const now = Date.now();
+          store.record({ type: "goal", goal: { objective, status: "active", createdAt: now, updatedAt: now } });
+        }
+        await store.flush();
+        const id = this.selectedId!;
+        this.sending.add(id);
+        try {
+          await this.run(id, "Work toward this goal in the selected project folder: " + objective + ". Use the goal tools to mark completion only after verifying it.", true);
+        } finally {
+          this.sending.delete(id);
+        }
+        const final = (await this.selectedSavedSession()).goal;
+        return final ? "Goal: " + final.status + "\n" + final.objective + (final.detail ? "\n" + final.detail : "") : "Goal turn finished.";
+      }
+      if (name === "attachments") {
+        const items = (await this.selectedSavedSession()).attachments ?? [];
+        return items.length ? "Selected session attachments:\n" + items.map((item) => item.id + " · " + item.name).join("\n") : "No attachments in this Telegram session.";
+      }
+      if (name === "attach" || name === "detach" || name === "compact") {
+        throw new Error("/" + name + " is session-scoped and cannot be run against the foreground harness while a different Telegram session is selected. Select the local session first.");
+      }
     }
     const response = await this.rootCommand(text);
     return this.isRootSelected ? response : "[Main harness / global command — not the selected project folder]\n\n" + response;
@@ -272,7 +314,7 @@ export class TelegramSessionBridge {
     return worker;
   }
 
-  private async run(id: string, message: string): Promise<void> {
+  private async run(id: string, message: string, goalMode = false): Promise<void> {
     const choice = (await this.list()).find((item) => item.id === id);
     if (!choice) throw new Error("Saved Telegram session is missing.");
     let worker: SessionWorker | undefined;
@@ -304,6 +346,19 @@ export class TelegramSessionBridge {
         const answer = await worker.browser.send(prompt, controller.signal, { turnId, continueChat: worker.hasSent });
         worker.hasSent = true;
         controller.signal.throwIfAborted();
+        if (goalMode) {
+          let remaining = 3;
+          while (runtime.goal.current?.status === "active" && remaining-- > 0) {
+            await worker.browser.send(
+              "Continue the active goal in this project workspace. Do not claim completion without evidence. Call update_goal with complete and evidence if verified, or blocked with the obstacle when you cannot proceed.",
+              controller.signal, { turnId, continueChat: true },
+            );
+            controller.signal.throwIfAborted();
+          }
+          if (runtime.goal.current?.status === "active") {
+            runtime.goal.setStatus("blocked", "Three follow-up turns finished without completing the goal. Use /goal resume to continue.");
+          }
+        }
         ok = true;
         if (!answer.trim()) worker.events.emit({ type: "assistant-done", id: newId("tg-assistant"), text: "(No text response)", channel: "telegram" });
       } catch (error) {
