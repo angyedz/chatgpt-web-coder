@@ -3,6 +3,8 @@ import type { HarnessEvents } from "../events.js";
 import type { ApprovalRequest, HarnessEvent, TurnPhase } from "../types.js";
 import type { TelegramConfig } from "../config.js";
 import type { TelegramSessionChoice } from "./sessions.js";
+import { TelegramDelivery } from "./delivery.js";
+import { panelTitle, renderTelegramKeyboard, type TelegramPanel, type TelegramPrompt } from "./ui.js";
 
 const API = "https://api.telegram.org/bot";
 const MAX_MESSAGE = 4096;
@@ -78,6 +80,15 @@ export class TelegramBot {
   private currentTool = "";
   private toolQueue: string[] = [];
   private externalRequest = false;
+  private delivery?: TelegramDelivery;
+  private deliveryInitializing?: Promise<void>;
+  private panel: TelegramPanel = "home";
+  private awaitingInput?: TelegramPrompt;
+  private confirmation?: string;
+  private folderPage = 0;
+  private modelOptions: string[] = [];
+  private effortOptions: string[] = [];
+  private swarmCount = 3;
 
   constructor(token: string, identity: TelegramConfig | undefined, pairingWords: readonly string[] | undefined, private readonly callbacks: TelegramBotCallbacks) {
     this.token = token;
@@ -118,6 +129,7 @@ export class TelegramBot {
       : [{ command: "pair", description: "Pair this private chat with the local harness" }];
     await this.api("setMyCommands", { commands });
     this.running = true;
+    if (this.identity) await this.ensureDelivery();
     this.callbacks.onStatus("up", response.username ? `@${response.username}` : response.first_name);
     if (this.identity) {
       if (this.identity.selectedSessionId) {
@@ -136,6 +148,7 @@ export class TelegramBot {
     this.editTimer = undefined;
     this.unsubscribe();
     await this.polling?.catch(() => undefined);
+    await this.delivery?.stop();
     this.callbacks.onStatus("off");
   }
 
@@ -317,6 +330,31 @@ export class TelegramBot {
     this.queueDashboard();
   }
 
+  /** Persist complete replies before sending them through Telegram. */
+  private async ensureDelivery(): Promise<void> {
+    if (!this.identity || this.delivery) return;
+    if (this.deliveryInitializing) return this.deliveryInitializing;
+    this.deliveryInitializing = (async () => {
+      const identity = this.identity!;
+      const delivery = new TelegramDelivery(identity.ownerChatId, async (text) => {
+        await this.api("sendMessage", {
+          chat_id: identity.ownerChatId,
+          text,
+          disable_web_page_preview: true,
+        });
+      }, (error) => this.callbacks.onStatus("error", "Full-message delivery will retry: " + safeDetail(error, this.token)));
+      await delivery.initialize();
+      this.delivery = delivery;
+    })();
+    try { await this.deliveryInitializing; } finally { this.deliveryInitializing = undefined; }
+  }
+
+  private async queueFullMessage(id: string, text: string): Promise<void> {
+    if (!this.identity || !text) return;
+    await this.ensureDelivery();
+    await this.delivery?.enqueue(id, text.replaceAll(this.token, "[redacted]"));
+  }
+
   /** /btw uses a separate reply so it cannot overwrite the active task dashboard. */
   private async runSideQuestion(command: string): Promise<void> {
     if (command.length > MAX_PROMPT) return;
@@ -467,6 +505,7 @@ export class TelegramBot {
     await this.callbacks.onPaired(profile);
     this.identity = profile;
     this.offset = updateId + 1;
+    await this.ensureDelivery();
     this.lastNotice = `Private chat paired to Telegram user ID ${profile.ownerUserId}. Only this account can control the harness.`;
     await this.updateDashboard(true);
   }
