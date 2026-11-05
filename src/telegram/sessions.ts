@@ -413,6 +413,8 @@ export class TelegramSessionBridge {
     }
     if (!this.sending.has(this.selectedId!) && this.sideQuestions.cancel(this.selectedId!)) return;
     const worker = this.selectedId ? this.workers.get(this.selectedId) : undefined;
+    const swarm = this.selectedId ? this.detachedSwarms.get(this.selectedId) : undefined;
+    if (swarm?.active) swarm.stop("all");
     if (worker?.runtime?.goal.current?.status === "active") {
       worker.runtime.goal.pauseByUser("Paused from Telegram by the owner.");
     }
