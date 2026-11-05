@@ -59,12 +59,17 @@ try {
     & $npm ci --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE." }
 
-    # Every publishable CI build needs a unique, user-visible version. Stamp only
-    # the isolated staging copies so package.json, lockfile and the installed
-    # APP_VERSION agree. Local/manual builds keep the source package version.
+    # Stamp unique build metadata only into the disposable CI staging folder.
     if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_EVENT_NAME -ne 'pull_request' -and
-        @('main', 'pre-release').Contains($env:GITHUB_REF_NAME) -and
-        $env:GITHUB_RUN_ID -match '^\d+
+        ($env:GITHUB_REF_NAME -eq 'main' -or $env:GITHUB_REF_NAME -eq 'pre-release')) {
+      $baseVersion = $package.version.Split('+')[0]
+      $ciVersion = $baseVersion + '+build.' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT
+      & $node (Join-Path $stage 'scripts/stamp-build-version.cjs') $ciVersion
+      if ($LASTEXITCODE -ne 0) { throw 'Could not stamp CI version.' }
+      $package.version = $ciVersion
+      Write-Host ('CI version: ' + $ciVersion)
+    }
+    Write-Host '[2/4] Compiling application...'
     & $npm run build
     if ($LASTEXITCODE -ne 0) { throw "Application build failed with exit code $LASTEXITCODE." }
     if (-not (Test-Path -LiteralPath (Join-Path $stage 'dist\index.js'))) { throw 'Compiled application entry point is missing.' }
