@@ -185,7 +185,7 @@ describe("Telegram button interface and complete responses", () => {
 
   it("picks a model from actual harness choices instead of sending menu text to the AI", async () => {
     const { internals, requests, message, callbacks, bot } = setup();
-    vi.mocked(callbacks.command).mockResolvedValueOnce("Available models\\n1. GPT-6\\n2. GPT-5.6");
+    vi.mocked(callbacks.command).mockResolvedValueOnce("Available models\n1. GPT-6\n2. GPT-5.6");
     try {
       await internals.onMessage(message(1, "/start"), 1);
       await internals.onCallback(callback("c1", "nav:models"), 2);
