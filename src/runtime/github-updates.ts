@@ -22,9 +22,11 @@ export interface GithubRelease {
   comparison: "current" | "different" | "older" | "unknown";
 }
 
-function stableVersion(value: string): number[] | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
-  return match ? match.slice(1).map(Number) : undefined;
+/** Compare release tracks by their base SemVer. The build identifier is
+ * unique per CI artifact and is compared using installed release identity. */
+export function stableVersion(value: string): number[] | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(value);
+  return match ? match.slice(1, 4).map(Number) : undefined;
 }
 
 export function validateGithubRepository(value: string): string {
@@ -107,7 +109,7 @@ export async function latestGithubRelease(input: string, channel: UpdateChannel 
   const sameRepository = current.repository?.toLowerCase() === repository.toLowerCase();
   const name = typeof data.name === "string" ? data.name.slice(0, 200) : tag;
   const commit = typeof data.target_commitish === "string" && /^[a-f0-9]{40}$/i.test(data.target_commitish) ? data.target_commitish.toLowerCase() : undefined;
-  const latestVersion = stableVersion(/^chatgpt-coder\s+(\d+\.\d+\.\d+)(?:\s|$)/i.exec(name)?.[1] ?? "");
+  const latestVersion = stableVersion(/^chatgpt-coder\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/i.exec(name)?.[1] ?? "");
   const runningVersion = stableVersion(APP_VERSION);
   const versionDifference = latestVersion && runningVersion ? latestVersion.reduce((difference, part, index) => difference || part - runningVersion[index]!, 0) : undefined;
   const same = sameRepository && (current.sha256 ? current.sha256.toLowerCase() === sha256 : (commit && current.commit?.toLowerCase() === commit) || (current.tag && current.tag === tag));
