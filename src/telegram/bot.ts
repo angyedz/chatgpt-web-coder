@@ -610,7 +610,7 @@ export class TelegramBot {
     }
     try {
       const output = await this.callbacks.command("/" + kind);
-      const choices = output.split(/\\r?\\n/).map((line) => /^\\s*\\d+\\.\\s+(.+)\\s*$/.exec(line)?.[1]?.trim()).filter((item): item is string => Boolean(item));
+      const choices = output.split(/\r?\n/).map((line) => /^\s*\d+\.\s+(.+)\s*$/.exec(line)?.[1]?.trim()).filter((item): item is string => Boolean(item));
       if (kind === "model") this.modelOptions = choices;
       else this.effortOptions = choices;
       this.lastNotice = choices.length ? `Доступно вариантов: ${choices.length}. Выбери кнопкой ниже.` : output.slice(0, 300);
@@ -662,7 +662,7 @@ export class TelegramBot {
       return true;
     }
     if (data.startsWith("pick:")) {
-      const match = /^pick:(model|effort):(\\d+)$/.exec(data);
+      const match = /^pick:(model|effort):(\d+)$/.exec(data);
       if (!match) return true;
       const options = match[1] === "model" ? this.modelOptions : this.effortOptions;
       const selected = options[Number(match[2])];
@@ -674,7 +674,7 @@ export class TelegramBot {
       await this.createSession(this.callbacks.selectedSession().workspace);
       return true;
     }
-    if (/^fp:\\d+$/.test(data)) {
+    if (/^fp:\d+$/.test(data)) {
       const last = Math.max(0, Math.ceil(this.folderMenu.length / 5) - 1);
       this.folderPage = Math.min(last, Number(data.slice(3)));
       return true;
