@@ -57,5 +57,9 @@ describe("Windows release policy", () => {
     expect(script).toContain('case "$RUN_BRANCH" in');
     expect(script).toContain("main|pre-release");
     expect(script).toContain("ZIP release tag mismatch");
+    expect(script).toContain('releases/latest');
+    expect(script).toContain('previous_run');
+    expect(script).not.toContain('current_main=');
+    expect(script).toContain('flags=(--latest)');
   });
 });
