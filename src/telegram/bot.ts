@@ -199,9 +199,9 @@ export class TelegramBot {
     if (!this.isOwner(message.from.id, message.chat.id)) return;
     this.persistOffset(updateId);
     if (!text) return;
-    await this.startMessageDashboard();
     const commandMatch = /^\/(\w+)(?:@(\w+))?(?:\s+([\s\S]*))?$/.exec(text);
     if (commandMatch?.[2] && commandMatch[2].toLowerCase() !== this.botUsername.toLowerCase()) return;
+    await this.startMessageDashboard();
     const command = commandMatch?.[1]?.toLowerCase();
     const argument = commandMatch?.[3]?.trim() ?? "";
     if (command) {
