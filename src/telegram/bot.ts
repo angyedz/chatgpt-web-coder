@@ -271,8 +271,8 @@ export class TelegramBot {
         }
         case "stop":
         case "cancel":
-          if (!this.callbacks.getBusy()) this.lastNotice = "There is no active task to stop.";
-          else { this.callbacks.cancel(); this.lastNotice = "Stopping the active task…"; }
+          this.callbacks.cancel();
+          this.lastNotice = "Stop requested for the selected task or side question.";
           this.queueDashboard();
           return;
         default:
