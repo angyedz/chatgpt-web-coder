@@ -120,7 +120,23 @@ export class TelegramDelivery {
 
   private wake(): void {
     if (this.stopped || this.retryTimer || this.draining || !this.queue.length) return;
-    this.draining = this.drain().finally(() => { this.draining = undefined; });
+    this.draining = this.drain().catch((error: unknown) => {
+      // Disk errors during a checkpoint must not create an unhandled rejection
+      // or permanently strand later messages in the queue.
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.onError(failure);
+      if (!this.stopped && !this.retryTimer) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = undefined;
+          this.wake();
+        }, 5000);
+        this.retryTimer.unref?.();
+      }
+    }).finally(() => {
+      this.draining = undefined;
+      // An enqueue may have happened as the previous drain was completing.
+      if (!this.stopped && !this.retryTimer && this.queue.length) this.wake();
+    });
   }
 
   private async drain(): Promise<void> {
