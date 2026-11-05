@@ -37,7 +37,7 @@ function setup() {
       selected = [betaSession, rootSession].find((session) => session.id === id) ?? rootSession;
       return selected;
     },
-    createSession: async () => betaSession,
+    createSession: vi.fn(async () => betaSession),
     resetSession: vi.fn(),
     folderList: async () => [rootSession.workspace, betaSession.workspace],
     isRootSelected: () => selected.id === rootSession.id,
