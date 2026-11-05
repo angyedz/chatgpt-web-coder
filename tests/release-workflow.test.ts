@@ -21,10 +21,11 @@ describe("Windows release policy", () => {
 
   it("stamps a unique version into the packaged app on each publishable build", () => {
     const script = readFileSync(path.join(repo, "scripts", "build-update.ps1"), "utf8");
-    expect(script).toContain("CHATGPT_CODER_BUILD_VERSION");
+    const stamp = readFileSync(path.join(repo, "scripts", "stamp-build-version.cjs"), "utf8");
+    expect(script).toContain("stamp-build-version.cjs");
     expect(script).toContain("+build.");
-    expect(script).toContain('lock.packages[""].version = version');
-    expect(script).toContain("pkg.version = version");
+    expect(stamp).toContain('lock.packages[""].version = version');
+    expect(stamp).toContain("pkg.version = version");
     expect(script).toContain("GITHUB_RUN_ID");
     expect(script).toContain("GITHUB_RUN_ATTEMPT");
     expect(script).toContain("GITHUB_EVENT_NAME -ne 'pull_request'");
