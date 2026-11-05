@@ -15,7 +15,7 @@ function saved(id: string): SavedSession {
 
 describe("Telegram independent side questions", () => {
   it("uses an isolated no-tool browser tab and returns its real answer", async () => {
-    const side = { send: vi.fn(async () => "Answer for the remote project"), closeSideChat: vi.fn() };
+    const side = { send: vi.fn(async (_prompt: string, _signal: AbortSignal) => "Answer for the remote project"), closeSideChat: vi.fn() };
     const root = { isOpen: true, openSideChat: vi.fn(async () => side) } as unknown as ChatGptBrowser;
     const questions = new TelegramSideQuestions(root);
     const answer = await questions.ask(saved("remote-1"), "What does this code do?");
