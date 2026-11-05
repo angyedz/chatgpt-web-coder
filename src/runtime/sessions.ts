@@ -32,6 +32,7 @@ export interface SavedSession {
   timers: TimerInfo[];
   previousRuntime?: { jobs: SessionJob[]; timers: TimerInfo[]; savedAt: number };
   contextSummary: string;
+  browserOverrides?: { modelLabel?: string; effortLabel?: string };
   order: number;
 }
 
@@ -216,6 +217,11 @@ export class SessionStore {
   }
 
   setSummary(summary: string): void { this.current.contextSummary = summary; this.changed(); }
+
+  setBrowserOverrides(patch: { modelLabel?: string; effortLabel?: string }): void {
+    this.current.browserOverrides = { ...this.current.browserOverrides, ...patch };
+    this.changed();
+  }
 
   async flush(): Promise<void> {
     if (this.timer) { clearTimeout(this.timer); this.timer = undefined; this.enqueueSnapshot(); }
