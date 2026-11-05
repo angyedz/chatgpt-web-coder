@@ -92,7 +92,7 @@ describe("Telegram saved chat routing", () => {
       await bridge.choose(storeB.id);
       expect(await bridge.command("/swarm status")).toContain("selected project");
       await expect(bridge.command("/swarm start 1 Test selected workspace")).rejects.toThrow("primary ChatGPT browser");
-      await expect(bridge.command("/btw Question")).rejects.toThrow("NOT run in the main project");
+      await expect(bridge.command("/btw Question")).rejects.toThrow("ChatGPT browser is not connected.");
       await expect(bridge.command("/session totally-unknown")).rejects.toThrow("Unknown selected session command");
       expect(rootCommand).not.toHaveBeenCalled();
     } finally { await bridge.shutdown(); }
