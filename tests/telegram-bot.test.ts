@@ -347,6 +347,24 @@ describe("Telegram interactive session cards", () => {
     } finally { await bot.stop(); }
   });
 
+  it("delivers a finished detached-swarm report exactly once", async () => {
+    const { requests, bot } = setup();
+    try {
+      const event = { type: "subagents" as const, agents: [{
+        id: "1", role: "Tester", objective: "Fix tests", workspace: "/projects/worker",
+        status: "done" as const, toolCount: 8, startedAt: 1234, summary: "All checks completed",
+      }] };
+      bot.onExternalSessionEvent(event);
+      bot.onExternalSessionEvent(event);
+      await vi.waitFor(() => {
+        const delivered = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup &&
+          String(item.body.text).includes("Фоновые субагенты завершили"));
+        expect(delivered).toHaveLength(1);
+        expect(delivered[0]?.body.text).toContain("All checks completed");
+      });
+    } finally { await bot.stop(); }
+  });
+
   it("keeps background subagent approvals actionable after the Telegram command ends", async () => {
     const { internals, requests, bot } = setup();
     try {
