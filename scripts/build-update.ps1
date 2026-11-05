@@ -58,6 +58,156 @@ try {
     Write-Host '[1/4] Installing build dependencies from package-lock.json...'
     & $npm ci --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE." }
+
+    # Every publishable CI build needs a unique, user-visible version. Stamp only
+    # the isolated staging copies so package.json, lockfile and the installed
+    # APP_VERSION agree. Local/manual builds keep the source package version.
+    if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_EVENT_NAME -ne 'pull_request' -and
+        @('main', 'pre-release').Contains($env:GITHUB_REF_NAME) -and
+        $env:GITHUB_RUN_ID -match '^\d+
+    & $npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Application build failed with exit code $LASTEXITCODE." }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'dist\index.js'))) { throw 'Compiled application entry point is missing.' }
+    $prebuilt = Join-Path $stage 'prebuilt'
+    New-Item -ItemType Directory -Path $prebuilt | Out-Null
+    Move-Item -LiteralPath (Join-Path $stage 'dist') -Destination (Join-Path $prebuilt 'dist')
+    if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_REPOSITORY -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $env:GITHUB_SHA -match '^[a-f0-9]{40}$' -and $env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
+      $sourceSha = $env:CHATGPT_CODER_SOURCE_SHA
+      if (-not $sourceSha) { $sourceSha = $env:GITHUB_SHA }
+      if ($sourceSha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid release source commit SHA.' }
+      if ($env:GITHUB_REF_NAME -eq 'main' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      elseif ($env:GITHUB_REF_NAME -eq 'pre-release' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "prerelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      else { $releaseTag = "ci-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = $releaseTag; commit = $sourceSha } | ConvertTo-Json -Compress
+      [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
+    }
+    Write-Host '[3/4] Compiling Windows launcher...'
+    & $compiler /nologo /target:exe ("/out:" + (Join-Path $prebuilt 'chatgpt-coder.exe')) (Join-Path $stage 'scripts\windows-launcher.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
+    Write-Host '[4/4] Creating update ZIP...'
+    New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($output)) | Out-Null
+    $files = @($inputs + 'prebuilt') | ForEach-Object { Join-Path $stage $_ }
+    Compress-Archive -LiteralPath $files -DestinationPath $output -CompressionLevel Optimal
+    $size = (Get-Item -LiteralPath $output).Length
+    if ($size -gt 100MB) { throw "Update exceeds the 100 MB limit: $output" }
+    $sha = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
+    Write-Host "Update ZIP: $output"
+    Write-Host "Version: $($package.version)"
+    Write-Host "SHA-256: $sha"
+    Write-Host 'In the installed harness use /update, select this ZIP, and run /update apply.'
+  } finally { Pop-Location }
+} catch {
+  Write-Host ("Build failed: " + $_.Exception.Message) -ForegroundColor Red
+  if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
+  exit 1
+} finally {
+  if ($stage -and $stageRoot -and (Test-Path -LiteralPath $stage)) {
+    $item = Get-Item -LiteralPath $stage -Force
+    $resolved = (Resolve-Path -LiteralPath $stage).Path
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and [IO.Path]::GetDirectoryName($resolved) -ieq $stageRoot -and $item.Name -match '^chatgpt-coder-build-[0-9a-f]{32}$') {
+      Remove-Item -LiteralPath $resolved -Recurse -Force
+    } else { Write-Warning "Build staging directory was not removed: $stage" }
+  }
+}
+ -and $env:GITHUB_RUN_ATTEMPT -match '^\d+
+    & $npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Application build failed with exit code $LASTEXITCODE." }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'dist\index.js'))) { throw 'Compiled application entry point is missing.' }
+    $prebuilt = Join-Path $stage 'prebuilt'
+    New-Item -ItemType Directory -Path $prebuilt | Out-Null
+    Move-Item -LiteralPath (Join-Path $stage 'dist') -Destination (Join-Path $prebuilt 'dist')
+    if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_REPOSITORY -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $env:GITHUB_SHA -match '^[a-f0-9]{40}$' -and $env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
+      $sourceSha = $env:CHATGPT_CODER_SOURCE_SHA
+      if (-not $sourceSha) { $sourceSha = $env:GITHUB_SHA }
+      if ($sourceSha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid release source commit SHA.' }
+      if ($env:GITHUB_REF_NAME -eq 'main' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      elseif ($env:GITHUB_REF_NAME -eq 'pre-release' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "prerelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      else { $releaseTag = "ci-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = $releaseTag; commit = $sourceSha } | ConvertTo-Json -Compress
+      [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
+    }
+    Write-Host '[3/4] Compiling Windows launcher...'
+    & $compiler /nologo /target:exe ("/out:" + (Join-Path $prebuilt 'chatgpt-coder.exe')) (Join-Path $stage 'scripts\windows-launcher.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
+    Write-Host '[4/4] Creating update ZIP...'
+    New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($output)) | Out-Null
+    $files = @($inputs + 'prebuilt') | ForEach-Object { Join-Path $stage $_ }
+    Compress-Archive -LiteralPath $files -DestinationPath $output -CompressionLevel Optimal
+    $size = (Get-Item -LiteralPath $output).Length
+    if ($size -gt 100MB) { throw "Update exceeds the 100 MB limit: $output" }
+    $sha = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
+    Write-Host "Update ZIP: $output"
+    Write-Host "Version: $($package.version)"
+    Write-Host "SHA-256: $sha"
+    Write-Host 'In the installed harness use /update, select this ZIP, and run /update apply.'
+  } finally { Pop-Location }
+} catch {
+  Write-Host ("Build failed: " + $_.Exception.Message) -ForegroundColor Red
+  if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
+  exit 1
+} finally {
+  if ($stage -and $stageRoot -and (Test-Path -LiteralPath $stage)) {
+    $item = Get-Item -LiteralPath $stage -Force
+    $resolved = (Resolve-Path -LiteralPath $stage).Path
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and [IO.Path]::GetDirectoryName($resolved) -ieq $stageRoot -and $item.Name -match '^chatgpt-coder-build-[0-9a-f]{32}$') {
+      Remove-Item -LiteralPath $resolved -Recurse -Force
+    } else { Write-Warning "Build staging directory was not removed: $stage" }
+  }
+}
+) {
+      $baseVersion = $package.version -replace '\+.*
+    & $npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Application build failed with exit code $LASTEXITCODE." }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'dist\index.js'))) { throw 'Compiled application entry point is missing.' }
+    $prebuilt = Join-Path $stage 'prebuilt'
+    New-Item -ItemType Directory -Path $prebuilt | Out-Null
+    Move-Item -LiteralPath (Join-Path $stage 'dist') -Destination (Join-Path $prebuilt 'dist')
+    if ($env:GITHUB_ACTIONS -eq 'true' -and $env:GITHUB_REPOSITORY -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -and $env:GITHUB_SHA -match '^[a-f0-9]{40}$' -and $env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
+      $sourceSha = $env:CHATGPT_CODER_SOURCE_SHA
+      if (-not $sourceSha) { $sourceSha = $env:GITHUB_SHA }
+      if ($sourceSha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid release source commit SHA.' }
+      if ($env:GITHUB_REF_NAME -eq 'main' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "build-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      elseif ($env:GITHUB_REF_NAME -eq 'pre-release' -and $env:GITHUB_EVENT_NAME -ne 'pull_request') { $releaseTag = "prerelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      else { $releaseTag = "ci-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" }
+      $releaseInfo = @{ repository = $env:GITHUB_REPOSITORY; tag = $releaseTag; commit = $sourceSha } | ConvertTo-Json -Compress
+      [IO.File]::WriteAllText((Join-Path $prebuilt 'release-info.json'), $releaseInfo, (New-Object Text.UTF8Encoding $false))
+    }
+    Write-Host '[3/4] Compiling Windows launcher...'
+    & $compiler /nologo /target:exe ("/out:" + (Join-Path $prebuilt 'chatgpt-coder.exe')) (Join-Path $stage 'scripts\windows-launcher.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
+    Write-Host '[4/4] Creating update ZIP...'
+    New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($output)) | Out-Null
+    $files = @($inputs + 'prebuilt') | ForEach-Object { Join-Path $stage $_ }
+    Compress-Archive -LiteralPath $files -DestinationPath $output -CompressionLevel Optimal
+    $size = (Get-Item -LiteralPath $output).Length
+    if ($size -gt 100MB) { throw "Update exceeds the 100 MB limit: $output" }
+    $sha = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
+    Write-Host "Update ZIP: $output"
+    Write-Host "Version: $($package.version)"
+    Write-Host "SHA-256: $sha"
+    Write-Host 'In the installed harness use /update, select this ZIP, and run /update apply.'
+  } finally { Pop-Location }
+} catch {
+  Write-Host ("Build failed: " + $_.Exception.Message) -ForegroundColor Red
+  if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
+  exit 1
+} finally {
+  if ($stage -and $stageRoot -and (Test-Path -LiteralPath $stage)) {
+    $item = Get-Item -LiteralPath $stage -Force
+    $resolved = (Resolve-Path -LiteralPath $stage).Path
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and [IO.Path]::GetDirectoryName($resolved) -ieq $stageRoot -and $item.Name -match '^chatgpt-coder-build-[0-9a-f]{32}$') {
+      Remove-Item -LiteralPath $resolved -Recurse -Force
+    } else { Write-Warning "Build staging directory was not removed: $stage" }
+  }
+}
+, ''
+      $env:CHATGPT_CODER_BUILD_VERSION = "$baseVersion+build.$($env:GITHUB_RUN_ID).$($env:GITHUB_RUN_ATTEMPT)"
+      & $node -e 'const fs = require("node:fs"); const version = process.env.CHATGPT_CODER_BUILD_VERSION; const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8")); pkg.version = version; lock.version = version; lock.packages[""].version = version; fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n"); fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");'
+      if ($LASTEXITCODE -ne 0) { throw 'Could not stamp the CI build version.' }
+      $package.version = $env:CHATGPT_CODER_BUILD_VERSION
+      Write-Host "CI release version: $($package.version)"
+    }
+
     Write-Host '[2/4] Compiling application...'
     & $npm run build
     if ($LASTEXITCODE -ne 0) { throw "Application build failed with exit code $LASTEXITCODE." }
