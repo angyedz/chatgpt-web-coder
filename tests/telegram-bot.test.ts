@@ -198,6 +198,47 @@ describe("Telegram button interface and complete responses", () => {
     } finally { await bot.stop(); }
   });
 
+  it("lets button navigation inspect and message a particular subagent", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    const cb = (id: string, data: string) => callback(id, data);
+    try {
+      await internals.onMessage(message(1, "/start"), 1);
+      await internals.onCallback(cb("nav", "nav:swarm"), 2);
+      await internals.onCallback(cb("agent", "agent:2"), 3);
+      await internals.onCallback(cb("inspect", "cmd:agent-inspect"), 4);
+      await vi.waitFor(() => expect(callbacks.command).toHaveBeenCalledWith("/swarm inspect 2"));
+      await internals.onCallback(cb("message", "ask:agent-message"), 5);
+      await internals.onMessage(message(6, "Check the test suite"), 6);
+      await vi.waitFor(() => expect(callbacks.command).toHaveBeenCalledWith("/swarm message 2 Check the test suite"));
+    } finally { await bot.stop(); }
+  });
+
+  it("prioritizes /stop over completing an unfinished input prompt", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/start"), 1);
+      await internals.onCallback(callback("goal", "ask:goal"), 2);
+      await internals.onMessage(message(3, "/stop"), 3);
+      expect(callbacks.cancel).toHaveBeenCalledOnce();
+      expect(callbacks.command).not.toHaveBeenCalled();
+    } finally { await bot.stop(); }
+  });
+
+  it("persists final replies even if the turn-end event arrived before the answer", async () => {
+    const { internals, requests, bot, events, message } = setup();
+    try {
+      await internals.onMessage(message(1, "Long answer, please"), 1);
+      events.emit({ type: "turn-start", turnId: "late-turn" });
+      events.emit({ type: "turn-end", turnId: "late-turn", ok: true });
+      const answer = "Z".repeat(10_500);
+      events.emit({ type: "assistant-done", id: "late-answer", channel: "telegram", text: answer });
+      await vi.waitFor(() => {
+        const parts = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup).map((item) => String(item.body.text));
+        expect(parts.join("")).toBe(answer);
+      }, { timeout: 4000 });
+    } finally { await bot.stop(); }
+  });
+
   it("requires an extra confirmation before applying an update", async () => {
     const { internals, callbacks, message, bot } = setup();
     try {
