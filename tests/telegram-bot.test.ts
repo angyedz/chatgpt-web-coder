@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { TelegramBot, type TelegramBotCallbacks } from "../src/telegram/bot.js";
 import { HarnessEvents } from "../src/events.js";
 import type { TelegramSessionChoice } from "../src/telegram/sessions.js";
@@ -16,9 +19,18 @@ const rootSession: TelegramSessionChoice = { id: "11111111-1111-4111-8111-111111
 const betaSession: TelegramSessionChoice = { id: "22222222-2222-4222-8222-222222222222", title: "Beta", workspace: "/projects/beta", updatedAt: 2 };
 
 let originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
+const temporaryHomes: string[] = [];
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  for (const home of temporaryHomes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
 
 function setup() {
+  const home = mkdtempSync(path.join(os.tmpdir(), "telegram-bot-"));
+  temporaryHomes.push(home);
+  vi.stubEnv("CHATGPT_CODER_HOME", home);
   const requests: { method: string; body: Record<string, unknown> }[] = [];
   let id = 99;
   globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
