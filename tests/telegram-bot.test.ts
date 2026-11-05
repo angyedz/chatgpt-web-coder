@@ -200,6 +200,25 @@ describe("Telegram interactive session cards", () => {
     } finally { await bot.stop(); }
   });
 
+  it("keeps background subagent approvals actionable after the Telegram command ends", async () => {
+    const { internals, requests, bot } = setup();
+    try {
+      bot.onExternalSessionEvent({ type: "approval", request: {
+        id: "remote-approval", tool: "exec_command", summary: "Run tests in remote project",
+        args: { cmd: "npm test" }, createdAt: Date.now(),
+      } });
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      const keyboard = requests.at(-1)?.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+      expect(keyboard.inline_keyboard.flat().map((item) => item.callback_data)).toContain("approval:remote-approval:yes");
+      bot.onExternalSessionEvent({ type: "approval-resolved", id: "remote-approval", allowed: false });
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      const next = requests.at(-1)?.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+      expect(next.inline_keyboard.flat().map((item) => item.callback_data)).not.toContain("approval:remote-approval:yes");
+    } finally { await bot.stop(); }
+  });
+
   it("selects a saved chat from an indexed workspace menu", async () => {
     const { internals, requests, message, bot } = setup();
     try {
