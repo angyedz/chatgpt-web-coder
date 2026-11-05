@@ -219,6 +219,17 @@ export class TelegramBot {
     if (commandMatch?.[2] && commandMatch[2].toLowerCase() !== this.botUsername.toLowerCase()) return;
     const command = commandMatch?.[1]?.toLowerCase();
     const argument = commandMatch?.[3]?.trim() ?? "";
+    if (this.awaitingInput) {
+      if (text === "/cancel") {
+        this.awaitingInput = undefined;
+        this.lastNotice = "Ввод отменён.";
+        this.queueDashboard();
+      } else {
+        const pending = this.awaitingInput;
+        await this.acceptPrompt(pending, text, message, updateId);
+      }
+      return;
+    }
     if (command === "btw") {
       void this.runSideQuestion("/btw" + (argument ? " " + argument : ""));
       return;
@@ -237,7 +248,8 @@ export class TelegramBot {
     if (command) {
       switch (command) {
         case "start":
-          this.lastNotice = "Commands work here too: /help, /update, /goal, /swarm, /model, /effort, /session, /new <absolute path>, /folders, /stop. Selected sessions use separate project folders.";
+          this.panel = "home";
+          this.lastNotice = "Добро пожаловать! Управляй harness кнопками ниже или отправь задачу текстом.";
           this.queueDashboard();
           return;
         case "help":
@@ -252,6 +264,8 @@ export class TelegramBot {
           await this.selectSession(argument);
           return;
         case "folders":
+          this.panel = "folders";
+          this.folderPage = 0;
           this.folderMenu = await this.callbacks.folderList();
           this.sessionMenu = [];
           this.lastNotice = this.folderMenu.length ? "Choose a folder below to create a new chat, or use /new <absolute path>." : "No folders found. Use /new <absolute path>.";
