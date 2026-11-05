@@ -197,7 +197,7 @@ export class Orchestrator {
       if (this.config.updates.autoCheck) void this.checkForUpdatesInBackground();
       this.updateCheckTimer = setInterval(() => {
         if (this.config.updates.autoCheck) void this.checkForUpdatesInBackground();
-      }, 6 * 60 * 60 * 1000);
+      }, 5 * 60 * 1000);
       this.updateCheckTimer.unref();
     }
   }
@@ -1302,7 +1302,7 @@ export class Orchestrator {
         "UPDATE SETTINGS", "",
         "Repository: " + this.config.updates.repository,
         "Channel: " + this.config.updates.channel + (this.config.updates.channel === "stable" ? " (main)" : " (pre-release)"),
-        "Automatic checks: " + (this.config.updates.autoCheck ? "on (every 6 hours)" : "off"), "",
+        "Automatic checks: " + (this.config.updates.autoCheck ? "on (every 5 minutes)" : "off"), "",
         "/update settings channel stable",
         "/update settings channel pre-release",
         "/update settings autocheck on|off",
@@ -1434,9 +1434,13 @@ export class Orchestrator {
     try {
       const release = await latestGithubRelease(this.config.updates.repository, this.config.updates.channel);
       const identity = `${this.config.updates.channel}:${release.repository.toLowerCase()}:${release.tag}:${release.sha256}`;
-      if (!this.shuttingDown && this.config.updates.autoCheck && release.repository === this.config.updates.repository && release.comparison === "different" && this.lastNotifiedUpdate !== identity) {
+      const shouldNotify = release.comparison === "different" || release.comparison === "unknown";
+      if (!this.shuttingDown && this.config.updates.autoCheck && release.repository === this.config.updates.repository && shouldNotify && this.lastNotifiedUpdate !== identity) {
         this.lastNotifiedUpdate = identity;
-        this.events.emit({ type: "notice", level: "info", text: `GitHub update available: ${release.name}. Use /update check or /update latest.` });
+        const message = release.comparison === "different"
+          ? `GitHub update available (${this.config.updates.channel}): ${release.name}. Use /update check or /update latest.`
+          : `GitHub release found (${this.config.updates.channel}): ${release.name}. Installed build identity is unknown; use /update check to compare and /update latest to review it.`;
+        this.events.emit({ type: "notice", level: release.comparison === "unknown" ? "warn" : "info", text: message });
       }
     } catch {
       // Startup is usable offline; /update check reports the concrete error on demand.
