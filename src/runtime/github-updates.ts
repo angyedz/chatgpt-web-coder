@@ -68,36 +68,38 @@ interface GithubReleaseData {
   assets?: Array<{ name?: unknown; browser_download_url?: unknown; digest?: unknown; size?: unknown; state?: unknown }>;
 }
 
-/** Prereleases have a dedicated release tag and are only built from the pre-release branch. */
+/** Pick the most recent VERIFIED run, not the release that happened to
+ * finish publishing last. GitHub's /releases/latest can lag behind main when
+ * builds overlap, and it excludes releases marked --latest=false. */
 export function selectReleaseByChannel(records: GithubReleaseData[], channel: UpdateChannel): GithubReleaseData | undefined {
-  if (channel === "stable") return records.find((release) => release.draft === false && release.prerelease === false);
-  return records.find((release) =>
-    release.draft === false && release.prerelease === true &&
-    typeof release.tag_name === "string" && /^prerelease-[0-9]+-[0-9]+$/.test(release.tag_name),
-  );
+  const tagPattern = channel === "stable" ? /^build-([0-9]+)-([0-9]+)$/ : /^prerelease-([0-9]+)-([0-9]+)$/;
+  const eligible = records.filter((release) => release.draft === false && release.prerelease === (channel === "pre-release"));
+  const ranked = eligible.flatMap((release) => {
+    const match = typeof release.tag_name === "string" ? tagPattern.exec(release.tag_name) : null;
+    return match ? [{ release, run: Number(match[1]), attempt: Number(match[2]) }] : [];
+  });
+  ranked.sort((a, b) => b.run - a.run || b.attempt - a.attempt);
+  return ranked[0]?.release ?? (channel === "stable" ? eligible[0] : undefined);
 }
 
 export async function latestGithubRelease(input: string, channel: UpdateChannel = "stable"): Promise<GithubRelease> {
   const repository = validateGithubRepository(input);
   if (channel !== "stable" && channel !== "pre-release") throw new Error("Invalid update channel.");
   const current = await installedReleaseSource();
-  const endpoint = channel === "stable" ? "releases/latest" : "releases?per_page=100";
+  // A published build with --latest=false is still a valid update. Query the
+  // release list for both channels and rank verified build tags ourselves.
+  const endpoint = "releases?per_page=100";
   const response = await fetch("https://api.github.com/repos/" + repository + "/" + endpoint, {
     headers: { Accept: "application/vnd.github+json", "User-Agent": "chatgpt-coder" },
     redirect: "error", signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) throw new Error(response.status === 404 ? "No public " + channel + " release was found for " + repository + "." : "GitHub release request failed (HTTP " + response.status + ").");
   const payload: unknown = JSON.parse((await readLimited(response, MAX_METADATA)).toString("utf8"));
-  let data: GithubReleaseData | undefined;
-  if (channel === "stable") {
-    if (!payload || Array.isArray(payload) || typeof payload !== "object") throw new Error("GitHub returned invalid stable release data.");
-    data = payload as GithubReleaseData;
-    if (data.prerelease === true || data.draft === true) throw new Error("GitHub returned an unexpected prerelease for the stable channel.");
-  } else {
-    if (!Array.isArray(payload)) throw new Error("GitHub returned invalid prerelease data.");
-    data = selectReleaseByChannel(payload, channel);
-    if (!data) throw new Error("No published pre-release build was found. Push a verified build to the pre-release branch first.");
-  }
+  if (!Array.isArray(payload)) throw new Error("GitHub returned invalid release listing.");
+  const data = selectReleaseByChannel(payload, channel);
+  if (!data) throw new Error(channel === "stable"
+    ? "No published stable release was found for " + repository + "."
+    : "No published pre-release build was found. Push a verified build to the pre-release branch first.");
   const tag = data.tag_name;
   if (typeof tag !== "string" || !tag || tag.length > 200 || /[\x00-\x1f]/.test(tag)) throw new Error("GitHub returned an invalid release tag.");
   const asset = Array.isArray(data.assets) ? data.assets.find((item) => item.name === "chatgpt-coder-windows.zip" && item.state === "uploaded") : undefined;
