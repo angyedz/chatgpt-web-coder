@@ -104,6 +104,7 @@ export class TelegramBot {
           { command: "help", description: "Show available commands" },
           { command: "status", description: "Show harness status" },
           { command: "sessions", description: "Select any saved chat" },
+          { command: "switch", description: "Switch to a saved session by ID" },
           { command: "folders", description: "Show saved project folders" },
           { command: "new", description: "Start a chat bound to a project folder" },
           { command: "stop", description: "Stop the selected task" },
@@ -227,6 +228,10 @@ export class TelegramBot {
           return;
         case "sessions":
           await this.loadSessionMenu();
+          return;
+        case "switch":
+          if (!argument) { await this.loadSessionMenu(); return; }
+          await this.selectSession(argument);
           return;
         case "folders":
           this.folderMenu = await this.callbacks.folderList();
