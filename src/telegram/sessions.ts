@@ -28,6 +28,7 @@ interface SessionWorker {
   hasSent: boolean;
   busy: boolean;
   phase: TurnPhase;
+  pickerChoices?: { model: string[]; effort: string[] };
   controller?: AbortController;
   runtime?: Runtime;
 }
@@ -145,6 +146,7 @@ export class TelegramSessionBridge {
         return "Telegram session commands: /status · /sessions · /switch <id> · /new <absolute folder> · /new --create <absolute folder> · /session info|rename <title>|job <id> · /goal <objective>|status|resume|pause|cancel · /attach <path> · /attach folder <path> · /attachments · /detach <id>|all · /agents [path] · /skills · /compact · /swarm start <1-5> <objective>|status|inspect|chat|message|results|history|report|stop. Machine-wide commands (such as /update, /mcp, /approval and /doctor) act on the main harness. Other commands must not silently act on the main project.";
       }
       if (name === "swarm") return this.swarmCommand(argument);
+      if (name === "model" || name === "effort") return this.pickerCommand(name, argument);
       if (name === "status") {
         const session = await this.selectedSavedSession();
         return [
@@ -267,6 +269,40 @@ export class TelegramSessionBridge {
     }
     const response = await this.rootCommand(text);
     return this.isRootSelected ? response : "[Main harness / global command — not the selected project folder]\n\n" + response;
+  }
+
+  private async pickerCommand(kind: "model" | "effort", argument: string): Promise<string> {
+    if (this.busy) throw new Error("Wait until the selected session is idle.");
+    if (!this.selectedId) throw new Error("No session selected.");
+    const choice = (await this.list()).find((item) => item.id === this.selectedId);
+    if (!choice) throw new Error("Selected session not found.");
+    const worker = await this.workerFor(choice);
+    const choices = worker.pickerChoices ??= { model: [], effort: [] };
+    const key = kind === "model" ? "modelLabel" : "effortLabel";
+    if (argument.toLowerCase() === "default") {
+      worker.browser.setPickerPreference(kind, "");
+      worker.store.setBrowserOverrides({ [key]: "" });
+      choices[kind] = [];
+      await worker.store.flush();
+      return `Selected session ${kind}: ChatGPT default (override cleared).`;
+    }
+    if (!argument || argument.toLowerCase() === "list") {
+      const result = await worker.browser.picker(kind);
+      choices[kind] = result.choices;
+      return `Available ${kind}s in selected session:\n` + result.choices.map((label, i) => `${i + 1}. ${label}`).join("\n") + `\nUse /${kind} <number>|<name>|default.`;
+    }
+    const requested = /^\d+$/.test(argument) ? choices[kind][Number(argument) - 1] : argument;
+    if (!requested) throw new Error(`Run /${kind} to see available choices before using a number.`);
+    const selection = await worker.browser.picker(kind, requested);
+    if (!selection.selected) throw new Error("ChatGPT did not confirm the selection.");
+    worker.browser.setPickerPreference(kind, selection.selected);
+    if (kind === "model") {
+      worker.browser.setPickerPreference("effort", "");
+      worker.store.setBrowserOverrides({ modelLabel: selection.selected, effortLabel: "" });
+      choices.effort = [];
+    } else worker.store.setBrowserOverrides({ effortLabel: selection.selected });
+    await worker.store.flush();
+    return `Selected session ${kind}: ${selection.selected}` + (selection.confirmed === undefined ? " (Check the browser: confirmation unavailable.)" : "");
   }
 
   private async swarmCommand(argument: string): Promise<string> {
@@ -411,6 +447,9 @@ export class TelegramSessionBridge {
     await store.loadDetached(choice.id);
     const browser = await this.rootBrowser.openSideChat(events, { attachConnector: true });
     browser.setResponseChannel("telegram");
+    const overrides = store.snapshot.browserOverrides;
+    if (overrides?.modelLabel !== undefined) browser.setPickerPreference("model", overrides.modelLabel);
+    if (overrides?.effortLabel !== undefined) browser.setPickerPreference("effort", overrides.effortLabel);
     const worker: SessionWorker = {
       browser, events, store, hasSent: false, busy: false, phase: "idle",
       unsubscribe: events.on((event) => {
