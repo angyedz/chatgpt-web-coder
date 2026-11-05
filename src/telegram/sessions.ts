@@ -148,7 +148,17 @@ export class TelegramSessionBridge {
     if (name === "btw") return this.sideQuestions.ask(this.isRootSelected ? this.rootSession() : await this.selectedSavedSession(), argument);
     if (!this.isRootSelected) {
       if (name === "help" || name === "?") {
-        return "Telegram session commands: /status · /sessions · /switch <id> · /new <absolute folder> · /new --create <absolute folder> · /session info|rename <title>|job <id> · /goal <objective>|status|resume|pause|cancel · /attach <path> · /attach folder <path> · /attachments · /detach <id>|all · /agents [path] · /skills · /compact · /swarm start <1-5> <objective>|status|inspect|chat|message|results|history|report|stop. Machine-wide commands (such as /update, /mcp, /approval and /doctor) act on the main harness. Other commands must not silently act on the main project.";
+        return [
+          "Telegram commands for selected project:",
+          "Sessions: /sessions · /switch <id> · /new <absolute folder> · /new --create <absolute folder> · /session info|rename|job",
+          "Agent: /goal <objective>|start|resume|status|pause|cancel · /btw <question>|cancel · /compact",
+          "Model: /model [number|name|default] · /effort [number|name|default]",
+          "Workers: /swarm start <1-5> <objective>|status|inspect|chat|message|results|history|report|stop",
+          "Processes: /timer 5m [label] · /timer 30s -- <command> · /timers · /jobs · /job <id>|stop|bg",
+          "Project: /attach <path> · /attach folder <path> · /attachments · /detach <id>|all · /agents [path] · /skills · /context · /status",
+          "Machine-wide (main harness): /update · /mcp · /approval · /tools · /doctor · /connect · /telegram · /login · /tunnel · /searxng · /quit",
+          "A command not supported in the selected session will fail safely instead of running in the wrong project.",
+        ].join("\n");
       }
       if (name === "swarm") return this.swarmCommand(argument);
       if (name === "model" || name === "effort") return this.pickerCommand(name, argument);
