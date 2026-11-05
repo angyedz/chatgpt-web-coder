@@ -429,6 +429,11 @@ export class TelegramSessionBridge {
       await worker.store.flush().catch(() => undefined);
       worker.unsubscribe();
     }));
+    for (const worker of this.workers.values()) {
+      worker.runtime?.timers.dispose();
+      await worker.runtime?.externalMcp.close().catch(() => undefined);
+      await worker.runtime?.exec.dispose().catch(() => undefined);
+    }
     this.workers.clear();
     this.approvals.clear();
   }
@@ -438,6 +443,9 @@ export class TelegramSessionBridge {
     if (existing?.browser.isOpen) return existing;
     if (existing) {
       await existing.browser.closeSideChat().catch(() => undefined);
+      existing.runtime?.timers.dispose();
+      await existing.runtime?.externalMcp.close().catch(() => undefined);
+      await existing.runtime?.exec.dispose().catch(() => undefined);
       existing.unsubscribe();
       this.workers.delete(choice.id);
     }
@@ -462,6 +470,13 @@ export class TelegramSessionBridge {
         this.emit(event);
       }),
     };
+    const runtime = createRuntime({ ...this.config, workspace: choice.workspace, browser: { ...this.config.browser } }, events);
+    runtime.goal.restore(store.snapshot.goal);
+    runtime.plan.update(store.snapshot.plan);
+    runtime.attachments.restore(store.id, store.snapshot.attachments);
+    runtime.context.browser = browser;
+    runtime.context.beforeToolStart = () => browser.snapshotBeforeTool();
+    worker.runtime = runtime;
     this.workers.set(choice.id, worker);
     return worker;
   }
@@ -478,10 +493,9 @@ export class TelegramSessionBridge {
       worker.busy = true;
       const controller = new AbortController();
       worker.controller = controller;
-      const config: HarnessConfig = { ...this.config, workspace: choice.workspace, browser: { ...this.config.browser } };
-      const runtime = createRuntime(config, worker.events, turnId);
+      const runtime = worker.runtime!;
+      runtime.context.turnId = turnId;
       runtime.attachments.restore(worker.store.id, worker.store.snapshot.attachments);
-      worker.runtime = runtime;
       runtime.context.turnSignal = controller.signal;
       runtime.context.browser = worker.browser;
       runtime.context.beforeToolStart = () => worker!.browser.snapshotBeforeTool();
@@ -546,10 +560,11 @@ export class TelegramSessionBridge {
         if (runtime) {
           runtime.approvals.denyAll();
           for (const [approvalId, owner] of this.approvals) if (owner === runtime) this.approvals.delete(approvalId);
-          await runtime.exec.stopTurn(turnId).catch(() => undefined);
-          runtime.timers.dispose();
-          await runtime.externalMcp.close().catch(() => undefined);
-          await runtime.exec.dispose().catch(() => undefined);
+          if (worker.controller?.signal.aborted) await runtime.exec.stopTurn(turnId).catch(() => undefined);
+          worker.store.setRuntime([
+            ...runtime.exec.list().map((job) => ({ id: job.id, kind: "process" as const, status: job.running ? "running" : `exit ${job.exitCode ?? "unknown"}`, description: job.command, output: job.tail })),
+            ...runtime.tasks.list().map((task) => ({ id: task.id, kind: "task" as const, status: task.status, description: task.name })),
+          ], runtime.timers.list());
         }
         worker.controller = undefined;
         worker.runtime = undefined;
