@@ -5,6 +5,7 @@ import type { TelegramSessionChoice } from "../src/telegram/sessions.js";
 
 type BotInternals = {
   running: boolean;
+  commandInFlight: boolean;
   lastEditAt: number;
   onMessage(message: { message_id: number; chat: { id: number; type: string }; from: { id: number }; text: string }, updateId: number): Promise<void>;
   onCallback(callback: { id: string; from: { id: number }; data: string; message: { message_id: number; chat: { id: number; type: string } } }, updateId: number): Promise<void>;
@@ -68,11 +69,13 @@ describe("Telegram command parity", () => {
     const { internals, callbacks, requests, message, bot } = setup();
     try {
       await internals.onMessage(message(1, "/update settings"), 1);
+      await vi.waitFor(() => expect(internals.commandInFlight).toBe(false));
       expect(callbacks.command).toHaveBeenCalledWith("/update settings");
       internals.lastEditAt = 0;
       await internals.flushDashboard();
       expect(String(requests.at(-1)?.body.text)).toContain("Executed: /update settings");
       await internals.onMessage(message(2, "/swarm status"), 2);
+      await vi.waitFor(() => expect(internals.commandInFlight).toBe(false));
       expect(callbacks.command).toHaveBeenCalledWith("/swarm status");
     } finally { await bot.stop(); }
   });
@@ -81,11 +84,26 @@ describe("Telegram command parity", () => {
     const { internals, callbacks, message, bot } = setup();
     try {
       await internals.onMessage(message(1, "/session rename Project Beta"), 1);
+      await vi.waitFor(() => expect(internals.commandInFlight).toBe(false));
       expect(callbacks.command).toHaveBeenCalledWith("/session rename Project Beta");
       await internals.onMessage(message(2, "/new --create /projects/gamma"), 2);
       expect(callbacks.createSession).toHaveBeenCalledWith("--create /projects/gamma");
       await internals.onMessage(message(3, "/session new"), 3);
       expect(callbacks.createSession).toHaveBeenCalledWith(rootSession.workspace);
+    } finally { await bot.stop(); }
+  });
+
+  it("keeps polling responsive during a long command and lets /stop cancel it", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    let resolveCommand!: (value: string) => void;
+    vi.mocked(callbacks.command).mockImplementationOnce(() => new Promise<string>((resolve) => { resolveCommand = resolve; }));
+    try {
+      await internals.onMessage(message(1, "/goal Test long operation"), 1);
+      expect(internals.commandInFlight).toBe(true);
+      await internals.onMessage(message(2, "/stop"), 2);
+      expect(callbacks.cancel).toHaveBeenCalledOnce();
+      resolveCommand("Goal stopped");
+      await vi.waitFor(() => expect(internals.commandInFlight).toBe(false));
     } finally { await bot.stop(); }
   });
 
@@ -102,6 +120,7 @@ describe("Telegram command parity", () => {
     try {
       vi.mocked(callbacks.command).mockRejectedValueOnce(new Error("missing update package"));
       await internals.onMessage(message(1, "/update apply"), 1);
+      await vi.waitFor(() => expect(internals.commandInFlight).toBe(false));
       internals.lastEditAt = 0;
       await internals.flushDashboard();
       expect(String(requests.at(-1)?.body.text)).toContain("Command failed: missing update package");
@@ -111,9 +130,11 @@ describe("Telegram command parity", () => {
 
 describe("Telegram interactive session cards", () => {
   it("creates a new card for every user message rather than editing the previous card", async () => {
-    const { internals, requests, message, bot } = setup();
+    const { internals, requests, message, bot, events } = setup();
     try {
       await internals.onMessage(message(1, "Build something"), 1);
+      events.emit({ type: "turn-start", turnId: "t1" });
+      events.emit({ type: "turn-end", turnId: "t1", ok: true });
       await internals.onMessage(message(2, "Another message"), 2);
       const cards = requests.filter((item) => item.method === "sendMessage");
       expect(cards).toHaveLength(2);
