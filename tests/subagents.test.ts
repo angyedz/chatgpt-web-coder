@@ -83,6 +83,8 @@ describe("SubagentManager explicit launch boundaries", () => {
     const source = path.join(temporaryHome, "project");
     await mkdir(source, { recursive: true });
     await writeFile(path.join(source, "uncommitted.txt"), "local uncommitted content");
+    await writeFile(path.join(source, ".env"), "TOKEN=do-not-copy");
+    await writeFile(path.join(source, ".env.example"), "TOKEN=replace-me");
     vi.stubEnv("CHATGPT_CODER_HOME", path.join(temporaryHome, "harness-home"));
     const events = new HarnessEvents();
     const finished = completion(events);
@@ -91,6 +93,8 @@ describe("SubagentManager explicit launch boundaries", () => {
       agentWorkspace = /^Workspace: (.+)$/m.exec(prompt)?.[1] ?? "";
       expect(agentWorkspace).not.toBe("");
       expect(await readFile(path.join(agentWorkspace, "uncommitted.txt"), "utf8")).toBe("local uncommitted content");
+      await expect(lstat(path.join(agentWorkspace, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(agentWorkspace, ".env.example"), "utf8")).toBe("TOKEN=replace-me");
       await writeFile(path.join(agentWorkspace, "uncommitted.txt"), "edited by subagent");
       await writeFile(path.join(agentWorkspace, "new-file.txt"), "created by subagent");
       return "Updated uncommitted.txt and created new-file.txt. No Git operations were needed.";
