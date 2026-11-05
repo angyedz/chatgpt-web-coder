@@ -186,6 +186,7 @@ export class TelegramSessionBridge {
           return "Selected session goal " + (lower === "pause" ? "paused" : "cancelled") + ".";
         }
         if (this.busy) throw new Error("A task in the selected session is already running.");
+        if (!this.rootBrowser.isOpen) throw new Error("The ChatGPT browser is not connected; the goal was not started.");
         let objective = argument;
         if (lower === "resume" || lower.startsWith("resume ")) {
           if (!old || !["paused", "blocked"].includes(old.status)) throw new Error("No paused or blocked goal to resume.");
@@ -255,6 +256,9 @@ export class TelegramSessionBridge {
   cancel(): void {
     if (this.isRootSelected) { this.cancelRoot(); return; }
     const worker = this.selectedId ? this.workers.get(this.selectedId) : undefined;
+    if (worker?.runtime?.goal.current?.status === "active") {
+      worker.runtime.goal.pauseByUser("Paused from Telegram by the owner.");
+    }
     worker?.controller?.abort();
     if (worker) {
       worker.runtime?.approvals.denyAll();
@@ -362,6 +366,9 @@ export class TelegramSessionBridge {
         ok = true;
         if (!answer.trim()) worker.events.emit({ type: "assistant-done", id: newId("tg-assistant"), text: "(No text response)", channel: "telegram" });
       } catch (error) {
+        if (runtime.goal.current?.status === "active") {
+          runtime.goal.setStatus("blocked", "Telegram turn failed or was interrupted; review it and use /goal resume.");
+        }
         worker.events.emit({ type: "assistant-done", id: newId("tg-error"), text: error instanceof Error ? error.message : String(error), error: "Telegram session turn failed", channel: "telegram" });
       } finally {
         worker.events.emit({ type: "turn-end", turnId, ok });
