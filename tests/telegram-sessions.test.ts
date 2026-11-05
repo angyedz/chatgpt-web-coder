@@ -73,6 +73,8 @@ describe("Telegram saved chat routing", () => {
       expect(storeA.snapshot.title).toBe("New session");
       expect(await bridge.command("/session info")).toContain(storeB.snapshot.workspace);
       expect(await bridge.command("/status")).toContain(storeB.id);
+      expect(await bridge.command("/help")).toContain("/model");
+      expect(await bridge.command("/help")).toContain("/swarm start");
       expect(rootCommand).not.toHaveBeenCalled();
       expect(await bridge.command("/update check")).toContain("[Main harness / global command");
       expect(rootCommand).toHaveBeenCalledWith("/update check");
