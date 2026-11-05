@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectReleaseByChannel } from "../src/runtime/github-updates.js";
+import { selectReleaseByChannel, stableVersion } from "../src/runtime/github-updates.js";
 import { defaultConfig } from "../src/config.js";
 
 describe("two update channels", () => {
@@ -10,6 +10,12 @@ describe("two update channels", () => {
     { tag_name: "prerelease-444-1", draft: true, prerelease: true },
     { tag_name: "prerelease-222-1", draft: false, prerelease: true },
   ];
+  it("compares base versions even when each released ZIP has unique build metadata", () => {
+    expect(stableVersion("0.2.43+build.42059996881.1")).toEqual([0, 2, 43]);
+    expect(stableVersion("0.2.43-rc.1+build.123.2")).toEqual([0, 2, 43]);
+    expect(stableVersion("0.2.42")).toEqual([0, 2, 42]);
+    expect(stableVersion("0.2.43+bad/path")).toBeUndefined();
+  });
   it("defaults the installed harness to stable updates", () => {
     expect(defaultConfig().updates.channel).toBe("stable");
   });
