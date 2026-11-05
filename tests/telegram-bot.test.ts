@@ -34,10 +34,10 @@ function setup() {
     events, workspace: rootSession.workspace,
     selectedSession: () => selected,
     listSessions: async () => [betaSession, rootSession],
-    chooseSession: async (id) => {
+    chooseSession: vi.fn(async (id) => {
       selected = [betaSession, rootSession].find((session) => session.id === id) ?? rootSession;
       return selected;
-    },
+    }),
     createSession: vi.fn(async () => betaSession),
     resetSession: vi.fn(),
     folderList: async () => [rootSession.workspace, betaSession.workspace],
