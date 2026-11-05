@@ -236,7 +236,11 @@ export class TelegramBot {
           return;
         case "session": {
           if (!argument || argument.toLowerCase() === "list") { await this.loadSessionMenu(); return; }
-          if (argument.toLowerCase() === "new") { await this.createSession(this.callbacks.selectedSession().workspace); return; }
+          if (/^new(?:\s|$)/i.test(argument)) {
+            const folder = argument.replace(/^new\s*/i, "").trim() || this.callbacks.selectedSession().workspace;
+            await this.createSession(folder);
+            return;
+          }
           const open = /^open\s+([a-f0-9-]+)$/i.exec(argument);
           if (open) { await this.selectSession(open[1]!); return; }
           if (/^(?:rename|info|job)(?:\s|$)/i.test(argument)) {
@@ -328,19 +332,25 @@ export class TelegramBot {
       if (response.length > 1500 && this.identity) {
         this.answer = response.slice(0, 1100) + "\n\n(Full command output sent below as separate messages.)";
         for (const chunk of escapedCommandChunks(response)) {
-          await this.api("sendMessage", {
-            chat_id: this.identity.ownerChatId,
-            text: "<pre>" + chunk + "</pre>",
-            parse_mode: "HTML",
-            disable_web_page_preview: true,
-          });
+          try {
+            await this.api("sendMessage", {
+              chat_id: this.identity.ownerChatId,
+              text: "<pre>" + chunk + "</pre>",
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+            });
+          } catch (deliveryError) {
+            this.lastNotice = "Command succeeded, but sending the full output failed: " + safeDetail(deliveryError, this.token);
+            break;
+          }
         }
       } else {
         this.answer = response;
       }
       this.phase = "Completed";
       const selected = this.callbacks.selectedSession();
-      if (this.identity?.selectedSessionId !== selected.id) {
+      if (this.identity && this.identity.selectedSessionId !== selected.id) {
+        this.identity.selectedSessionId = selected.id;
         this.callbacks.saveProfile({ selectedSessionId: selected.id });
       }
     } catch (error) {
