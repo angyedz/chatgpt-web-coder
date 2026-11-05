@@ -58,6 +58,7 @@ export class Orchestrator {
   private readonly timerOwners = new Map<string, string>();
   private phaseState: TurnPhase = "idle";
   private pendingUpdate?: PendingUpdate;
+  private readonly telegramPendingAttachments = new Set<string>();
   private mcpRefreshReminder?: McpRefreshReminder;
   private mcpRefreshScan = 0;
   private updateOperation?: Promise<void>;
@@ -277,7 +278,15 @@ export class Orchestrator {
       }
     });
     try {
+      const before = new Set(this.runtime.attachments.current.map((item) => item.id));
       await this.submit(command);
+      if (/^\/attach(?:\s|$)/i.test(command)) {
+        for (const item of this.runtime.attachments.pending) {
+          if (!before.has(item.id)) this.telegramPendingAttachments.add(item.id);
+        }
+      }
+      const present = new Set(this.runtime.attachments.current.map((item) => item.id));
+      for (const id of this.telegramPendingAttachments) if (!present.has(id)) this.telegramPendingAttachments.delete(id);
       return messages.join("\n\n") || "Command finished. Check /status for current harness state.";
     } finally {
       unsubscribe();
@@ -576,7 +585,11 @@ export class Orchestrator {
       } else {
         this.events.emit({ type: "user-message", id: messageId, text, ...(channel ? { channel } : {}) });
       }
-      const pending = channel ? [] : this.runtime.attachments.pending;
+      // Only explicitly /attach-ed items from the authenticated Telegram chat
+      // may travel with Telegram turns. Locally staged files remain private.
+      const pending = channel === "telegram"
+        ? this.runtime.attachments.pending.filter((item) => this.telegramPendingAttachments.has(item.id))
+        : this.runtime.attachments.pending;
       const folders = pending.filter((item) => item.kind === "directory");
       const files = pending.filter((item) => item.kind === "file");
       if (folders.length && !this.config.browser.attachConnector) throw new Error("Attached folders require the local connector. Enable the connector before sending.");
@@ -621,7 +634,11 @@ export class Orchestrator {
         this.runtime.approvals.pendingRequests.length === 0 &&
         !this.runtime.tasks.list().some((task) => task.status === "running");
       const goalRecoveryIsSafe = () => this.runtime.goal.current?.status === "active" && this.runtime.approvals.pendingRequests.length === 0 && !this.runtime.tasks.list().some((task) => task.status === "running");
-      let answer = await this.browser.send(prompt, controller.signal, { turnId, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => this.runtime.attachments.markSent(uploads.map((item) => item.id)) } : {}) });
+      let answer = await this.browser.send(prompt, controller.signal, { turnId, canRecoverStall: goalTurn ? goalRecoveryIsSafe : continuationIsSafe, files: uploads, ...(uploads.length ? { onSubmitted: () => {
+          const ids = uploads.map((item) => item.id);
+          this.runtime.attachments.markSent(ids);
+          for (const id of ids) this.telegramPendingAttachments.delete(id);
+        } } : {}) });
       controller.signal.throwIfAborted();
       this.contextTokens += estimateTokens(answer);
       if (await this.browser.hasInteractiveControls()) {
@@ -951,7 +968,10 @@ export class Orchestrator {
             this.events.emit({ type: "notice", level: "info", text: `Clipboard image attached: ${item.name}. It will be sent with your next message.` });
             return;
           }
-          const selected = !argument || argument === "file" ? await chooseAttachment("file") : argument === "folder" ? await chooseAttachment("directory") : argument;
+          const selected = !argument || argument === "file"
+            ? await chooseAttachment("file")
+            : argument === "folder" ? await chooseAttachment("directory")
+              : /^folder\s+/i.test(argument) ? argument.replace(/^folder\s+/i, "") : argument;
           if (!selected) return;
           const item = await this.runtime.attachments.attach(selected, this.config.workspace);
           this.events.emit({ type: "notice", level: "info", text: `${item.kind === "directory" ? "Folder" : "File"} attached: ${item.name} (${item.id.slice(0, 12)}). ${item.kind === "directory" ? "Available until detached." : "It will be sent with your next message."}` });
