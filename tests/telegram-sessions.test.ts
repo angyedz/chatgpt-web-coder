@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SessionStore } from "../src/runtime/sessions.js";
@@ -47,7 +47,7 @@ describe("Telegram saved chat routing", () => {
       const folder = path.join(home, "new-folder", "nested project");
       await expect(bridge.create(folder)).rejects.toThrow();
       const created = await bridge.create('--create "' + folder + '"');
-      expect(created.workspace).toBe(folder);
+      expect(created.workspace).toBe(await realpath(folder));
       expect(created.id).not.toBe(storeA.id);
       expect(bridge.isRootSelected).toBe(false);
       const another = await bridge.create(folder);
