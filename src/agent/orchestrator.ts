@@ -258,6 +258,32 @@ export class Orchestrator {
     return true;
   }
 
+  /** Run a Telegram slash command through the same dispatcher as the harness terminal.
+   * Return real command events to the private bot instead of faking a success message.
+   */
+  async commandFromTelegram(text: string): Promise<string> {
+    const command = text.trim();
+    if (!command.startsWith("/")) throw new Error("Expected a harness slash command.");
+    if (/^\/(?:connect\s+key|telegram\s+setup)(?:\s|$)/i.test(command)) {
+      throw new Error("Credentials and Telegram pairing must be entered in the local masked harness setup, not in Telegram chat.");
+    }
+    if (/^\/update\s*$/i.test(command) || /^\/attach\s+(?:clipboard|folder)\s*$/i.test(command)) {
+      throw new Error("This command opens a local file picker. Use an explicit path instead, or /update latest.");
+    }
+    const messages: string[] = [];
+    const unsubscribe = this.events.on((event) => {
+      if (event.type === "system-message" || event.type === "notice") {
+        if (messages.length < 60) messages.push(event.text);
+      }
+    });
+    try {
+      await this.submit(command);
+      return messages.join("\n\n") || "Command finished. Check /status for current harness state.";
+    } finally {
+      unsubscribe();
+    }
+  }
+
   async submitTelegramToken(token: string): Promise<void> {
     const value = token.trim();
     if (!value || value.length > 200 || /\s/.test(value)) {
