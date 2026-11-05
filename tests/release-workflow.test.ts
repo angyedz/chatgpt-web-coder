@@ -19,6 +19,17 @@ describe("Windows release policy", () => {
     expect(build.jobs.build.steps.some((step: any) => step.name === "Run tests")).toBe(true);
   });
 
+  it("stamps a unique version into the packaged app on each publishable build", () => {
+    const script = readFileSync(path.join(repo, "scripts", "build-update.ps1"), "utf8");
+    expect(script).toContain("CHATGPT_CODER_BUILD_VERSION");
+    expect(script).toContain("+build.");
+    expect(script).toContain('lock.packages[""].version = version');
+    expect(script).toContain("pkg.version = version");
+    expect(script).toContain("GITHUB_RUN_ID");
+    expect(script).toContain("GITHUB_RUN_ATTEMPT");
+    expect(script).toContain("GITHUB_EVENT_NAME -ne 'pull_request'");
+  });
+
   it("publishes only verified same-repository results from a separate trusted workflow", () => {
     expect(publish.on.workflow_run.workflows).toContain("Windows CI and release");
     expect(publish.on.workflow_run.types).toContain("completed");
