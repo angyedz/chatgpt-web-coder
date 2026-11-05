@@ -1,4 +1,5 @@
 import type { ApprovalRequest } from "../types.js";
+import { createHash } from "node:crypto";
 import type { TelegramSessionChoice } from "./sessions.js";
 
 export type TelegramPanel = "home" | "sessions" | "folders" | "actions" | "models" | "effort" | "swarm" | "agent" | "jobs" | "updates" | "tools" | "settings";
@@ -32,6 +33,13 @@ const page = (number: number, max: number, prefix: string) => [
   button(`${number + 1} / ${max}`, prefix + ":" + number),
   button("▶️", prefix + ":" + Math.min(max - 1, number + 1)),
 ];
+
+/** Use a stable short token when an approval ID cannot fit Telegram's 64-byte callbacks. */
+export function approvalCallbackId(id: string): string {
+  return Buffer.byteLength("approval:" + id + ":yes") <= 64
+    ? id
+    : "h-" + createHash("sha256").update(id).digest("hex").slice(0, 20);
+}
 
 /** Telegram callback_data is limited to 64 bytes. All actions use short keys. */
 export function renderTelegramKeyboard(state: TelegramUiState): TelegramKeyboard {
@@ -146,9 +154,8 @@ export function renderTelegramKeyboard(state: TelegramUiState): TelegramKeyboard
     }
   }
   if (state.pendingApproval) {
-    const id = state.pendingApproval.id;
-    // Each Bot API callback payload must fit 64 bytes.
-    if (Buffer.byteLength("approval:" + id + ":yes") <= 64) rows.push([
+    const id = approvalCallbackId(state.pendingApproval.id);
+    rows.push([
       button("✅ Разрешить", "approval:" + id + ":yes"),
       button("❌ Отклонить", "approval:" + id + ":no"),
     ]);
