@@ -51,6 +51,21 @@ describe("Telegram compact button dashboard", () => {
     expect(controls(input)).toEqual(["input:cancel"]);
   });
 
+  it("paginates large picker lists and provides per-agent controls", () => {
+    const model = state("models");
+    model.modelOptions = Array.from({ length: 21 }, (_, index) => "Model " + index);
+    model.optionPage = 2;
+    expect(controls(model)).toContain("pick:model:20");
+    expect(controls(model)).not.toContain("pick:model:0");
+    expect(controls(model)).toContain("mp:1");
+
+    const swarm = controls(state("swarm"));
+    expect(swarm).toContain("agent:5");
+    const agent = state("agent");
+    agent.selectedAgent = 2;
+    expect(controls(agent)).toEqual(expect.arrayContaining(["cmd:agent-inspect", "cmd:agent-chat", "cmd:agent-open", "ask:agent-message", "cmd:agent-stop"]));
+  });
+
   it("shows real model options and never embeds long labels in callback payloads", () => {
     const model = state("models");
     model.modelOptions = ["Very long model label".repeat(10), "GPT-6"];
