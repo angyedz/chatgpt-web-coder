@@ -98,6 +98,36 @@ describe("Telegram saved chat routing", () => {
     } finally { await bridge.shutdown(); }
   });
 
+  it("selects a model and thinking effort on the selected Telegram tab and persists overrides", async () => {
+    const { alpha, storeA, storeB } = await setup();
+    const side = {
+      isOpen: true, setResponseChannel: vi.fn(), closeSideChat: vi.fn(), stop: vi.fn(),
+      setPickerPreference: vi.fn(), picker: vi.fn(async (kind: string, selected?: string) => ({
+        choices: kind === "model" ? ["Model A", "Model B"] : ["Medium", "High"],
+        selected, confirmed: true,
+      })),
+    };
+    const rootCommand = vi.fn(async (cmd: string) => "ROOT " + cmd);
+    const browser = { isOpen: true, openSideChat: vi.fn(async () => side) } as unknown as ChatGptBrowser;
+    const bridge = new TelegramSessionBridge(
+      defaultConfig(alpha), browser, {} as McpHost,
+      () => storeA.snapshot, () => false, () => "idle",
+      vi.fn(() => true), vi.fn(), vi.fn(), rootCommand,
+    );
+    try {
+      await bridge.choose(storeB.id);
+      expect(await bridge.command("/model")).toContain("Model B");
+      expect(await bridge.command("/model 2")).toContain("Model B");
+      expect(await bridge.command("/effort High")).toContain("High");
+      const saved = (await SessionStore.listAll()).find((item) => item.id === storeB.id);
+      expect(saved?.browserOverrides).toEqual({ modelLabel: "Model B", effortLabel: "High" });
+      expect(side.setPickerPreference).toHaveBeenCalledWith("model", "Model B");
+      expect(side.setPickerPreference).toHaveBeenCalledWith("effort", "High");
+      expect(rootCommand).not.toHaveBeenCalled();
+      expect(storeA.snapshot.browserOverrides).toBeUndefined();
+    } finally { await bridge.shutdown(); }
+  });
+
   it("indexes chats from every project folder and retains the original active session pointers", async () => {
     const { alpha, beta, storeA, storeB, home } = await setup();
     const folderKey = (await import("node:crypto")).createHash("sha256").update(process.platform === "win32" ? path.resolve(alpha).toLowerCase() : path.resolve(alpha)).digest("hex").slice(0, 20);
