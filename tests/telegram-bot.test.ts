@@ -135,6 +135,7 @@ describe("Telegram interactive session cards", () => {
       await internals.onMessage(message(1, "Build something"), 1);
       events.emit({ type: "turn-start", turnId: "t1" });
       events.emit({ type: "turn-end", turnId: "t1", ok: true });
+      internals.lastEditAt = 0;
       await internals.onMessage(message(2, "Another message"), 2);
       const cards = requests.filter((item) => item.method === "sendMessage");
       expect(cards).toHaveLength(2);
