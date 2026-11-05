@@ -294,6 +294,10 @@ export class TelegramBot {
           return;
       }
     }
+    await this.submitTaskMessage(text);
+  }
+
+  private async submitTaskMessage(text: string): Promise<void> {
     if (text.includes(this.token)) {
       this.lastNotice = "For safety, bot tokens are accepted only in the masked setup field inside the harness.";
       this.queueDashboard();
