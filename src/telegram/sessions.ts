@@ -9,6 +9,7 @@ import { ChatGptBrowser } from "../browser/chatgpt.js";
 import { HarnessEvents } from "../events.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
 import { SessionStore, sessionHandoff, type SavedSession } from "../runtime/sessions.js";
+import { captureRemoteRuntime, runRemoteRuntimeCommand } from "./runtime-commands.js";
 import type { HarnessEvent, TurnPhase } from "../types.js";
 import { newId } from "../utils/ids.js";
 import type { McpHost } from "../mcp/server.js";
@@ -147,6 +148,12 @@ export class TelegramSessionBridge {
       }
       if (name === "swarm") return this.swarmCommand(argument);
       if (name === "model" || name === "effort") return this.pickerCommand(name, argument);
+      if (["timer", "timers", "jobs", "job"].includes(name)) {
+        const choice = (await this.list()).find((item) => item.id === this.selectedId);
+        if (!choice) throw new Error("Selected session not found.");
+        const worker = await this.workerFor(choice);
+        return runRemoteRuntimeCommand(name, argument, worker.runtime!, worker.store);
+      }
       if (name === "status") {
         const session = await this.selectedSavedSession();
         return [
@@ -561,10 +568,7 @@ export class TelegramSessionBridge {
           runtime.approvals.denyAll();
           for (const [approvalId, owner] of this.approvals) if (owner === runtime) this.approvals.delete(approvalId);
           if (worker.controller?.signal.aborted) await runtime.exec.stopTurn(turnId).catch(() => undefined);
-          worker.store.setRuntime([
-            ...runtime.exec.list().map((job) => ({ id: job.id, kind: "process" as const, status: job.running ? "running" : `exit ${job.exitCode ?? "unknown"}`, description: job.command, output: job.tail })),
-            ...runtime.tasks.list().map((task) => ({ id: task.id, kind: "task" as const, status: task.status, description: task.name })),
-          ], runtime.timers.list());
+          await captureRemoteRuntime(runtime, worker.store).catch(() => undefined);
         }
         worker.controller = undefined;
         worker.runtime = undefined;
