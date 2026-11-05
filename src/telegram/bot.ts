@@ -875,6 +875,10 @@ export class TelegramBot {
         break;
       case "turn-end":
         if (!this.activeTurnId || event.turnId !== this.activeTurnId) return;
+        if (this.activeTurnIsTelegram && !event.ok) {
+          const detail = this.answer.trim() || "Задача завершилась без финального ответа. Проверь журнал harness.";
+          void this.queueFullMessage("failed-turn:" + event.turnId, "⚠️ Задача остановлена или завершилась ошибкой.\n\n" + detail).catch(() => undefined);
+        }
         if (this.activeTurnIsTelegram) this.requestActive = false;
         this.activeTurnId = undefined;
         this.activeTurnIsTelegram = false;
