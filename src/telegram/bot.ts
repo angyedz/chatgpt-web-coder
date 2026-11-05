@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
 import type { HarnessEvents } from "../events.js";
 import type { ApprovalRequest, HarnessEvent, TurnPhase } from "../types.js";
 import type { TelegramConfig } from "../config.js";
@@ -355,18 +356,14 @@ export class TelegramBot {
     await this.delivery?.enqueue(id, text.replaceAll(this.token, "[redacted]"));
   }
 
-  /** /btw uses a separate reply so it cannot overwrite the active task dashboard. */
+  /** /btw is delivered separately so it cannot overwrite the active task card. */
   private async runSideQuestion(command: string): Promise<void> {
-    if (command.length > MAX_PROMPT) return;
-    if (command.includes(this.token)) return;
+    if (command.length > MAX_PROMPT || command.includes(this.token)) return;
     try {
-      const answer = (await this.callbacks.command(command)).replaceAll(this.token, "[redacted]");
-      if (!this.identity) return;
-      for (const chunk of escapedCommandChunks(answer)) {
-        await this.api("sendMessage", { chat_id: this.identity.ownerChatId, text: "<pre>" + chunk + "</pre>", parse_mode: "HTML", disable_web_page_preview: true });
-      }
+      const answer = await this.callbacks.command(command);
+      await this.queueFullMessage("side:" + randomUUID(), answer);
     } catch (error) {
-      if (this.identity) await this.api("sendMessage", { chat_id: this.identity.ownerChatId, text: "Side question failed: " + escapeLimited(safeDetail(error, this.token), 800) }).catch(() => undefined);
+      await this.queueFullMessage("side-error:" + randomUUID(), "Side question failed: " + safeDetail(error, this.token)).catch(() => undefined);
     }
   }
 
@@ -391,21 +388,9 @@ export class TelegramBot {
     this.queueDashboard();
     try {
       const response = (await this.callbacks.command(text)).replaceAll(this.token, "[redacted]");
-      if (response.length > 1500 && this.identity) {
-        this.answer = response.slice(0, 1100) + "\n\n(Full command output sent below as separate messages.)";
-        for (const chunk of escapedCommandChunks(response)) {
-          try {
-            await this.api("sendMessage", {
-              chat_id: this.identity.ownerChatId,
-              text: "<pre>" + chunk + "</pre>",
-              parse_mode: "HTML",
-              disable_web_page_preview: true,
-            });
-          } catch (deliveryError) {
-            this.lastNotice = "Command succeeded, but sending the full output failed: " + safeDetail(deliveryError, this.token);
-            break;
-          }
-        }
+      if (response.length > 1200 && this.identity) {
+        this.answer = response.slice(0, 900) + "\n\n📨 Полный ответ отправляется отдельными сообщениями.";
+        await this.queueFullMessage("command:" + randomUUID(), response);
       } else {
         this.answer = response;
       }
@@ -591,6 +576,12 @@ export class TelegramBot {
         if (!this.requestActive || event.channel !== "telegram") return;
         this.phase = event.type === "assistant-done" && event.error ? "Error" : "Responding";
         this.answer = event.text;
+        if (event.type === "assistant-done" && event.text.trim()) {
+          void this.queueFullMessage("assistant:" + event.id, event.text).catch((error: unknown) => {
+            this.lastNotice = "Ответ не удалось сохранить для отправки: " + safeDetail(error, this.token);
+            this.queueDashboard();
+          });
+        }
         this.queueDashboard();
         break;
       case "tool-start":
@@ -800,25 +791,6 @@ export class TelegramBot {
 
 class TelegramApiError extends Error {
   constructor(message: string, readonly status: number, readonly retryAfter?: number) { super(message); }
-}
-
-/** HTML-escaped Telegram messages with entity-safe chunk boundaries. */
-function escapedCommandChunks(value: string): string[] {
-  const chunks: string[] = [];
-  let part = "";
-  const entities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
-  for (const ch of value) {
-    const escaped = entities[ch] ?? ch;
-    if (part.length + escaped.length > 3500) {
-      chunks.push(part);
-      part = "";
-      if (chunks.length >= 12) break;
-    }
-    part += escaped;
-  }
-  if (part && chunks.length < 12) chunks.push(part);
-  if (chunks.length === 12 && chunks.join("").length < value.length) chunks.push("(Output truncated at 12 Telegram messages.)");
-  return chunks;
 }
 
 function escapeLimited(value: string, maxOutput: number): string {
