@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { mkdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { HarnessConfig } from "../config.js";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
@@ -50,6 +50,9 @@ export class TelegramSessionBridge {
     private readonly submitRoot: (text: string) => boolean,
     private readonly cancelRoot: () => void,
     private readonly emit: (event: HarnessEvent) => void,
+    private readonly rootCommand: (text: string) => Promise<string> = async () => {
+      throw new Error("The harness command dispatcher is unavailable.");
+    },
   ) {
     this.selectedId = config.telegram.selectedSessionId || undefined;
   }
@@ -104,9 +107,14 @@ export class TelegramSessionBridge {
 
   async create(folder: string): Promise<TelegramSessionChoice> {
     if (this.busy) throw new Error("Stop the current Telegram task before creating a session.");
-    const workspace = path.resolve(folder);
-    const info = await stat(workspace);
-    if (!info.isDirectory()) throw new Error("Choose an existing project directory.");
+    const createFolder = /^--(?:create|mkdir)\s+/i.test(folder);
+    const input = folder.replace(/^--(?:create|mkdir)\s+/i, "").trim().replace(/^(['"])([\s\S]*)\1$/, "$2");
+    if (!input || !path.isAbsolute(input)) throw new Error("Use an absolute project path, for example /new C:\\Projects\\App or /new --create C:\\Projects\\App.");
+    const requested = path.resolve(input);
+    if (createFolder) await mkdir(requested, { recursive: true });
+    const info = await stat(requested);
+    if (!info.isDirectory()) throw new Error("Choose an existing project directory, or use /new --create <absolute path>.");
+    const workspace = await realpath(requested);
     const store = new SessionStore(workspace, (error) => this.emit({ type: "notice", level: "error", text: `Telegram session storage: ${error.message}` }));
     const created = await store.createDetached();
     this.selectedId = created.id;
@@ -116,6 +124,72 @@ export class TelegramSessionBridge {
 
   async folderList(): Promise<string[]> {
     return [...new Set((await this.list()).map((item) => item.workspace))].sort();
+  }
+
+  /** Telegram commands use the same harness dispatcher. Only local session
+   * operations are scoped to the selected detached session; machine-wide
+   * commands (updates, model, swarm, connection settings) remain global.
+   */
+  async command(text: string): Promise<string> {
+    const parsed = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+    if (!parsed) throw new Error("Expected a slash command.");
+    const name = parsed[1]!.toLowerCase();
+    const argument = (parsed[2] ?? "").trim();
+    if (!this.isRootSelected) {
+      if (name === "status") {
+        const session = await this.selectedSavedSession();
+        return [
+          "Selected Telegram session: " + session.title,
+          "ID: " + session.id,
+          "Workspace: " + session.workspace,
+          "Phase: " + this.phase,
+          "Running: " + (this.busy ? "yes" : "no"),
+          "Messages: " + session.messages.length,
+          "Tools: " + session.tools.length,
+          "Goal: " + (session.goal ? session.goal.status + " — " + session.goal.objective : "none"),
+        ].join("\n");
+      }
+      if (name === "session") {
+        const [action = "info", ...parts] = argument.split(/\s+/);
+        const value = parts.join(" ").trim();
+        if (action === "rename") {
+          if (this.busy) throw new Error("Wait until the selected session is idle before renaming it.");
+          const store = await this.selectedStore();
+          store.rename(value);
+          await store.flush();
+          this.selectedChoice = this.describe(store.snapshot);
+          return "Renamed selected session to: " + store.snapshot.title;
+        }
+        if (action === "info") {
+          const session = await this.selectedSavedSession();
+          return "Session " + session.id + "\nTitle: " + session.title + "\nWorkspace: " + session.workspace + "\nMessages: " + session.messages.length + "\nTools: " + session.tools.length;
+        }
+        if (action === "job") {
+          const session = await this.selectedSavedSession();
+          const job = [...(session.previousRuntime?.jobs ?? []), ...session.jobs].find((item) => item.id === value);
+          if (!job) throw new Error("Recorded job not found. Try /session info.");
+          return "Recorded " + job.kind + " " + job.id + " · " + job.status + "\n" + job.description + "\n\n" + (job.output || "(no saved output)");
+        }
+      }
+    }
+    const response = await this.rootCommand(text);
+    return this.isRootSelected ? response : "[Main harness / global command — not the selected project folder]\n\n" + response;
+  }
+
+  private async selectedStore(): Promise<SessionStore> {
+    if (!this.selectedId) throw new Error("No selected Telegram session.");
+    const worker = this.workers.get(this.selectedId);
+    if (worker) return worker.store;
+    const session = await this.list();
+    const choice = session.find((item) => item.id === this.selectedId);
+    if (!choice) throw new Error("Selected session no longer exists.");
+    const store = new SessionStore(choice.workspace, (error) => this.emit({ type: "notice", level: "error", text: error.message }));
+    await store.loadDetached(choice.id);
+    return store;
+  }
+
+  private async selectedSavedSession(): Promise<SavedSession> {
+    return (await this.selectedStore()).snapshot;
   }
 
   submit(text: string): boolean {
