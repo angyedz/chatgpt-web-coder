@@ -10,6 +10,7 @@ import { HarnessEvents } from "../events.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
 import { SessionStore, sessionHandoff, type SavedSession } from "../runtime/sessions.js";
 import { captureRemoteRuntime, runRemoteRuntimeCommand } from "./runtime-commands.js";
+import { TelegramSideQuestions } from "./side-questions.js";
 import type { HarnessEvent, TurnPhase } from "../types.js";
 import { newId } from "../utils/ids.js";
 import type { McpHost } from "../mcp/server.js";
@@ -46,6 +47,7 @@ export class TelegramSessionBridge {
   private readonly approvals = new Map<string, Runtime>();
   private sending = new Set<string>();
   private readonly detachedSwarms = new Map<string, SubagentManager>();
+  private readonly sideQuestions: TelegramSideQuestions;
 
   constructor(
     private readonly config: HarnessConfig,
@@ -62,6 +64,7 @@ export class TelegramSessionBridge {
     },
   ) {
     this.selectedId = config.telegram.selectedSessionId || undefined;
+    this.sideQuestions = new TelegramSideQuestions(rootBrowser);
   }
 
   get selected(): TelegramSessionChoice {
@@ -142,6 +145,7 @@ export class TelegramSessionBridge {
     if (!parsed) throw new Error("Expected a slash command.");
     const name = parsed[1]!.toLowerCase();
     const argument = (parsed[2] ?? "").trim();
+    if (name === "btw") return this.sideQuestions.ask(this.isRootSelected ? this.rootSession() : await this.selectedSavedSession(), argument);
     if (!this.isRootSelected) {
       if (name === "help" || name === "?") {
         return "Telegram session commands: /status · /sessions · /switch <id> · /new <absolute folder> · /new --create <absolute folder> · /session info|rename <title>|job <id> · /goal <objective>|status|resume|pause|cancel · /attach <path> · /attach folder <path> · /attachments · /detach <id>|all · /agents [path] · /skills · /compact · /swarm start <1-5> <objective>|status|inspect|chat|message|results|history|report|stop. Machine-wide commands (such as /update, /mcp, /approval and /doctor) act on the main harness. Other commands must not silently act on the main project.";
@@ -403,6 +407,7 @@ export class TelegramSessionBridge {
   }
 
   cancel(): void {
+    if (this.sideQuestions.cancel(this.isRootSelected ? this.rootSession().id : this.selectedId!)) return;
     if (this.isRootSelected) { this.cancelRoot(); return; }
     const worker = this.selectedId ? this.workers.get(this.selectedId) : undefined;
     if (worker?.runtime?.goal.current?.status === "active") {
@@ -425,6 +430,7 @@ export class TelegramSessionBridge {
   }
 
   async shutdown(): Promise<void> {
+    await this.sideQuestions.shutdown();
     await Promise.allSettled([...this.detachedSwarms.values()].map((manager) => manager.shutdown()));
     this.detachedSwarms.clear();
     for (const worker of this.workers.values()) {
