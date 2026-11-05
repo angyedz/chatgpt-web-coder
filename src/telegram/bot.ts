@@ -427,6 +427,7 @@ export class TelegramBot {
 
   private async loadSessionMenu(): Promise<void> {
     this.sessionMenu = await this.callbacks.listSessions();
+    this.panel = "sessions";
     this.folderMenu = [];
     this.sessionPage = 0;
     this.lastNotice = this.sessionMenu.length ? `Saved chats: ${this.sessionMenu.length}. Select one below; its project folder is preserved.` : "No saved chats found.";
@@ -444,6 +445,7 @@ export class TelegramBot {
       this.toolQueue = [];
       this.sessionMenu = [];
       this.folderMenu = [];
+      this.panel = "home";
     } catch (error) {
       this.lastNotice = `Cannot select chat: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -459,6 +461,7 @@ export class TelegramBot {
       this.answer = "";
       this.sessionMenu = [];
       this.folderMenu = [];
+      this.panel = "home";
     } catch (error) {
       this.lastNotice = `Cannot create chat: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -707,63 +710,53 @@ export class TelegramBot {
   }
 
   private renderDashboard(): string {
+    const selected = this.callbacks.selectedSession();
+    const mode = this.confirmation ? "ПОДТВЕРЖДЕНИЕ" : this.awaitingInput ? "ОЖИДАНИЕ ВВОДА" : panelTitle(this.panel);
     const lines = [
-      "🤖 <b>chatgpt-coder</b>",
-      `📂 <code>${escapeLimited(this.callbacks.selectedSession().workspace, 350)}</code>`,
-      `💬 <b>${escapeLimited(this.callbacks.selectedSession().title, 100)}</b> · <code>${this.callbacks.selectedSession().id.slice(0, 8)}</code>`,
+      "✨ <b>CHATGPT WEB CODER</b>  <code>TELEGRAM</code>",
+      `<b>${escapeLimited(mode, 70)}</b>`,
+      "━━━━━━━━━━━━━━━━━━",
+      `📁 <code>${escapeLimited(selected.workspace, 300)}</code>`,
+      `💬 ${escapeLimited(selected.title, 90)}  ·  <code>${selected.id.slice(0, 8)}</code>`,
       "",
-      `${this.requestActive ? "⏳" : this.phase === "Completed" ? "✅" : this.phase === "Stopped or failed" ? "⚠️" : "🟢"} <b>${escapeLimited(this.requestActive ? this.phase : this.phase, 80)}</b>`,
+      `${this.requestActive ? "🟡" : this.phase === "Completed" ? "🟢" : this.phase === "Error" ? "🔴" : "🔵"} <b>${escapeLimited(this.phase, 90)}</b>`,
     ];
-    if (this.requestPrompt) lines.push("", "<b>Request</b>", `<blockquote>${formatTelegramText(this.requestPrompt.replaceAll(this.token, "[redacted]"), 500)}</blockquote>`);
-    if (this.currentTool) lines.push("", `<b>Tool</b>  ${escapeLimited(this.currentTool, 180)}`);
-    if (this.answer) lines.push("", "<b>Latest response</b>", `<blockquote>${formatTelegramText(this.answer.replaceAll(this.token, "[redacted]"), 1600)}</blockquote>`);
+    if (this.confirmation) lines.push("", "⚠️ <b>Подтверди действие:</b>", escapeLimited(this.confirmation, 380));
+    if (this.awaitingInput) lines.push("", "✍️ Ответь на запрос следующим сообщением или нажми «Отменить ввод».");
+    if (this.requestPrompt) lines.push("", "<b>Запрос</b>", `<blockquote>${formatTelegramText(this.requestPrompt.replaceAll(this.token, "[redacted]"), 350)}</blockquote>`);
+    if (this.currentTool) lines.push("", `⚙️ ${escapeLimited(this.currentTool, 180)}`);
+    if (this.answer) lines.push("", "<b>Последний результат</b>", `<blockquote>${formatTelegramText(this.answer.replaceAll(this.token, "[redacted]"), 900)}</blockquote>`);
+    if (this.delivery?.pendingCount) lines.push("", `📨 В очереди доставки: ${this.delivery.pendingCount} частей. Повторные попытки автоматические.`);
     if (this.pendingApprovals.size) {
-      const approval = this.pendingApprovals.values().next().value as ApprovalRequest | undefined;
-      if (approval) lines.push("", "🔐 <b>Approval needed</b>", `<blockquote>${escapeLimited(approval.summary, 450)}</blockquote>`);
+      const approval = this.pendingApprovals.values().next().value;
+      if (approval) lines.push("", "🔐 <b>Нужно разрешение</b>", `<blockquote>${escapeLimited(approval.summary, 350)}</blockquote>`);
     }
-    if (this.lastNotice) lines.push("", `ℹ️ ${escapeLimited(this.lastNotice, 160)}`);
-    const rendered = lines.join("\n");
-    if (rendered.length <= MAX_MESSAGE) return rendered;
-    const safeFallback = [
-      "🤖 <b>chatgpt-coder</b>",
-      `📂 <code>${escapeLimited(this.callbacks.selectedSession().workspace, 180)}</code>`,
-      "",
+    if (this.lastNotice) lines.push("", `ℹ️ ${escapeLimited(this.lastNotice, 230)}`);
+    const result = lines.join("\n");
+    return result.length <= MAX_MESSAGE ? result : [
+      "✨ <b>CHATGPT WEB CODER</b>",
+      `📁 <code>${escapeLimited(selected.workspace, 150)}</code>`,
       `<b>${escapeLimited(this.phase, 70)}</b>`,
-      ...(this.currentTool ? ["", `<b>Tool</b>  ${escapeLimited(this.currentTool, 140)}`] : []),
-      ...(this.requestPrompt ? ["", "<b>Request</b>", escapeLimited(this.requestPrompt.replaceAll(this.token, "[redacted]"), 500)] : []),
-      ...(this.answer ? ["", "<b>Latest response</b>", escapeLimited(this.answer.replaceAll(this.token, "[redacted]"), 1500)] : []),
-      ...(this.lastNotice ? ["", `ℹ️ ${escapeLimited(this.lastNotice, 160)}`] : []),
-    ].join("\n");
-    return safeFallback;
+      this.lastNotice ? escapeLimited(this.lastNotice, 150) : "",
+    ].filter(Boolean).join("\n");
   }
 
   private renderKeyboard(): TelegramKeyboard {
-    const rows: TelegramKeyboard["inline_keyboard"] = [[
-      { text: "💬 Sessions", callback_data: "sessions" },
-      { text: "📁 Folders", callback_data: "folders" },
-    ], [
-      { text: "↻ Status", callback_data: "status" },
-      { text: "■ Stop", callback_data: "stop" },
-    ]];
-    if (this.sessionMenu.length) {
-      const pages = Math.max(1, Math.ceil(this.sessionMenu.length / 5));
-      this.sessionPage = Math.min(this.sessionPage, pages - 1);
-      for (const item of this.sessionMenu.slice(this.sessionPage * 5, this.sessionPage * 5 + 5)) {
-        rows.push([{ text: `${item.id === this.callbacks.selectedSession().id ? "●" : "○"} ${item.title.slice(0, 24)} · ${item.workspace.split(/[\\/]/).pop()?.slice(0, 18) ?? ""}`, callback_data: `ss:${item.id}` }]);
-      }
-      if (pages > 1) rows.push([
-        { text: "◀", callback_data: `sp:${Math.max(0, this.sessionPage - 1)}` },
-        { text: `${this.sessionPage + 1}/${pages}`, callback_data: `sp:${this.sessionPage}` },
-        { text: "▶", callback_data: `sp:${Math.min(pages - 1, this.sessionPage + 1)}` },
-      ]);
-    }
-    if (this.folderMenu.length) this.folderMenu.slice(0, 12).forEach((folder, index) => rows.push([{ text: `📁 ${folder.split(/[\\/]/).pop()?.slice(0, 32) ?? folder}`, callback_data: `fo:${index}` }]));
-    const approval = this.pendingApprovals.values().next().value as ApprovalRequest | undefined;
-    if (approval) rows.push([
-      { text: "✓ Approve", callback_data: `approval:${approval.id}:yes` },
-      { text: "✕ Deny", callback_data: `approval:${approval.id}:no` },
-    ]);
-    return { inline_keyboard: rows };
+    return renderTelegramKeyboard({
+      panel: this.panel,
+      sessionMenu: this.sessionMenu,
+      sessionPage: this.sessionPage,
+      folderMenu: this.folderMenu,
+      folderPage: this.folderPage,
+      modelOptions: this.modelOptions,
+      effortOptions: this.effortOptions,
+      awaiting: this.awaitingInput,
+      pendingApproval: this.pendingApprovals.values().next().value,
+      confirmation: this.confirmation,
+      selectedId: this.callbacks.selectedSession().id,
+      swarmCount: this.swarmCount,
+      pendingReplies: this.delivery?.pendingCount ?? 0,
+    });
   }
 
   private async api<T = unknown>(method: string, body: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
