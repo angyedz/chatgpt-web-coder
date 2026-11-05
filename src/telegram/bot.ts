@@ -204,6 +204,11 @@ export class TelegramBot {
     const commandMatch = /^\/(\w+)(?:@(\w+))?(?:\s+([\s\S]*))?$/.exec(text);
     if (commandMatch?.[2] && commandMatch[2].toLowerCase() !== this.botUsername.toLowerCase()) return;
     const command = commandMatch?.[1]?.toLowerCase();
+    const argument = commandMatch?.[3]?.trim() ?? "";
+    if (command === "btw") {
+      void this.runSideQuestion("/btw" + (argument ? " " + argument : ""));
+      return;
+    }
     if (this.requestActive || this.commandInFlight) {
       if (command === "stop" || command === "cancel") {
         this.callbacks.cancel();
@@ -215,7 +220,6 @@ export class TelegramBot {
       return;
     }
     await this.startMessageDashboard();
-    const argument = commandMatch?.[3]?.trim() ?? "";
     if (command) {
       switch (command) {
         case "start":
@@ -311,6 +315,21 @@ export class TelegramBot {
       this.lastNotice = "The harness is busy. Use /stop or wait for the current task to finish.";
     }
     this.queueDashboard();
+  }
+
+  /** /btw uses a separate reply so it cannot overwrite the active task dashboard. */
+  private async runSideQuestion(command: string): Promise<void> {
+    if (command.length > MAX_PROMPT) return;
+    if (command.includes(this.token)) return;
+    try {
+      const answer = (await this.callbacks.command(command)).replaceAll(this.token, "[redacted]");
+      if (!this.identity) return;
+      for (const chunk of escapedCommandChunks(answer)) {
+        await this.api("sendMessage", { chat_id: this.identity.ownerChatId, text: "<pre>" + chunk + "</pre>", parse_mode: "HTML", disable_web_page_preview: true });
+      }
+    } catch (error) {
+      if (this.identity) await this.api("sendMessage", { chat_id: this.identity.ownerChatId, text: "Side question failed: " + escapeLimited(safeDetail(error, this.token), 800) }).catch(() => undefined);
+    }
   }
 
   /** Execute the real command rather than sending it as a model prompt. */
