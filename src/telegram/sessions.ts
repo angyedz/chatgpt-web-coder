@@ -217,11 +217,16 @@ export class TelegramSessionBridge {
         if (this.busy) throw new Error("A task in the selected session is already running.");
         if (!this.rootBrowser.isOpen) throw new Error("The ChatGPT browser is not connected; the goal was not started.");
         let objective = argument;
+        let followup = "";
         if (lower === "resume" || lower.startsWith("resume ")) {
+          followup = argument.slice("resume".length).trim();
           if (!old || !["paused", "blocked"].includes(old.status)) throw new Error("No paused or blocked goal to resume.");
           objective = old.objective;
           store.record({ type: "goal", goal: { ...old, status: "active", detail: undefined, updatedAt: Date.now() } });
         } else {
+          if (old && ["active", "paused", "blocked"].includes(old.status)) throw new Error("Finish or cancel the existing goal before starting another.");
+          if (lower === "start") throw new Error("Usage: /goal start <objective>");
+          if (lower.startsWith("start ")) objective = argument.slice(6).trim();
           const now = Date.now();
           store.record({ type: "goal", goal: { objective, status: "active", createdAt: now, updatedAt: now } });
         }
@@ -229,7 +234,7 @@ export class TelegramSessionBridge {
         const id = this.selectedId!;
         this.sending.add(id);
         try {
-          await this.run(id, "Work toward this goal in the selected project folder: " + objective + ". Use the goal tools to mark completion only after verifying it.", true);
+          await this.run(id, "Work toward this goal in the selected project folder: " + objective + ". Use the goal tools to mark completion only after verifying it." + (followup ? "\nAdditional user instructions: " + followup : ""), true);
         } finally {
           this.sending.delete(id);
         }
