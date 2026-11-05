@@ -220,14 +220,21 @@ export class TelegramBot {
     const command = commandMatch?.[1]?.toLowerCase();
     const argument = commandMatch?.[3]?.trim() ?? "";
     if (this.awaitingInput) {
-      if (text === "/cancel") {
+      if (command === "cancel" || text === "/cancel") {
         this.awaitingInput = undefined;
         this.lastNotice = "Ввод отменён.";
         this.queueDashboard();
-      } else {
-        const pending = this.awaitingInput;
-        await this.acceptPrompt(pending, text, message, updateId);
+        return;
       }
+      if (command === "stop") {
+        this.awaitingInput = undefined;
+        this.callbacks.cancel();
+        this.lastNotice = "Ввод отменён, остановка задачи запрошена.";
+        this.queueDashboard();
+        return;
+      }
+      const pending = this.awaitingInput;
+      await this.acceptPrompt(pending, text, message, updateId);
       return;
     }
     if (command === "btw") {
@@ -488,6 +495,7 @@ export class TelegramBot {
 
   /** Events from a non-foreground workspace runner must not pollute the main session. */
   onExternalSessionEvent(event: HarnessEvent): void {
+    this.captureFullAssistantReply(event);
     if ((this.requestActive && this.externalRequest) || event.type === "approval" || event.type === "approval-resolved") this.processAgentEvent(event);
   }
 
@@ -778,7 +786,18 @@ export class TelegramBot {
     this.callbacks.saveProfile({ updateOffset: this.identity.updateOffset });
   }
 
+  private captureFullAssistantReply(event: HarnessEvent): void {
+    // Persist final Telegram-origin answers even if the dashboard has already
+    // marked the turn complete, or a different session was selected meanwhile.
+    if (event.type !== "assistant-done" || event.channel !== "telegram" || !event.text.trim()) return;
+    void this.queueFullMessage("assistant:" + event.id, event.text).catch((error: unknown) => {
+      this.lastNotice = "Не удалось сохранить полный ответ: " + safeDetail(error, this.token);
+      this.queueDashboard();
+    });
+  }
+
   private onAgentEvent(event: HarnessEvent): void {
+    this.captureFullAssistantReply(event);
     if (!this.identity || (this.requestActive && this.externalRequest)) return;
     this.processAgentEvent(event);
   }
@@ -806,12 +825,6 @@ export class TelegramBot {
         if (!this.requestActive || event.channel !== "telegram") return;
         this.phase = event.type === "assistant-done" && event.error ? "Error" : "Responding";
         this.answer = event.text;
-        if (event.type === "assistant-done" && event.text.trim()) {
-          void this.queueFullMessage("assistant:" + event.id, event.text).catch((error: unknown) => {
-            this.lastNotice = "Ответ не удалось сохранить для отправки: " + safeDetail(error, this.token);
-            this.queueDashboard();
-          });
-        }
         this.queueDashboard();
         break;
       case "tool-start":
