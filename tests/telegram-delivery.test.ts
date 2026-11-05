@@ -53,6 +53,23 @@ describe("Telegram reliable delivery", () => {
     await restored.stop();
   });
 
+  it("delivers a reply queued while another message is in flight", async () => {
+    await tempHome();
+    let release!: () => void;
+    const sent: string[] = [];
+    const outbox = new TelegramDelivery("inflight", async (text) => {
+      if (text === "first") await new Promise<void>((resolve) => { release = resolve; });
+      sent.push(text);
+    });
+    try {
+      await outbox.enqueue("one", "first");
+      await vi.waitFor(() => expect(release).toBeDefined());
+      await outbox.enqueue("two", "second");
+      release();
+      await vi.waitFor(() => expect(sent).toEqual(["first", "second"]));
+    } finally { await outbox.stop(); }
+  });
+
   it("never replays an already acknowledged response after restart", async () => {
     await tempHome();
     const first = new TelegramDelivery("789", async () => undefined);
