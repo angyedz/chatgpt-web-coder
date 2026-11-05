@@ -158,6 +158,12 @@ export class TelegramSessionBridge {
         const worker = await this.workerFor(choice);
         return runRemoteRuntimeCommand(name, argument, worker.runtime!, worker.store);
       }
+      if (name === "context") {
+        if (argument) return "[Global context budget setting]\\n" + await this.rootCommand(text);
+        const session = await this.selectedSavedSession();
+        const approximate = Math.ceil((session.contextSummary.length + JSON.stringify(session.messages).length) / 4);
+        return `Selected project: ${session.workspace}\\nApproximate context budget: ${this.config.context.maxTokens} tokens\\nSaved-session text estimate: ${approximate} tokens. The ChatGPT Web UI does not expose an exact token counter.`;
+      }
       if (name === "status") {
         const session = await this.selectedSavedSession();
         return [
