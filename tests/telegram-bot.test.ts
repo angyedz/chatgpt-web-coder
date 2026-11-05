@@ -44,6 +44,7 @@ function setup() {
     getBusy: () => false,
     getPhase: () => "idle",
     submit: vi.fn(() => true),
+    command: vi.fn(async (text: string) => "Executed: " + text),
     cancel: vi.fn(),
     approve: vi.fn(),
     onStatus: vi.fn(),
@@ -61,6 +62,52 @@ function setup() {
   });
   return { events, requests, callbacks, bot, internals, message };
 }
+
+describe("Telegram command parity", () => {
+  it("executes arbitrary harness slash commands and shows their actual output", async () => {
+    const { internals, callbacks, requests, message, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/update settings"), 1);
+      expect(callbacks.command).toHaveBeenCalledWith("/update settings");
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      expect(String(requests.at(-1)?.body.text)).toContain("Executed: /update settings");
+      await internals.onMessage(message(2, "/swarm status"), 2);
+      expect(callbacks.command).toHaveBeenCalledWith("/swarm status");
+    } finally { await bot.stop(); }
+  });
+
+  it("runs /session rename in the harness dispatcher and creates a new session for the chosen folder", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/session rename Project Beta"), 1);
+      expect(callbacks.command).toHaveBeenCalledWith("/session rename Project Beta");
+      await internals.onMessage(message(2, "/new --create /projects/gamma"), 2);
+      expect(callbacks.createSession).toHaveBeenCalledWith("--create /projects/gamma");
+      await internals.onMessage(message(3, "/session new"), 3);
+      expect(callbacks.createSession).toHaveBeenCalledWith(rootSession.workspace);
+    } finally { await bot.stop(); }
+  });
+
+  it("does not dispatch commands addressed to another Telegram bot", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/update@someone_else check"), 1);
+      expect(callbacks.command).not.toHaveBeenCalled();
+    } finally { await bot.stop(); }
+  });
+
+  it("reports real command failures instead of silently claiming success", async () => {
+    const { internals, callbacks, requests, message, bot } = setup();
+    try {
+      vi.mocked(callbacks.command).mockRejectedValueOnce(new Error("missing update package"));
+      await internals.onMessage(message(1, "/update apply"), 1);
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      expect(String(requests.at(-1)?.body.text)).toContain("Command failed: missing update package");
+    } finally { await bot.stop(); }
+  });
+});
 
 describe("Telegram interactive session cards", () => {
   it("creates a new card for every user message rather than editing the previous card", async () => {
