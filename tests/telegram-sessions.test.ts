@@ -34,6 +34,52 @@ async function setup() {
 }
 
 describe("Telegram saved chat routing", () => {
+  it("creates isolated chats in a new absolute project folder without changing the local active pointer", async () => {
+    const { home, alpha, storeA } = await setup();
+    const config = defaultConfig(alpha);
+    const rootCommand = vi.fn(async (command: string) => "Executed " + command);
+    const bridge = new TelegramSessionBridge(
+      config, { isOpen: false } as ChatGptBrowser, {} as McpHost,
+      () => storeA.snapshot, () => false, () => "idle",
+      vi.fn(() => true), vi.fn(), vi.fn(), rootCommand,
+    );
+    try {
+      const folder = path.join(home, "new-folder", "nested project");
+      await expect(bridge.create(folder)).rejects.toThrow();
+      const created = await bridge.create('--create "' + folder + '"');
+      expect(created.workspace).toBe(folder);
+      expect(created.id).not.toBe(storeA.id);
+      expect(bridge.isRootSelected).toBe(false);
+      const another = await bridge.create(folder);
+      expect(another.id).not.toBe(created.id);
+      expect(storeA.id).not.toBe(another.id);
+      expect((await bridge.list()).map((entry) => entry.id)).toEqual(expect.arrayContaining([created.id, another.id, storeA.id]));
+      await expect(bridge.create("relative-folder")).rejects.toThrow("absolute");
+    } finally { await bridge.shutdown(); }
+  });
+
+  it("keeps session commands scoped to the selected Telegram chat and routes global commands to harness", async () => {
+    const { alpha, storeA, storeB } = await setup();
+    const rootCommand = vi.fn(async (command: string) => "Harness replied to " + command);
+    const bridge = new TelegramSessionBridge(
+      defaultConfig(alpha), { isOpen: false } as ChatGptBrowser, {} as McpHost,
+      () => storeA.snapshot, () => false, () => "idle",
+      vi.fn(() => true), vi.fn(), vi.fn(), rootCommand,
+    );
+    try {
+      await bridge.choose(storeB.id);
+      expect(await bridge.command("/session rename Beta renamed")).toContain("Beta renamed");
+      expect((await SessionStore.listAll()).find((s) => s.id === storeB.id)?.title).toBe("Beta renamed");
+      expect(storeA.snapshot.title).toBe("New session");
+      expect(await bridge.command("/session info")).toContain(storeB.snapshot.workspace);
+      expect(await bridge.command("/status")).toContain(storeB.id);
+      expect(rootCommand).not.toHaveBeenCalled();
+      expect(await bridge.command("/update check")).toContain("[Main harness / global command");
+      expect(rootCommand).toHaveBeenCalledWith("/update check");
+    } finally { await bridge.shutdown(); }
+  });
+
+
   it("indexes chats from every project folder and retains the original active session pointers", async () => {
     const { alpha, beta, storeA, storeB, home } = await setup();
     const folderKey = (await import("node:crypto")).createHash("sha256").update(process.platform === "win32" ? path.resolve(alpha).toLowerCase() : path.resolve(alpha)).digest("hex").slice(0, 20);
