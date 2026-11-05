@@ -336,6 +336,7 @@ export class Orchestrator {
       (text) => this.submitFromTelegram(text),
       () => this.cancel(),
       (event) => bot?.onExternalSessionEvent(event),
+      (command) => this.commandFromTelegram(command),
     );
     this.telegramSessions = bridge;
     bot = new TelegramBot(token, identity, pairingWords, {
@@ -351,6 +352,7 @@ export class Orchestrator {
       getBusy: () => bridge.busy,
       getPhase: () => bridge.phase,
       submit: (text) => bridge.submit(text),
+      command: (text) => bridge.command(text),
       cancel: () => bridge.cancel(),
       approve: (id, allowed) => { if (!bridge.approve(id, allowed)) this.approve(id, allowed); },
       onStatus: (state, detail) => this.events.emit({ type: "status", key: "telegram", state: state === "up" ? "up" : state === "starting" ? "starting" : state === "error" ? "error" : "off", detail }),
