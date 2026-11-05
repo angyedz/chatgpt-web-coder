@@ -1,4 +1,5 @@
 import { mkdir, realpath, stat } from "node:fs/promises";
+import { SubagentManager } from "../agent/subagents.js";
 import { AttachmentStore } from "../runtime/attachments.js";
 import { discoverSkills } from "../runtime/skills.js";
 import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
@@ -42,6 +43,7 @@ export class TelegramSessionBridge {
   private readonly workers = new Map<string, SessionWorker>();
   private readonly approvals = new Map<string, Runtime>();
   private sending = new Set<string>();
+  private readonly detachedSwarms = new Map<string, SubagentManager>();
 
   constructor(
     private readonly config: HarnessConfig,
@@ -139,6 +141,10 @@ export class TelegramSessionBridge {
     const name = parsed[1]!.toLowerCase();
     const argument = (parsed[2] ?? "").trim();
     if (!this.isRootSelected) {
+      if (name === "help" || name === "?") {
+        return "Telegram session commands: /status · /sessions · /switch <id> · /new <absolute folder> · /new --create <absolute folder> · /session info|rename <title>|job <id> · /goal <objective>|status|resume|pause|cancel · /attach <path> · /attach folder <path> · /attachments · /detach <id>|all · /agents [path] · /skills · /compact · /swarm start <1-5> <objective>|status|inspect|chat|message|results|history|report|stop. Machine-wide commands (such as /update, /mcp, /approval and /doctor) act on the main harness. Other commands must not silently act on the main project.";
+      }
+      if (name === "swarm") return this.swarmCommand(argument);
       if (name === "status") {
         const session = await this.selectedSavedSession();
         return [
@@ -173,6 +179,7 @@ export class TelegramSessionBridge {
           if (!job) throw new Error("Recorded job not found. Try /session info.");
           return "Recorded " + job.kind + " " + job.id + " · " + job.status + "\n" + job.description + "\n\n" + (job.output || "(no saved output)");
         }
+        throw new Error("Unknown selected session command. Use /session info|rename <title>|job <id>, or /sessions to switch.");
       }
       if (name === "goal") {
         const store = await this.selectedStore();
@@ -255,9 +262,67 @@ export class TelegramSessionBridge {
         if (worker) worker.hasSent = false;
         return "Selected Telegram session will continue in a fresh browser chat with a bounded saved-session handoff. The original local harness chat is unchanged.";
       }
+      const machineWide = new Set(["update", "mcp", "approval", "yolo", "tools", "doctor", "connect", "telegram", "login", "tunnel", "searxng", "quit", "exit"]);
+      if (!machineWide.has(name)) throw new Error(`/${name} is not implemented for the selected Telegram session. It was NOT run in the main project. Use /help to see supported commands.`);
     }
     const response = await this.rootCommand(text);
     return this.isRootSelected ? response : "[Main harness / global command — not the selected project folder]\n\n" + response;
+  }
+
+  private async swarmCommand(argument: string): Promise<string> {
+    const id = this.selectedId;
+    if (!id) throw new Error("Select a Telegram session first.");
+    let manager = this.detachedSwarms.get(id);
+    if (!manager) {
+      const choice = (await this.list()).find((item) => item.id === id);
+      if (!choice) throw new Error("Selected session no longer exists.");
+      const events = new HarnessEvents();
+      events.on((event) => this.emit(event));
+      manager = new SubagentManager({ ...this.config, workspace: choice.workspace, browser: { ...this.config.browser } }, this.rootBrowser, this.mcp, events);
+      this.detachedSwarms.set(id, manager);
+    }
+    const action = argument.trim();
+    if (!action || action.toLowerCase() === "status") {
+      const agents = manager.snapshots;
+      return agents.length ? "Selected project subagents:\n" + agents.map((a) => `#${a.id} · ${a.role} · ${a.status} · ${a.toolCount} tools\n${a.workspace}\n${a.activity ?? "idle"}`).join("\n\n") : "No subagents for the selected project. Use /swarm start <1-5> <objective>.";
+    }
+    if (action.toLowerCase() === "history") {
+      const reports = await manager.history();
+      return reports.length ? reports.map((r) => `${r.id} · ${r.objective.slice(0, 130)} · ${new Date(r.savedAt).toLocaleString()}`).join("\n") : "No saved subagent reports.";
+    }
+    const report = /^report\s+([a-z0-9-]+)$/i.exec(action);
+    if (report) {
+      const item = await manager.report(report[1]!);
+      return `Swarm report ${item.id}\n${item.objective}\n\n` + item.agents.map((a) => `#${a.id} [${a.status}] ${a.role}\n${a.error ?? a.summary ?? a.preview ?? "No result"}`).join("\n\n");
+    }
+    const start = /^start\s+([1-5])\s+([\s\S]+)$/i.exec(action);
+    if (start) {
+      await manager.start(Number(start[1]), start[2]!);
+      return `Started ${start[1]} subagents for selected workspace. Use /swarm status or /swarm results to inspect their progress.`;
+    }
+    const stop = /^stop(?:\s+(all|[1-5]))?$/i.exec(action);
+    if (stop) { manager.stop(stop[1]); return "Stop requested for the selected session's subagents."; }
+    const inspect = /^inspect\s+([1-5])$/i.exec(action);
+    if (inspect) {
+      const a = manager.snapshots.find((item) => item.id === inspect[1]);
+      if (!a) throw new Error("Subagent not found in the selected session.");
+      return `#${a.id} · ${a.role} · ${a.status}\nWorkspace: ${a.workspace}\nTools: ${a.toolCount}\n${a.error ?? a.summary ?? a.preview ?? a.activity ?? "No result yet."}`;
+    }
+    const chat = /^chat\s+([1-5])$/i.exec(action);
+    if (chat) {
+      const a = manager.snapshots.find((item) => item.id === chat[1]);
+      if (!a) throw new Error("Subagent not found in the selected session.");
+      return a.messages?.map((m) => `${m.role}: ${m.text}`).join("\n\n").slice(-16000) || "No recorded messages.";
+    }
+    const message = /^message\s+([1-5])\s+([\s\S]+)$/i.exec(action);
+    if (message) return manager.sendMessage(message[1]!, message[2]!);
+    const open = /^open\s+([1-5])$/i.exec(action);
+    if (open) { await manager.open(open[1]!); return "Opened the requested subagent tab."; }
+    if (action.toLowerCase() === "results") {
+      const agents = manager.snapshots;
+      return agents.length ? agents.map((a) => `#${a.id} · ${a.role} [${a.status}]\nWorkspace: ${a.workspace}\nIntegrated: ${a.changedFiles?.join(", ") || "none"}\nConflicts: ${a.conflicts?.join(", ") || "none"}\n${a.error ?? a.summary ?? a.preview ?? "No result yet."}`).join("\n\n") : "No results for selected session.";
+    }
+    throw new Error("Usage: /swarm start <1-5> <objective>|status|inspect <id>|chat <id>|message <id> <text>|open <id>|results|history|report <id>|stop [id|all]");
   }
 
   private async selectedStore(): Promise<SessionStore> {
@@ -308,6 +373,7 @@ export class TelegramSessionBridge {
   }
 
   approve(id: string, allowed: boolean): boolean {
+    for (const swarm of this.detachedSwarms.values()) if (swarm.approve(id, allowed)) return true;
     const runtime = this.approvals.get(id);
     if (!runtime) return false;
     runtime.approvals.respond(id, allowed);
@@ -316,6 +382,8 @@ export class TelegramSessionBridge {
   }
 
   async shutdown(): Promise<void> {
+    await Promise.allSettled([...this.detachedSwarms.values()].map((manager) => manager.shutdown()));
+    this.detachedSwarms.clear();
     for (const worker of this.workers.values()) {
       worker.controller?.abort();
       worker.runtime?.approvals.denyAll();
