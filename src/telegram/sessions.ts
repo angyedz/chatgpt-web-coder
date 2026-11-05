@@ -407,8 +407,11 @@ export class TelegramSessionBridge {
   }
 
   cancel(): void {
-    if (this.sideQuestions.cancel(this.isRootSelected ? this.rootSession().id : this.selectedId!)) return;
-    if (this.isRootSelected) { this.cancelRoot(); return; }
+    if (this.isRootSelected) {
+      if (!this.rootBusy() && this.sideQuestions.cancel(this.rootSession().id)) return;
+      this.cancelRoot(); return;
+    }
+    if (!this.sending.has(this.selectedId!) && this.sideQuestions.cancel(this.selectedId!)) return;
     const worker = this.selectedId ? this.workers.get(this.selectedId) : undefined;
     if (worker?.runtime?.goal.current?.status === "active") {
       worker.runtime.goal.pauseByUser("Paused from Telegram by the owner.");
