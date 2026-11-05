@@ -80,6 +80,24 @@ describe("Telegram saved chat routing", () => {
   });
 
 
+  it("keeps /swarm scoped to the selected project and rejects unknown local commands rather than mutating root", async () => {
+    const { alpha, storeA, storeB } = await setup();
+    const rootCommand = vi.fn(async (command: string) => "Root: " + command);
+    const bridge = new TelegramSessionBridge(
+      defaultConfig(alpha), { isOpen: false } as ChatGptBrowser, {} as McpHost,
+      () => storeA.snapshot, () => false, () => "idle",
+      vi.fn(() => true), vi.fn(), vi.fn(), rootCommand,
+    );
+    try {
+      await bridge.choose(storeB.id);
+      expect(await bridge.command("/swarm status")).toContain("selected project");
+      await expect(bridge.command("/swarm start 1 Test selected workspace")).rejects.toThrow("primary ChatGPT browser");
+      await expect(bridge.command("/btw Question")).rejects.toThrow("NOT run in the main project");
+      await expect(bridge.command("/session totally-unknown")).rejects.toThrow("Unknown selected session command");
+      expect(rootCommand).not.toHaveBeenCalled();
+    } finally { await bridge.shutdown(); }
+  });
+
   it("indexes chats from every project folder and retains the original active session pointers", async () => {
     const { alpha, beta, storeA, storeB, home } = await setup();
     const folderKey = (await import("node:crypto")).createHash("sha256").update(process.platform === "win32" ? path.resolve(alpha).toLowerCase() : path.resolve(alpha)).digest("hex").slice(0, 20);
