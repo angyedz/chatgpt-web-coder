@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { HarnessEvents } from "../events.js";
 import type { ApprovalRequest, HarnessEvent, TurnPhase } from "../types.js";
 import type { TelegramConfig } from "../config.js";
@@ -81,6 +81,7 @@ export class TelegramBot {
   private currentTool = "";
   private toolQueue: string[] = [];
   private externalRequest = false;
+  private readonly finishedSwarmReports = new Set<string>();
   private delivery?: TelegramDelivery;
   private deliveryInitializing?: Promise<void>;
   private panel: TelegramPanel = "home";
@@ -497,6 +498,15 @@ export class TelegramBot {
 
   /** Events from a non-foreground workspace runner must not pollute the main session. */
   onExternalSessionEvent(event: HarnessEvent): void {
+    if (event.type === "subagents" && event.agents.length && event.agents.every((item) => ["done", "failed", "stopped"].includes(item.status))) {
+      const key = event.agents.map((item) => item.workspace + ":" + item.startedAt).join("|");
+      const digest = createHash("sha256").update(key).digest("hex").slice(0, 24);
+      if (!this.finishedSwarmReports.has(digest)) {
+        this.finishedSwarmReports.add(digest);
+        const report = "🏁 Фоновые субагенты завершили работу.\n\n" + event.agents.map((item) => `#${item.id} ${item.role}: ${item.status}\n${(item.error ?? item.summary ?? "Открой «Субагенты → Результаты» для подробностей.").slice(0, 650)}`).join("\n\n");
+        void this.queueFullMessage("swarm:" + digest, report).catch(() => undefined);
+      }
+    }
     this.captureFullAssistantReply(event);
     if ((this.requestActive && this.externalRequest) || event.type === "approval" || event.type === "approval-resolved") this.processAgentEvent(event);
   }
