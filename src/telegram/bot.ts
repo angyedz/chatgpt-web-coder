@@ -502,6 +502,204 @@ export class TelegramBot {
     await this.updateDashboard(true);
   }
 
+  /** Telegram buttons that require a user-supplied path or instruction. */
+  private async promptFor(kind: TelegramPrompt): Promise<void> {
+    const hints: Record<TelegramPrompt, string> = {
+      task: "Напиши задачу для выбранного проекта.",
+      folder: "Пришли абсолютный путь к существующей папке (например C:\\Projects\\App).",
+      "create-folder": "Пришли абсолютный путь новой папки, которую нужно создать.",
+      goal: "Опиши долгосрочную цель агента.",
+      rename: "Введи новое название текущей сессии.",
+      swarm: `Опиши задачу для ${this.swarmCount} субагентов выбранного проекта.`,
+      command: "Введи slash-команду harness (например /mcp list).",
+      btw: "Задай отдельный вопрос, не прерывая основную задачу.",
+      attach: "Укажи путь к файлу или folder <путь> для каталога.",
+      timer: "Напиши длительность, метку и необязательную команду: 5m проверить или 5m -- npm test.",
+      job: "Введи ID процесса или stop <id>, bg <id>.",
+      switch: "Введи ID сохранённой сессии.",
+    };
+    this.awaitingInput = kind;
+    this.confirmation = undefined;
+    this.lastNotice = hints[kind];
+    this.queueDashboard();
+    if (!this.identity) return;
+    try {
+      await this.api("sendMessage", {
+        chat_id: this.identity.ownerChatId,
+        text: "✍️ " + hints[kind] + "\n\n/cancel — отменить ввод.",
+        reply_markup: { force_reply: true, input_field_placeholder: "Введи ответ…" },
+      });
+    } catch (error) {
+      this.lastNotice = "Не удалось показать поле ввода. Отправь ответ обычным сообщением: " + safeDetail(error, this.token);
+      this.queueDashboard();
+    }
+  }
+
+  private async acceptPrompt(kind: TelegramPrompt, value: string, message: TelegramMessage, updateId: number): Promise<void> {
+    this.awaitingInput = undefined;
+    this.lastNotice = "";
+    this.queueDashboard();
+    try {
+      switch (kind) {
+        case "task":
+          await this.startMessageDashboard();
+          await this.submitTaskMessage(value);
+          return;
+        case "folder":
+          await this.createSession(value);
+          return;
+        case "create-folder":
+          await this.createSession("--create " + value);
+          return;
+        case "rename":
+          void this.runHarnessCommand("/session rename " + value);
+          return;
+        case "switch":
+          await this.selectSession(value);
+          return;
+        case "goal":
+          await this.startMessageDashboard();
+          void this.runHarnessCommand("/goal " + value);
+          return;
+        case "swarm":
+          await this.startMessageDashboard();
+          void this.runHarnessCommand("/swarm start " + this.swarmCount + " " + value);
+          return;
+        case "command":
+          if (!value.startsWith("/")) throw new Error("Команда должна начинаться с /.");
+          await this.onMessage({ ...message, text: value }, updateId);
+          return;
+        case "btw":
+          void this.runSideQuestion("/btw " + value);
+          return;
+        case "attach":
+          void this.runHarnessCommand("/attach " + value);
+          return;
+        case "timer":
+          void this.runHarnessCommand("/timer " + value);
+          return;
+        case "job":
+          void this.runHarnessCommand("/job " + value);
+          return;
+      }
+    } catch (error) {
+      this.lastNotice = "Ошибка ввода: " + safeDetail(error, this.token);
+      this.queueDashboard();
+    }
+  }
+
+  private async loadPickerChoices(kind: "model" | "effort"): Promise<void> {
+    if (this.requestActive || this.commandInFlight || this.callbacks.getBusy()) {
+      this.lastNotice = "Дождись завершения текущей задачи, чтобы загрузить настройки модели.";
+      this.queueDashboard();
+      return;
+    }
+    try {
+      const output = await this.callbacks.command("/" + kind);
+      const choices = output.split(/\\r?\\n/).map((line) => /^\\s*\\d+\\.\\s+(.+)\\s*$/.exec(line)?.[1]?.trim()).filter((item): item is string => Boolean(item));
+      if (kind === "model") this.modelOptions = choices;
+      else this.effortOptions = choices;
+      this.lastNotice = choices.length ? `Доступно вариантов: ${choices.length}. Выбери кнопкой ниже.` : output.slice(0, 300);
+    } catch (error) {
+      this.lastNotice = "Не удалось загрузить варианты: " + safeDetail(error, this.token);
+    }
+    this.queueDashboard();
+  }
+
+  private async handleUiCallback(data: string): Promise<boolean> {
+    if (data === "refresh") { this.lastNotice = "Панель обновлена."; return true; }
+    if (data === "input:cancel") { this.awaitingInput = undefined; this.lastNotice = "Ввод отменён."; return true; }
+    if (data === "confirm:no") { this.confirmation = undefined; this.lastNotice = "Действие отменено."; return true; }
+    if (data === "confirm:yes") {
+      const command = this.confirmation;
+      this.confirmation = undefined;
+      if (!command) return true;
+      if (command === "/stop") this.callbacks.cancel();
+      else void this.runHarnessCommand(command);
+      return true;
+    }
+    if (data.startsWith("nav:")) {
+      const panel = data.slice(4);
+      const valid: TelegramPanel[] = ["home", "sessions", "folders", "actions", "models", "effort", "swarm", "jobs", "updates", "tools", "settings"];
+      if (!valid.includes(panel as TelegramPanel)) return true;
+      this.panel = panel as TelegramPanel;
+      if (panel === "sessions") await this.loadSessionMenu();
+      else if (panel === "folders") {
+        this.folderMenu = await this.callbacks.folderList();
+        this.folderPage = 0;
+      } else if (panel === "models" && !this.modelOptions.length) await this.loadPickerChoices("model");
+      else if (panel === "effort" && !this.effortOptions.length) await this.loadPickerChoices("effort");
+      return true;
+    }
+    if (data.startsWith("ask:")) {
+      const kind = data.slice(4) as TelegramPrompt;
+      const valid: TelegramPrompt[] = ["task", "folder", "create-folder", "goal", "rename", "swarm", "command", "btw", "attach", "timer", "job", "switch"];
+      if (valid.includes(kind)) await this.promptFor(kind);
+      return true;
+    }
+    if (data.startsWith("load:")) {
+      const kind = data.slice(5);
+      if (kind === "model" || kind === "effort") await this.loadPickerChoices(kind);
+      return true;
+    }
+    if (/^swarm:[1-5]$/.test(data)) {
+      this.swarmCount = Number(data.slice(6));
+      await this.promptFor("swarm");
+      return true;
+    }
+    if (data.startsWith("pick:")) {
+      const match = /^pick:(model|effort):(\\d+)$/.exec(data);
+      if (!match) return true;
+      const options = match[1] === "model" ? this.modelOptions : this.effortOptions;
+      const selected = options[Number(match[2])];
+      if (!selected) { this.lastNotice = "Список устарел. Обнови варианты."; return true; }
+      void this.runHarnessCommand("/" + match[1] + " " + selected);
+      return true;
+    }
+    if (data === "new:current") {
+      await this.createSession(this.callbacks.selectedSession().workspace);
+      return true;
+    }
+    if (/^fp:\\d+$/.test(data)) {
+      const last = Math.max(0, Math.ceil(this.folderMenu.length / 5) - 1);
+      this.folderPage = Math.min(last, Number(data.slice(3)));
+      return true;
+    }
+    if (data.startsWith("cmd:")) {
+      const key = data.slice(4);
+      if (key === "stop") {
+        this.callbacks.cancel();
+        this.lastNotice = "Отправлен запрос остановки.";
+        return true;
+      }
+      const commands: Record<string, string> = {
+        status: "/status", "session-info": "/session info",
+        "goal-status": "/goal status", "goal-resume": "/goal resume",
+        "goal-pause": "/goal pause", "goal-cancel": "/goal cancel",
+        compact: "/compact", "swarm-status": "/swarm status",
+        "swarm-results": "/swarm results", "swarm-history": "/swarm history", "swarm-stop": "/swarm stop all",
+        jobs: "/jobs", timers: "/timers", attachments: "/attachments",
+        agents: "/agents", skills: "/skills", "mcp-list": "/mcp list",
+        context: "/context", doctor: "/doctor", tools: "/tools",
+        "update-check": "/update check", "update-latest": "/update latest",
+        "update-apply": "/update apply", "update-rollback": "/update rollback",
+        "channel-stable": "/update settings channel stable",
+        "channel-pre": "/update settings channel pre-release",
+        "update-settings": "/update settings", "update-log": "/update log",
+        "approval-ask": "/approval ask", "approval-never": "/approval never",
+        "model-default": "/model default", "effort-default": "/effort default",
+      };
+      const command = commands[key];
+      if (!command) return true;
+      if (new Set(["update-apply", "update-rollback", "approval-never", "goal-cancel", "swarm-stop", "compact"]).has(key)) {
+        this.confirmation = command;
+        this.lastNotice = "Подтверди действие кнопкой.";
+      } else void this.runHarnessCommand(command);
+      return true;
+    }
+    return false;
+  }
+
   private async onCallback(callback: TelegramCallbackQuery, updateId: number): Promise<void> {
     const chatId = callback.message?.chat.id;
     if (!this.identity || !callback.message || callback.message.chat.type !== "private" || !this.isOwner(callback.from.id, chatId)) {
