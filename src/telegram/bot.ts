@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { HarnessEvents } from "../events.js";
 import type { ApprovalRequest, HarnessEvent, TurnPhase } from "../types.js";
 import type { TelegramConfig } from "../config.js";
+import { APP_VERSION } from "../runtime/version.js";
 import type { TelegramSessionChoice } from "./sessions.js";
 import { TelegramDelivery } from "./delivery.js";
 import { approvalCallbackId, panelTitle, renderTelegramKeyboard, type TelegramPanel, type TelegramPrompt } from "./ui.js";
@@ -988,7 +989,7 @@ export class TelegramBot {
     const selected = this.callbacks.selectedSession();
     const mode = this.confirmation ? "ПОДТВЕРЖДЕНИЕ" : this.awaitingInput ? "ОЖИДАНИЕ ВВОДА" : panelTitle(this.panel);
     const lines = [
-      "✨ <b>CHATGPT WEB CODER</b>  <code>TELEGRAM</code>",
+      `✨ <b>CHATGPT WEB CODER</b>  <code>v${escapeLimited(APP_VERSION, 70)}</code>`,
       `<b>${escapeLimited(mode, 70)}</b>`,
       "━━━━━━━━━━━━━━━━━━",
       `📁 <code>${escapeLimited(selected.workspace, 300)}</code>`,
@@ -1009,7 +1010,7 @@ export class TelegramBot {
     if (this.lastNotice) lines.push("", `ℹ️ ${escapeLimited(this.lastNotice, 230)}`);
     const result = lines.join("\n");
     return result.length <= MAX_MESSAGE ? result : [
-      "✨ <b>CHATGPT WEB CODER</b>",
+      `✨ <b>CHATGPT WEB CODER</b>  <code>v${escapeLimited(APP_VERSION, 70)}</code>`,
       `📁 <code>${escapeLimited(selected.workspace, 150)}</code>`,
       `<b>${escapeLimited(this.phase, 70)}</b>`,
       this.lastNotice ? escapeLimited(this.lastNotice, 150) : "",
