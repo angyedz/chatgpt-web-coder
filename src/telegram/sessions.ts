@@ -1,4 +1,7 @@
 import { mkdir, realpath, stat } from "node:fs/promises";
+import { AttachmentStore } from "../runtime/attachments.js";
+import { discoverSkills } from "../runtime/skills.js";
+import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
 import path from "node:path";
 import type { HarnessConfig } from "../config.js";
 import { ChatGptBrowser } from "../browser/chatgpt.js";
@@ -207,12 +210,50 @@ export class TelegramSessionBridge {
         const final = (await this.selectedSavedSession()).goal;
         return final ? "Goal: " + final.status + "\n" + final.objective + (final.detail ? "\n" + final.detail : "") : "Goal turn finished.";
       }
-      if (name === "attachments") {
-        const items = (await this.selectedSavedSession()).attachments ?? [];
-        return items.length ? "Selected session attachments:\n" + items.map((item) => item.id + " · " + item.name).join("\n") : "No attachments in this Telegram session.";
+      if (name === "attach" || name === "attachments" || name === "detach") {
+        if (this.busy) throw new Error("The selected session must be idle before changing attachments.");
+        const store = await this.selectedStore();
+        const events = new HarnessEvents();
+        events.on((event) => { if (event.type === "attachments") store.record(event); });
+        const attachments = new AttachmentStore(events);
+        attachments.restore(store.id, store.snapshot.attachments);
+        if (name === "attach") {
+          if (!argument || argument === "clipboard" || argument === "folder") {
+            throw new Error("Telegram has no local file picker. Use /attach <path> or /attach folder <path>.");
+          }
+          const target = argument.startsWith("folder ") ? argument.slice("folder ".length) : argument;
+          const item = await attachments.attach(target, store.snapshot.workspace);
+          await store.flush();
+          return "Attached to selected session: " + item.id + " · " + item.name + " (" + item.kind + ").";
+        }
+        if (name === "detach") {
+          if (argument === "all") attachments.clearPending();
+          else if (!argument || !attachments.remove(argument)) throw new Error("Usage: /detach <id>|all");
+          await store.flush();
+          return "Selected session attachment removed.";
+        }
+        const items = attachments.current;
+        return items.length ? "Selected session attachments:\n" + items.map((item) => item.id + " · " + item.kind + " · " + item.name + (item.pending ? " · pending" : "")).join("\n") : "No attachments in this Telegram session.";
       }
-      if (name === "attach" || name === "detach" || name === "compact") {
-        throw new Error("/" + name + " is session-scoped and cannot be run against the foreground harness while a different Telegram session is selected. Select the local session first.");
+      if (name === "agents") {
+        const session = await this.selectedSavedSession();
+        const files = await projectInstructions(session.workspace, argument || ".");
+        return files.length ? formatInstructions(files) : "No applicable AGENTS.md for this selected workspace.";
+      }
+      if (name === "skills") {
+        const session = await this.selectedSavedSession();
+        const skills = await discoverSkills({ ...this.config, workspace: session.workspace });
+        return skills.length ? skills.map((item) => item.name + " · " + item.description).join("\n") : "No skills in selected workspace.";
+      }
+      if (name === "compact") {
+        if (this.busy) throw new Error("Wait until the selected session is idle to compact its context.");
+        const store = await this.selectedStore();
+        store.setSummary(sessionHandoff(store.snapshot));
+        await store.flush();
+        const worker = this.selectedId ? this.workers.get(this.selectedId) : undefined;
+        if (worker?.browser.isOpen) await worker.browser.newChat();
+        if (worker) worker.hasSent = false;
+        return "Selected Telegram session will continue in a fresh browser chat with a bounded saved-session handoff. The original local harness chat is unchanged.";
       }
     }
     const response = await this.rootCommand(text);
@@ -332,6 +373,7 @@ export class TelegramSessionBridge {
       worker.controller = controller;
       const config: HarnessConfig = { ...this.config, workspace: choice.workspace, browser: { ...this.config.browser } };
       const runtime = createRuntime(config, worker.events, turnId);
+      runtime.attachments.restore(worker.store.id, worker.store.snapshot.attachments);
       worker.runtime = runtime;
       runtime.context.turnSignal = controller.signal;
       runtime.context.browser = worker.browser;
@@ -346,8 +388,24 @@ export class TelegramSessionBridge {
       worker.events.emit({ type: "user-message", id: newId("telegram-user"), text: message, channel: "telegram" });
       let ok = false;
       try {
-        const prompt = worker.hasSent ? message : `${history}\n\nNEW USER MESSAGE FROM TELEGRAM:\n${message}`;
-        const answer = await worker.browser.send(prompt, controller.signal, { turnId, continueChat: worker.hasSent });
+        const pending = runtime.attachments.pending;
+        const uploads: { id: string; name: string; path: string }[] = [];
+        let attachmentBytes = 0;
+        for (const item of pending.filter((attachment) => attachment.kind === "file")) {
+          const resolved = await runtime.attachments.resolve(item.id);
+          const info = await stat(resolved.file);
+          if (!info.isFile()) throw new Error("Attached file is no longer a regular file: " + item.name);
+          attachmentBytes += info.size;
+          uploads.push({ id: item.id, name: item.name, path: resolved.file });
+        }
+        if (uploads.length > 10 || attachmentBytes > 50 * 1024 * 1024) throw new Error("At most 10 files and 50 MB can be sent in one Telegram session turn.");
+        const attachmentInfo = pending.map((item) => item.kind + ": " + item.name + " (attachment_id " + item.id + ")").join("\n");
+        const originalPrompt = worker.hasSent ? message : `${history}\n\nNEW USER MESSAGE FROM TELEGRAM:\n${message}`;
+        const prompt = attachmentInfo ? originalPrompt + "\n\nSELECTED SESSION ATTACHMENTS\n" + attachmentInfo : originalPrompt;
+        const answer = await worker.browser.send(prompt, controller.signal, {
+          turnId, continueChat: worker.hasSent, files: uploads,
+          ...(uploads.length ? { onSubmitted: () => runtime.attachments.markSent(uploads.map((file) => file.id)) } : {}),
+        });
         worker.hasSent = true;
         controller.signal.throwIfAborted();
         if (goalMode) {
