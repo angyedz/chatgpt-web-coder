@@ -56,6 +56,7 @@ export class TelegramBot {
   private polling?: Promise<void>;
   private running = false;
   private requestActive = false;
+  private commandInFlight = false;
   private requestPrompt = "";
   private activeTurnId?: string;
   private activeTurnIsTelegram = false;
@@ -201,8 +202,18 @@ export class TelegramBot {
     if (!text) return;
     const commandMatch = /^\/(\w+)(?:@(\w+))?(?:\s+([\s\S]*))?$/.exec(text);
     if (commandMatch?.[2] && commandMatch[2].toLowerCase() !== this.botUsername.toLowerCase()) return;
-    await this.startMessageDashboard();
     const command = commandMatch?.[1]?.toLowerCase();
+    if (this.requestActive || this.commandInFlight) {
+      if (command === "stop" || command === "cancel") {
+        this.callbacks.cancel();
+        this.lastNotice = "Stop requested. Installation and some system commands cannot be interrupted.";
+      } else {
+        this.lastNotice = "The current Telegram request is still running. Use /stop before switching sessions or submitting another command.";
+      }
+      this.queueDashboard();
+      return;
+    }
+    await this.startMessageDashboard();
     const argument = commandMatch?.[3]?.trim() ?? "";
     if (command) {
       switch (command) {
@@ -212,7 +223,7 @@ export class TelegramBot {
           return;
         case "help":
         case "status":
-          await this.runHarnessCommand("/" + command + (argument ? " " + argument : ""));
+          void this.runHarnessCommand("/" + command + (argument ? " " + argument : ""));
           return;
         case "sessions":
           await this.loadSessionMenu();
@@ -229,7 +240,7 @@ export class TelegramBot {
           const open = /^open\s+([a-f0-9-]+)$/i.exec(argument);
           if (open) { await this.selectSession(open[1]!); return; }
           if (/^(?:rename|info|job)(?:\s|$)/i.test(argument)) {
-            await this.runHarnessCommand("/session " + argument);
+            void this.runHarnessCommand("/session " + argument);
             return;
           }
           await this.selectSession(argument);
@@ -252,7 +263,7 @@ export class TelegramBot {
           this.queueDashboard();
           return;
         default:
-          await this.runHarnessCommand("/" + command + (argument ? " " + argument : ""));
+          void this.runHarnessCommand("/" + command + (argument ? " " + argument : ""));
           return;
       }
     }
@@ -306,6 +317,7 @@ export class TelegramBot {
       return;
     }
     this.requestActive = true;
+    this.commandInFlight = true;
     this.externalRequest = !this.callbacks.isRootSelected();
     this.requestPrompt = text;
     this.answer = "";
@@ -336,6 +348,7 @@ export class TelegramBot {
       this.phase = "Error";
     } finally {
       this.requestActive = false;
+      this.commandInFlight = false;
       this.queueDashboard();
     }
   }
