@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SessionStore } from "../src/runtime/sessions.js";
@@ -96,6 +96,42 @@ describe("Telegram saved chat routing", () => {
     const stillActive = await readFile(path.join(home, "home", "sessions", folderKey, "active"), "utf8");
     expect(stillActive).toBe(originalActive);
     expect((await SessionStore.listAll()).some((item) => item.id === detached.id)).toBe(true);
+  });
+
+  it("attaches files to the chosen project and sends them in the remote browser tab", async () => {
+    const { alpha, beta, storeA, storeB } = await setup();
+    const filename = path.join(beta, "data.txt");
+    await writeFile(filename, "file content");
+    let sideEvents!: HarnessEvents;
+    const send = vi.fn(async (_message: string, _signal: AbortSignal, options: { files?: Array<{ path: string }>; onSubmitted?: () => void }) => {
+      expect(options.files?.[0]?.path).toBe(await realpath(filename));
+      options.onSubmitted?.();
+      sideEvents.emit({ type: "assistant-done", id: "attachment-answer", text: "File received", channel: "telegram" });
+      return "File received";
+    });
+    const browser = {
+      isOpen: true,
+      openSideChat: vi.fn(async (events: HarnessEvents) => {
+        sideEvents = events;
+        return { isOpen: true, send, setResponseChannel: vi.fn(), snapshotBeforeTool: vi.fn(), closeSideChat: vi.fn(), stop: vi.fn() };
+      }),
+    } as unknown as ChatGptBrowser;
+    const mcp = { registerTurnContext: vi.fn(), unregisterTurnContext: vi.fn() } as unknown as McpHost;
+    const bridge = new TelegramSessionBridge(
+      defaultConfig(alpha), browser, mcp, () => storeA.snapshot,
+      () => false, () => "idle", vi.fn(() => true), vi.fn(), vi.fn(),
+    );
+    try {
+      await bridge.choose(storeB.id);
+      expect(await bridge.command('/attach "' + filename + '"')).toContain("data.txt");
+      expect(await bridge.command("/attachments")).toContain("pending");
+      expect(bridge.submit("Read the attachment")).toBe(true);
+      await vi.waitFor(() => expect(bridge.busy).toBe(false));
+      expect(send).toHaveBeenCalledTimes(1);
+      const remote = (await SessionStore.listAll()).find((item) => item.id === storeB.id);
+      expect(remote?.attachments?.[0]?.pending).toBe(false);
+      expect(storeA.snapshot.attachments).toBeUndefined();
+    } finally { await bridge.shutdown(); }
   });
 
   it("routes the selected foreign session to a background tab without changing the root chat", async () => {
