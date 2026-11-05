@@ -226,14 +226,14 @@ export class TelegramBot {
     if (this.awaitingInput) {
       if (command === "cancel" || text === "/cancel") {
         this.awaitingInput = undefined;
-        this.lastNotice = "Ввод отменён.";
+        this.lastNotice = "Input cancelled.";
         this.queueDashboard();
         return;
       }
       if (command === "stop") {
         this.awaitingInput = undefined;
         this.callbacks.cancel();
-        this.lastNotice = "Ввод отменён, остановка задачи запрошена.";
+        this.lastNotice = "Input cancelled. Stop requested.";
         this.queueDashboard();
         return;
       }
@@ -260,7 +260,7 @@ export class TelegramBot {
       switch (command) {
         case "start":
           this.panel = "home";
-          this.lastNotice = "Добро пожаловать! Управляй harness кнопками ниже или отправь задачу текстом.";
+          this.lastNotice = "Welcome! Use the buttons below to control the harness, or send a task as a message.";
           this.queueDashboard();
           return;
         case "help":
@@ -418,7 +418,7 @@ export class TelegramBot {
     try {
       const response = (await this.callbacks.command(text)).replaceAll(this.token, "[redacted]");
       if (response.length > 1200 && this.identity) {
-        this.answer = response.slice(0, 900) + "\n\n📨 Полный ответ отправляется отдельными сообщениями.";
+      this.answer = response.slice(0, 900) + "\n\n📨 The full response will be sent in separate messages.";
         await this.queueFullMessage("command:" + randomUUID(), response);
       } else {
         this.answer = response;
@@ -504,7 +504,7 @@ export class TelegramBot {
       const digest = createHash("sha256").update(key).digest("hex").slice(0, 24);
       if (!this.finishedSwarmReports.has(digest)) {
         this.finishedSwarmReports.add(digest);
-        const report = "🏁 Фоновые субагенты завершили работу.\n\n" + event.agents.map((item) => `#${item.id} ${item.role}: ${item.status}\n${(item.error ?? item.summary ?? "Открой «Субагенты → Результаты» для подробностей.").slice(0, 650)}`).join("\n\n");
+        const report = "🏁 Background subagents have finished.\n\n" + event.agents.map((item) => `#${item.id} ${item.role}: ${item.status}\n${(item.error ?? item.summary ?? "Open Subagents → Results for details.").slice(0, 650)}`).join("\n\n");
         void this.queueFullMessage("swarm:" + digest, report).catch(() => undefined);
       }
     }
@@ -540,19 +540,19 @@ export class TelegramBot {
   /** Telegram buttons that require a user-supplied path or instruction. */
   private async promptFor(kind: TelegramPrompt): Promise<void> {
     const hints: Record<TelegramPrompt, string> = {
-      task: "Напиши задачу для выбранного проекта.",
-      folder: "Пришли абсолютный путь к существующей папке (например C:\\Projects\\App).",
-      "create-folder": "Пришли абсолютный путь новой папки, которую нужно создать.",
-      goal: "Опиши долгосрочную цель агента.",
-      rename: "Введи новое название текущей сессии.",
-      swarm: `Опиши задачу для ${this.swarmCount} субагентов выбранного проекта.`,
-      command: "Введи slash-команду harness (например /mcp list).",
-      btw: "Задай отдельный вопрос, не прерывая основную задачу.",
-      attach: "Укажи путь к файлу или folder <путь> для каталога.",
-      timer: "Напиши длительность, метку и необязательную команду: 5m проверить или 5m -- npm test.",
-      job: "Введи ID процесса или stop <id>, bg <id>.",
-      "agent-message": `Напиши сообщение для субагента #${this.selectedAgent}.`,
-      switch: "Введи ID сохранённой сессии.",
+      task: "Describe the task for the selected project.",
+      folder: "Send the absolute path to an existing folder (for example, C:\\Projects\\App).",
+      "create-folder": "Send the absolute path of the new folder to create.",
+      goal: "Describe the agent's long-term goal.",
+      rename: "Enter a new name for the current session.",
+      swarm: `Describe the task for ${this.swarmCount} subagents working on the selected project.`,
+      command: "Enter a harness slash command (for example, /mcp list).",
+      btw: "Ask a separate question without interrupting the current task.",
+      attach: "Enter a file path, or use folder <path> for a directory.",
+      timer: "Enter a duration, label, and optional command: 5m check or 5m -- npm test.",
+      job: "Enter a job ID, or use stop <id> or bg <id>.",
+      "agent-message": `Enter a message for subagent #${this.selectedAgent}.`,
+      switch: "Enter the ID of a saved session.",
     };
     this.awaitingInput = kind;
     this.confirmation = undefined;
@@ -562,11 +562,11 @@ export class TelegramBot {
     try {
       await this.api("sendMessage", {
         chat_id: this.identity.ownerChatId,
-        text: "✍️ " + hints[kind] + "\n\n/cancel — отменить ввод.",
-        reply_markup: { force_reply: true, input_field_placeholder: "Введи ответ…" },
+        text: "✍️ " + hints[kind] + "\n\n/cancel — cancel input.",
+        reply_markup: { force_reply: true, input_field_placeholder: "Enter your reply…" },
       });
     } catch (error) {
-      this.lastNotice = "Не удалось показать поле ввода. Отправь ответ обычным сообщением: " + safeDetail(error, this.token);
+      this.lastNotice = "Could not show the reply prompt. Send your answer as a regular message: " + safeDetail(error, this.token);
       this.queueDashboard();
     }
   }
@@ -602,7 +602,7 @@ export class TelegramBot {
           void this.runHarnessCommand("/swarm start " + this.swarmCount + " " + value);
           return;
         case "command":
-          if (!value.startsWith("/")) throw new Error("Команда должна начинаться с /.");
+          if (!value.startsWith("/")) throw new Error("Commands must start with /.");
           await this.onMessage({ ...message, text: value }, updateId);
           return;
         case "btw":
@@ -622,14 +622,14 @@ export class TelegramBot {
           return;
       }
     } catch (error) {
-      this.lastNotice = "Ошибка ввода: " + safeDetail(error, this.token);
+      this.lastNotice = "Input error: " + safeDetail(error, this.token);
       this.queueDashboard();
     }
   }
 
   private async loadPickerChoices(kind: "model" | "effort"): Promise<void> {
     if (this.requestActive || this.commandInFlight || this.callbacks.getBusy()) {
-      this.lastNotice = "Дождись завершения текущей задачи, чтобы загрузить настройки модели.";
+      this.lastNotice = "Wait for the current task to finish before loading model options.";
       this.queueDashboard();
       return;
     }
@@ -638,17 +638,17 @@ export class TelegramBot {
       const choices = output.split(/\r?\n/).map((line) => /^\s*\d+\.\s+(.+)\s*$/.exec(line)?.[1]?.trim()).filter((item): item is string => Boolean(item));
       if (kind === "model") this.modelOptions = choices;
       else this.effortOptions = choices;
-      this.lastNotice = choices.length ? `Доступно вариантов: ${choices.length}. Выбери кнопкой ниже.` : output.slice(0, 300);
+      this.lastNotice = choices.length ? `${choices.length} options available. Choose one below.` : output.slice(0, 300);
     } catch (error) {
-      this.lastNotice = "Не удалось загрузить варианты: " + safeDetail(error, this.token);
+      this.lastNotice = "Could not load options: " + safeDetail(error, this.token);
     }
     this.queueDashboard();
   }
 
   private async handleUiCallback(data: string): Promise<boolean> {
-    if (data === "refresh") { this.lastNotice = "Панель обновлена."; return true; }
-    if (data === "input:cancel") { this.awaitingInput = undefined; this.lastNotice = "Ввод отменён."; return true; }
-    if (data === "confirm:no") { this.confirmation = undefined; this.lastNotice = "Действие отменено."; return true; }
+    if (data === "refresh") { this.lastNotice = "Dashboard refreshed."; return true; }
+    if (data === "input:cancel") { this.awaitingInput = undefined; this.lastNotice = "Input cancelled."; return true; }
+    if (data === "confirm:no") { this.confirmation = undefined; this.lastNotice = "Action cancelled."; return true; }
     if (data === "confirm:yes") {
       const command = this.confirmation;
       this.confirmation = undefined;
@@ -685,7 +685,7 @@ export class TelegramBot {
     if (/^agent:[1-5]$/.test(data)) {
       this.selectedAgent = Number(data.slice("agent:".length));
       this.panel = "agent";
-      this.lastNotice = "Выбран субагент #" + this.selectedAgent;
+      this.lastNotice = "Selected subagent #" + this.selectedAgent;
       return true;
     }
     if (/^(?:mp|ep):\d+$/.test(data)) {
@@ -702,7 +702,7 @@ export class TelegramBot {
       if (!match) return true;
       const options = match[1] === "model" ? this.modelOptions : this.effortOptions;
       const selected = options[Number(match[2])];
-      if (!selected) { this.lastNotice = "Список устарел. Обнови варианты."; return true; }
+      if (!selected) { this.lastNotice = "This list is out of date. Reload the options."; return true; }
       void this.runHarnessCommand("/" + match[1] + " " + selected);
       return true;
     }
@@ -719,7 +719,7 @@ export class TelegramBot {
       const key = data.slice(4);
       if (key === "stop") {
         this.callbacks.cancel();
-        this.lastNotice = "Отправлен запрос остановки.";
+        this.lastNotice = "Stop requested.";
         return true;
       }
       const commands: Record<string, string> = {
@@ -747,7 +747,7 @@ export class TelegramBot {
       if (!command) return true;
       if (new Set(["update-apply", "update-rollback", "approval-never", "goal-cancel", "swarm-stop", "agent-stop", "compact"]).has(key)) {
         this.confirmation = command;
-        this.lastNotice = "Подтверди действие кнопкой.";
+        this.lastNotice = "Confirm this action with the button.";
       } else void this.runHarnessCommand(command);
       return true;
     }
@@ -763,14 +763,14 @@ export class TelegramBot {
     this.persistOffset(updateId);
     const data = callback.data ?? "";
     if (this.dashboardMessageId && callback.message.message_id !== this.dashboardMessageId) {
-      await this.api("answerCallbackQuery", { callback_query_id: callback.id, text: "Эта панель устарела. Открой последнюю." }).catch(() => undefined);
+      await this.api("answerCallbackQuery", { callback_query_id: callback.id, text: "This dashboard is out of date. Open the latest one." }).catch(() => undefined);
       return;
     }
     await this.api("answerCallbackQuery", { callback_query_id: callback.id }).catch(() => undefined);
     try {
       if (await this.handleUiCallback(data)) { this.queueDashboard(); return; }
     } catch (error) {
-      this.lastNotice = "Ошибка кнопки: " + safeDetail(error, this.token);
+      this.lastNotice = "Button error: " + safeDetail(error, this.token);
       this.queueDashboard();
       return;
     }
@@ -792,7 +792,7 @@ export class TelegramBot {
       if (folder) await this.createSession(folder);
     } else if (data === "stop") {
       this.callbacks.cancel();
-      this.lastNotice = "Отправлен запрос остановки.";
+      this.lastNotice = "Stop requested.";
     } else if (data.startsWith("approval:")) {
       const rest = data.slice("approval:".length);
       const separator = rest.lastIndexOf(":");
@@ -823,7 +823,7 @@ export class TelegramBot {
     // marked the turn complete, or a different session was selected meanwhile.
     if (event.type !== "assistant-done" || event.channel !== "telegram" || !event.text.trim()) return;
     void this.queueFullMessage("assistant:" + event.id, event.text).catch((error: unknown) => {
-      this.lastNotice = "Не удалось сохранить полный ответ: " + safeDetail(error, this.token);
+      this.lastNotice = "Could not save the full response: " + safeDetail(error, this.token);
       this.queueDashboard();
     });
   }
@@ -887,8 +887,8 @@ export class TelegramBot {
       case "turn-end":
         if (!this.activeTurnId || event.turnId !== this.activeTurnId) return;
         if (this.activeTurnIsTelegram && !event.ok) {
-          const detail = this.answer.trim() || "Задача завершилась без финального ответа. Проверь журнал harness.";
-          void this.queueFullMessage("failed-turn:" + event.turnId, "⚠️ Задача остановлена или завершилась ошибкой.\n\n" + detail).catch(() => undefined);
+          const detail = this.answer.trim() || "The task ended without a final response. Check the harness log.";
+          void this.queueFullMessage("failed-turn:" + event.turnId, "⚠️ The task was stopped or failed.\n\n" + detail).catch(() => undefined);
         }
         if (this.activeTurnIsTelegram) this.requestActive = false;
         this.activeTurnId = undefined;
@@ -987,7 +987,7 @@ export class TelegramBot {
 
   private renderDashboard(): string {
     const selected = this.callbacks.selectedSession();
-    const mode = this.confirmation ? "ПОДТВЕРЖДЕНИЕ" : this.awaitingInput ? "ОЖИДАНИЕ ВВОДА" : panelTitle(this.panel);
+    const mode = this.confirmation ? "CONFIRM ACTION" : this.awaitingInput ? "WAITING FOR INPUT" : panelTitle(this.panel);
     const lines = [
       `✨ <b>CHATGPT WEB CODER</b>  <code>v${escapeLimited(APP_VERSION, 70)}</code>`,
       `<b>${escapeLimited(mode, 70)}</b>`,
@@ -997,15 +997,15 @@ export class TelegramBot {
       "",
       `${this.requestActive ? "🟡" : this.phase === "Completed" ? "🟢" : this.phase === "Error" ? "🔴" : "🔵"} <b>${escapeLimited(this.phase, 90)}</b>`,
     ];
-    if (this.confirmation) lines.push("", "⚠️ <b>Подтверди действие:</b>", escapeLimited(this.confirmation, 380));
-    if (this.awaitingInput) lines.push("", "✍️ Ответь на запрос следующим сообщением или нажми «Отменить ввод».");
-    if (this.requestPrompt) lines.push("", "<b>Запрос</b>", `<blockquote>${formatTelegramText(this.requestPrompt.replaceAll(this.token, "[redacted]"), 350)}</blockquote>`);
+    if (this.confirmation) lines.push("", "⚠️ <b>Confirm this action:</b>", escapeLimited(this.confirmation, 380));
+    if (this.awaitingInput) lines.push("", "✍️ Reply to the prompt in your next message, or tap “Cancel input”.");
+    if (this.requestPrompt) lines.push("", "<b>Request</b>", `<blockquote>${formatTelegramText(this.requestPrompt.replaceAll(this.token, "[redacted]"), 350)}</blockquote>`);
     if (this.currentTool) lines.push("", `⚙️ ${escapeLimited(this.currentTool, 180)}`);
-    if (this.answer) lines.push("", "<b>Последний результат</b>", `<blockquote>${formatTelegramText(this.answer.replaceAll(this.token, "[redacted]"), 900)}</blockquote>`);
-    if (this.delivery?.pendingCount) lines.push("", `📨 В очереди доставки: ${this.delivery.pendingCount} частей. Повторные попытки автоматические.`);
+    if (this.answer) lines.push("", "<b>Latest result</b>", `<blockquote>${formatTelegramText(this.answer.replaceAll(this.token, "[redacted]"), 900)}</blockquote>`);
+    if (this.delivery?.pendingCount) lines.push("", `📨 Delivery queue: ${this.delivery.pendingCount} parts. Retries are automatic.`);
     if (this.pendingApprovals.size) {
       const approval = this.pendingApprovals.values().next().value;
-      if (approval) lines.push("", "🔐 <b>Нужно разрешение</b>", `<blockquote>${escapeLimited(approval.summary, 350)}</blockquote>`);
+      if (approval) lines.push("", "🔐 <b>Approval required</b>", `<blockquote>${escapeLimited(approval.summary, 350)}</blockquote>`);
     }
     if (this.lastNotice) lines.push("", `ℹ️ ${escapeLimited(this.lastNotice, 230)}`);
     const result = lines.join("\n");

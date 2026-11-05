@@ -258,7 +258,7 @@ describe("Telegram button interface and complete responses", () => {
       events.emit({ type: "turn-end", turnId: "failed-turn", ok: false });
       await vi.waitFor(() => expect(requests.some((item) =>
         item.method === "sendMessage" && !item.body.reply_markup &&
-        String(item.body.text).includes("Задача остановлена или завершилась ошибкой")
+        String(item.body.text).includes("The task was stopped or failed")
       )).toBe(true));
     } finally { await bot.stop(); }
   });
@@ -358,7 +358,7 @@ describe("Telegram interactive session cards", () => {
       bot.onExternalSessionEvent(event);
       await vi.waitFor(() => {
         const delivered = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup &&
-          String(item.body.text).includes("Фоновые субагенты завершили"));
+          String(item.body.text).includes("Background subagents have finished"));
         expect(delivered).toHaveLength(1);
         expect(delivered[0]?.body.text).toContain("All checks completed");
       });

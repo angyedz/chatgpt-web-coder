@@ -1,12 +1,14 @@
-# Pre-release channel
+# Канал предварительных выпусков
 
-This is the dedicated `pre-release` branch for experimental Windows builds of chatgpt-web-coder.
+[English version](PRE-RELEASE.en.md)
 
-- `main` publishes stable GitHub Releases.
-- `pre-release` publishes GitHub Pre-releases after Windows CI succeeds.
-- Feature branches and pull requests run CI only; they do not publish releases.
-- In the terminal choose `/update settings channel pre-release` to follow this channel.
-- `/update check` and `/update latest` respect the saved channel.
-- Installation still requires explicit `/update apply`.
+Ветка `pre-release` предназначена для экспериментальных сборок chatgpt-coder для Windows.
 
-Do not treat prereleases as validated stable builds. Promote tested changes to `main` by review.
+- Ветка `main` публикует стабильные GitHub Releases.
+- Ветка `pre-release` публикует GitHub Pre-releases после успешной проверки Windows CI.
+- Ветки функций и pull request проходят CI, но не публикуют релизы.
+- Чтобы выбрать этот канал в терминале, выполни `/update settings channel pre-release`.
+- Команды `/update check` и `/update latest` используют сохранённый канал.
+- Установка всегда требует явной команды `/update apply`.
+
+Считай предварительные версии экспериментальными. Переноси изменения в `main` после проверки и ревью.

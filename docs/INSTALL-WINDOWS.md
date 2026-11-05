@@ -1,5 +1,7 @@
 # Установка chatgpt-coder на Windows
 
+[English version](INSTALL-WINDOWS.en.md) · [Обзор на русском](../README.md)
+
 ## Что потребуется
 
 - Windows 10/11 x64 и подключение к интернету. На Windows ARM64 используется x64-версия через эмуляцию.

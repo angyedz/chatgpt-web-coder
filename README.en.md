@@ -1,0 +1,118 @@
+# chatgpt-coder
+
+**ChatGPT Web in your terminal. Tools run on your computer.**
+
+A local coding harness for working in your projects: chat with ChatGPT, run commands, edit files, and track tasks in one interface.
+
+[Русская версия](README.md) · [Windows installation](docs/INSTALL-WINDOWS.en.md) · [Command reference](docs/REFERENCE.en.md)
+
+## How it works
+
+You send a task from the terminal. The harness controls ChatGPT Web through a browser. Tool calls travel through an MCP connector and Secure MCP Tunnel to run locally, and results appear in the terminal.
+
+## Features
+
+- Local file access, patches, shell commands, Git tools, and background jobs
+- Streaming responses, plans, task goals, and action history
+- Separate sessions for each workspace
+- Web search through SearXNG and external MCP servers
+- Project `AGENTS.md` instructions and skills
+- Approval prompts for commands and file writes
+- Windows updates with rollback
+- A private Telegram bot for remote task control, approvals, and status
+- Explicitly started subagents in isolated background browser tabs and project copies
+
+## Quick start
+
+### Install on Windows
+
+Download `chatgpt-coder-windows.zip` from [GitHub Releases](https://github.com/angyedz/chatgpt-web-coder/releases), extract it, and run `install.cmd`. Open a new terminal, go to your project, and start the harness:
+
+```powershell
+cd 'C:\path\to\project'
+chatgpt-coder
+```
+
+The installer provides Node.js, Git, dependencies, Chromium, and tunnel-client. See the [Windows installation guide](docs/INSTALL-WINDOWS.en.md) for details and troubleshooting.
+
+### Connect tools
+
+MCP tools require a ChatGPT account with custom MCP connector access, an OpenAI Secure MCP Tunnel, and a runtime API key with **Tunnels Read + Use** permissions. Sign in to ChatGPT in the browser, then enter the key in the harness:
+
+```text
+/connect key <runtime-key>
+```
+
+Create a custom MCP connector in ChatGPT for the tunnel. See [Windows setup](docs/INSTALL-WINDOWS.en.md#3-connect-chatgpt-and-tools) and the [reference](docs/REFERENCE.en.md#secure-mcp-tunnel-and-chatgpt-connector).
+
+### Run from source
+
+Requires Node.js 22+ and npm:
+
+```powershell
+npm install
+npm run setup
+npm run dev
+```
+
+Use `/connect` to configure the connection. Local settings can be based on `.env.example` and `harness.config.example.json`.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/help` · `/status` · `/doctor` | Help, status, diagnostics |
+| `/connect` · `/mcp` | Tunnel and MCP server configuration |
+| `/sessions` · `/session new` | Saved sessions and a new session |
+| `/attach` · `/attachments` · `/detach <id>` | Attach and manage local files |
+| `/clear` | Clear the view and start with a fresh context |
+| `/btw <question>` · `/btw cancel` | Ask a side question or cancel it |
+| `/telegram setup` · `/telegram status` | Connect or inspect a private Telegram bot |
+| `/telegram start` · `/telegram stop` · `/telegram unlink` | Manage the Telegram connection |
+| `/goal <task>` · `/goal status` | Start or inspect an automatically continued goal |
+| `/swarm start 5 <task>` | Explicitly start up to five subagents |
+| `/swarm status` · `/swarm inspect 1` · `/swarm chat 1` | Inspect subagents and their results |
+| `/model` · `/effort` | List ChatGPT models and reasoning effort levels |
+| `/timer 5m` · `/jobs` | Timers and background jobs |
+| `/skills` · `/agents` | Available skills and project instructions |
+| `/update check` · `/update latest` | Check for and download GitHub updates |
+| `/update` · `/update rollback` | Install a local ZIP or roll back on Windows |
+
+See the full [command reference](docs/REFERENCE.en.md).
+
+### Subagents
+
+Subagents only start when explicitly requested. Start up to five with `/swarm start 5 <task>`. Each gets its own background ChatGPT tab and local project copy. Secrets such as `.env` files and private keys are excluded. Changes are copied back only when the target files have not changed in the meantime. Review status and conflicts with `/swarm history` and `/swarm report <run-id>`.
+
+### Telegram bot
+
+Create a bot with [@BotFather](https://t.me/BotFather), then run `/telegram setup` in the harness. Pair it from a private chat using the one-time words. The bot interface is in English. Only the linked Telegram account can control the harness; groups and other accounts are ignored. It supports task submission, session selection, approvals, subagents, model settings, and updates. See the [reference](docs/REFERENCE.en.md#telegram).
+
+### Long messages and attachments
+
+Long prompts are stored locally and attached as files so the full text is preserved. Attach local files with `/attach <path>` or use the Windows clipboard command `/attach clipboard`. Local files are not automatically sent with Telegram messages.
+
+## Updates and releases
+
+Use `/update check`, `/update latest`, then `/update apply` to install a verified GitHub release. A local ZIP can be selected with `/update`; rollback is available with `/update rollback`.
+
+Pushes to `main` run Windows CI, type checks, tests, and packaging. A verified successful build is published as a GitHub Release. Change `package.json` and `package-lock.json` when the product version should change.
+
+## Data and access
+
+The harness uses your ChatGPT browser session and runs local tools with your account's permissions. Shell commands and file writes require approval by default. Treat browser profiles, credentials, and project files as sensitive. Tool results are sent to ChatGPT to complete your request.
+
+## Development
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+```
+
+## Documentation
+
+- [Windows installation](docs/INSTALL-WINDOWS.en.md) · [Russian](docs/INSTALL-WINDOWS.md)
+- [Command and configuration reference](docs/REFERENCE.en.md) · [Russian](docs/REFERENCE.md)
+- [GitHub publishing](docs/GITHUB.en.md) · [Russian](docs/GITHUB.md)
+- [Pre-release channel](PRE-RELEASE.en.md) · [Russian](PRE-RELEASE.md)
