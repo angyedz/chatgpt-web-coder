@@ -250,6 +250,19 @@ describe("Telegram button interface and complete responses", () => {
     } finally { await bot.stop(); }
   });
 
+  it("sends a durable failure notice when a task stops without assistant-done", async () => {
+    const { internals, requests, message, events, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "Run a failing test"), 1);
+      events.emit({ type: "turn-start", turnId: "failed-turn" });
+      events.emit({ type: "turn-end", turnId: "failed-turn", ok: false });
+      await vi.waitFor(() => expect(requests.some((item) =>
+        item.method === "sendMessage" && !item.body.reply_markup &&
+        String(item.body.text).includes("Задача остановлена или завершилась ошибкой")
+      )).toBe(true));
+    } finally { await bot.stop(); }
+  });
+
   it("delivers the complete generated answer as multiple messages without truncation", async () => {
     const { internals, requests, message, events, bot } = setup();
     try {
