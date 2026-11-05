@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { panelTitle, renderTelegramKeyboard, type TelegramUiState, type TelegramPanel } from "../src/telegram/ui.js";
+import { approvalCallbackId, panelTitle, renderTelegramKeyboard, type TelegramUiState, type TelegramPanel } from "../src/telegram/ui.js";
 
 function state(panel: TelegramPanel): TelegramUiState {
   return { panel, sessionMenu: [], sessionPage: 0, folderMenu: [], folderPage: 0,
@@ -40,6 +40,18 @@ describe("Telegram compact button dashboard", () => {
     folders.folderPage = 3;
     expect(controls(folders)).toContain("fo:15");
     expect(controls(folders)).not.toContain("fo:0");
+  });
+
+  it("uses short callback tokens for unusually long approval IDs", () => {
+    const request = state("home");
+    const id = "remote-approval-" + "x".repeat(120);
+    request.pendingApproval = { id, tool: "exec_command", summary: "Run tests", args: {}, createdAt: Date.now() };
+    const actions = controls(request);
+    const token = approvalCallbackId(id);
+    expect(token).not.toBe(id);
+    expect(actions).toContain("approval:" + token + ":yes");
+    expect(actions).toContain("approval:" + token + ":no");
+    expect(actions.every((item) => Buffer.byteLength(item) <= 64)).toBe(true);
   });
 
   it("replaces regular buttons with confirmation or input cancellation", () => {
