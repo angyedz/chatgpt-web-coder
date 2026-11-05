@@ -117,6 +117,18 @@ describe("Telegram command parity", () => {
     } finally { await bot.stop(); }
   });
 
+  it("delivers /btw separately while a Telegram task is active", async () => {
+    const { internals, callbacks, requests, message, bot } = setup();
+    try {
+      (internals as unknown as { requestActive: boolean }).requestActive = true;
+      await internals.onMessage(message(1, "/btw Is this task safe?"), 1);
+      await vi.waitFor(() => expect(callbacks.command).toHaveBeenCalledWith("/btw Is this task safe?"));
+      await vi.waitFor(() => expect(requests.some((item) => item.method === "sendMessage" && String(item.body.text).includes("Executed: /btw"))).toBe(true));
+      expect(callbacks.submit).not.toHaveBeenCalled();
+      expect((internals as unknown as { requestActive: boolean }).requestActive).toBe(true);
+    } finally { await bot.stop(); }
+  });
+
   it("does not dispatch commands addressed to another Telegram bot", async () => {
     const { internals, callbacks, message, bot } = setup();
     try {
