@@ -98,6 +98,33 @@ describe("Telegram saved chat routing", () => {
     expect((await SessionStore.listAll()).some((item) => item.id === detached.id)).toBe(true);
   });
 
+  it("runs a goal in the selected project session without touching the foreground goal", async () => {
+    const { alpha, storeA, storeB } = await setup();
+    let bridge!: TelegramSessionBridge;
+    const browser = {
+      isOpen: true,
+      openSideChat: vi.fn(async () => ({
+        isOpen: true, send: vi.fn(async () => {
+          const worker = (bridge as unknown as { workers: Map<string, { runtime?: { goal: { setStatus(status: "complete", detail: string): void } } }> }).workers.get(storeB.id);
+          worker?.runtime?.goal.setStatus("complete", "Verified in the selected workspace.");
+          return "Goal checked";
+        }),
+        setResponseChannel: vi.fn(), snapshotBeforeTool: vi.fn(), closeSideChat: vi.fn(), stop: vi.fn(),
+      })),
+    } as unknown as ChatGptBrowser;
+    bridge = new TelegramSessionBridge(
+      defaultConfig(alpha), browser, { registerTurnContext: vi.fn(), unregisterTurnContext: vi.fn() } as unknown as McpHost,
+      () => storeA.snapshot, () => false, () => "idle",
+      vi.fn(() => true), vi.fn(), vi.fn(),
+    );
+    try {
+      await bridge.choose(storeB.id);
+      expect(await bridge.command("/goal Check the build")).toContain("Goal: complete");
+      expect((await SessionStore.listAll()).find((item) => item.id === storeB.id)?.goal?.status).toBe("complete");
+      expect(storeA.snapshot.goal).toBeUndefined();
+    } finally { await bridge.shutdown(); }
+  });
+
   it("attaches files to the chosen project and sends them in the remote browser tab", async () => {
     const { alpha, beta, storeA, storeB } = await setup();
     const filename = path.join(beta, "data.txt");
