@@ -162,6 +162,87 @@ describe("Telegram command parity", () => {
   });
 });
 
+describe("Telegram button interface and complete responses", () => {
+  const callback = (id: string, data: string, messageId = 100) => ({
+    id, data, from: { id: 42 }, message: { message_id: messageId, chat: { id: 42, type: "private" } },
+  });
+
+  it("navigates buttons and prompts for an isolated three-agent task", async () => {
+    const { internals, requests, message, callbacks, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/start"), 1);
+      await internals.onCallback(callback("c1", "nav:swarm"), 2);
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      const keyboard = requests.at(-1)?.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+      expect(keyboard.inline_keyboard.flat().map((item) => item.callback_data)).toContain("swarm:3");
+      await internals.onCallback(callback("c2", "swarm:3"), 3);
+      expect(requests.some((item) => item.method === "sendMessage" && (item.body.reply_markup as { force_reply?: boolean } | undefined)?.force_reply)).toBe(true);
+      await internals.onMessage(message(4, "Test the selected project"), 4);
+      await vi.waitFor(() => expect(callbacks.command).toHaveBeenCalledWith("/swarm start 3 Test the selected project"));
+    } finally { await bot.stop(); }
+  });
+
+  it("picks a model from actual harness choices instead of sending menu text to the AI", async () => {
+    const { internals, requests, message, callbacks, bot } = setup();
+    vi.mocked(callbacks.command).mockResolvedValueOnce("Available models\\n1. GPT-6\\n2. GPT-5.6");
+    try {
+      await internals.onMessage(message(1, "/start"), 1);
+      await internals.onCallback(callback("c1", "nav:models"), 2);
+      internals.lastEditAt = 0;
+      await internals.flushDashboard();
+      const keyboard = requests.at(-1)?.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+      expect(keyboard.inline_keyboard.flat().map((item) => item.callback_data)).toContain("pick:model:1");
+      await internals.onCallback(callback("c2", "pick:model:1"), 3);
+      await vi.waitFor(() => expect(callbacks.command).toHaveBeenCalledWith("/model GPT-5.6"));
+    } finally { await bot.stop(); }
+  });
+
+  it("requires an extra confirmation before applying an update", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/start"), 1);
+      await internals.onCallback(callback("c1", "cmd:update-apply"), 2);
+      expect(callbacks.command).not.toHaveBeenCalled();
+      await internals.onCallback(callback("c2", "confirm:yes"), 3);
+      await vi.waitFor(() => expect(callbacks.command).toHaveBeenCalledWith("/update apply"));
+    } finally { await bot.stop(); }
+  });
+
+  it("delivers the complete generated answer as multiple messages without truncation", async () => {
+    const { internals, requests, message, events, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "Write an extensive explanation"), 1);
+      events.emit({ type: "turn-start", turnId: "long-turn" });
+      const answer = "🛠️ paragraph\\n" + "Hello<world>&😀".repeat(1100) + "\\nEND";
+      events.emit({ type: "assistant-done", id: "assistant-long", text: answer, channel: "telegram" });
+      events.emit({ type: "turn-end", turnId: "long-turn", ok: true });
+      await vi.waitFor(() => {
+        const sent = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup).map((item) => String(item.body.text));
+        expect(sent.join("")).toBe(answer);
+      }, { timeout: 4500 });
+      const parts = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup);
+      expect(parts.length).toBeGreaterThan(3);
+      expect(parts.every((item) => String(item.body.text).length <= 3500)).toBe(true);
+    } finally { await bot.stop(); }
+  });
+
+  it("does not truncate long command output at the old twelve-message limit", async () => {
+    const { internals, requests, callbacks, message, bot } = setup();
+    const output = "A".repeat(52_000);
+    vi.mocked(callbacks.command).mockResolvedValueOnce(output);
+    try {
+      await internals.onMessage(message(1, "/update log"), 1);
+      await vi.waitFor(() => {
+        const sent = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup).map((item) => String(item.body.text));
+        expect(sent.join("")).toBe(output);
+      }, { timeout: 4500 });
+      const count = requests.filter((item) => item.method === "sendMessage" && !item.body.reply_markup).length;
+      expect(count).toBeGreaterThan(12);
+    } finally { await bot.stop(); }
+  });
+});
+
 describe("Telegram interactive session cards", () => {
   it("creates a new card for every user message rather than editing the previous card", async () => {
     const { internals, requests, message, bot, events } = setup();
