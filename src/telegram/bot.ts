@@ -370,7 +370,7 @@ export class TelegramBot {
           text,
           disable_web_page_preview: true,
         });
-      }, (error) => this.callbacks.onStatus("error", "Full-message delivery will retry: " + safeDetail(error, this.token)));
+      }, (error) => this.callbacks.onStatus("error", "Full-message delivery will retry: " + safeDetail(error, this.token)), () => this.queueDashboard());
       await delivery.initialize();
       this.delivery = delivery;
     })();
