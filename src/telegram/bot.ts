@@ -444,7 +444,7 @@ export class TelegramBot {
 
   /** Events from a non-foreground workspace runner must not pollute the main session. */
   onExternalSessionEvent(event: HarnessEvent): void {
-    if (this.requestActive && this.externalRequest) this.processAgentEvent(event);
+    if ((this.requestActive && this.externalRequest) || event.type === "approval" || event.type === "approval-resolved") this.processAgentEvent(event);
   }
 
   private async tryPair(message: TelegramMessage, text: string, updateId: number): Promise<void> {
