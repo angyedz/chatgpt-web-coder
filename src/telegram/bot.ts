@@ -722,6 +722,18 @@ export class TelegramBot {
     }
     this.persistOffset(updateId);
     const data = callback.data ?? "";
+    if (this.dashboardMessageId && callback.message.message_id !== this.dashboardMessageId) {
+      await this.api("answerCallbackQuery", { callback_query_id: callback.id, text: "Эта панель устарела. Открой последнюю." }).catch(() => undefined);
+      return;
+    }
+    await this.api("answerCallbackQuery", { callback_query_id: callback.id }).catch(() => undefined);
+    try {
+      if (await this.handleUiCallback(data)) { this.queueDashboard(); return; }
+    } catch (error) {
+      this.lastNotice = "Ошибка кнопки: " + safeDetail(error, this.token);
+      this.queueDashboard();
+      return;
+    }
     if (data === "status") {
       this.lastNotice = "Status refreshed.";
     } else if (data === "sessions") {
@@ -739,8 +751,8 @@ export class TelegramBot {
       const folder = this.folderMenu[Number(data.slice(3))];
       if (folder) await this.createSession(folder);
     } else if (data === "stop") {
-      if (this.callbacks.getBusy()) { this.callbacks.cancel(); this.lastNotice = "Stopping the active task…"; }
-      else this.lastNotice = "There is no active task to stop.";
+      this.callbacks.cancel();
+      this.lastNotice = "Отправлен запрос остановки.";
     } else if (data.startsWith("approval:")) {
       const rest = data.slice("approval:".length);
       const separator = rest.lastIndexOf(":");
@@ -753,7 +765,6 @@ export class TelegramBot {
         this.lastNotice = value === "yes" ? "Approval granted from Telegram." : "Action denied from Telegram.";
       }
     }
-    await this.api("answerCallbackQuery", { callback_query_id: callback.id }).catch(() => undefined);
     this.queueDashboard();
   }
 
