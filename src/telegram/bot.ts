@@ -312,7 +312,20 @@ export class TelegramBot {
     this.phase = "Running command";
     this.queueDashboard();
     try {
-      this.answer = await this.callbacks.command(text);
+      const response = (await this.callbacks.command(text)).replaceAll(this.token, "[redacted]");
+      if (response.length > 1500 && this.identity) {
+        this.answer = response.slice(0, 1100) + "\n\n(Full command output sent below as separate messages.)";
+        for (const chunk of escapedCommandChunks(response)) {
+          await this.api("sendMessage", {
+            chat_id: this.identity.ownerChatId,
+            text: "<pre>" + chunk + "</pre>",
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+          });
+        }
+      } else {
+        this.answer = response;
+      }
       this.phase = "Completed";
       const selected = this.callbacks.selectedSession();
       if (this.identity?.selectedSessionId !== selected.id) {
@@ -701,6 +714,25 @@ export class TelegramBot {
 
 class TelegramApiError extends Error {
   constructor(message: string, readonly status: number, readonly retryAfter?: number) { super(message); }
+}
+
+/** HTML-escaped Telegram messages with entity-safe chunk boundaries. */
+function escapedCommandChunks(value: string): string[] {
+  const chunks: string[] = [];
+  let part = "";
+  const entities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+  for (const ch of value) {
+    const escaped = entities[ch] ?? ch;
+    if (part.length + escaped.length > 3500) {
+      chunks.push(part);
+      part = "";
+      if (chunks.length >= 12) break;
+    }
+    part += escaped;
+  }
+  if (part && chunks.length < 12) chunks.push(part);
+  if (chunks.length === 12 && chunks.join("").length < value.length) chunks.push("(Output truncated at 12 Telegram messages.)");
+  return chunks;
 }
 
 function escapeLimited(value: string, maxOutput: number): string {
