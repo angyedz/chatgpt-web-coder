@@ -5,7 +5,7 @@ import type { ApprovalRequest, HarnessEvent, TurnPhase } from "../types.js";
 import type { TelegramConfig } from "../config.js";
 import type { TelegramSessionChoice } from "./sessions.js";
 import { TelegramDelivery } from "./delivery.js";
-import { panelTitle, renderTelegramKeyboard, type TelegramPanel, type TelegramPrompt } from "./ui.js";
+import { approvalCallbackId, panelTitle, renderTelegramKeyboard, type TelegramPanel, type TelegramPrompt } from "./ui.js";
 
 const API = "https://api.telegram.org/bot";
 const MAX_MESSAGE = 4096;
@@ -787,7 +787,7 @@ export class TelegramBot {
       const separator = rest.lastIndexOf(":");
       const id = separator > 0 ? rest.slice(0, separator) : "";
       const value = separator > 0 ? rest.slice(separator + 1) : "";
-      const approval = id ? this.pendingApprovals.get(id) : undefined;
+      const approval = id ? this.pendingApprovals.get(id) ?? [...this.pendingApprovals.values()].find((item) => approvalCallbackId(item.id) === id) : undefined;
       if (approval && (value === "yes" || value === "no")) {
         this.callbacks.approve(approval.id, value === "yes");
         this.pendingApprovals.delete(approval.id);
