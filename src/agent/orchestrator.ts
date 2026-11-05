@@ -274,7 +274,7 @@ export class Orchestrator {
     const messages: string[] = [];
     const unsubscribe = this.events.on((event) => {
       if (event.type === "system-message" || event.type === "notice") {
-        if (messages.length < 60) messages.push(event.text);
+        messages.push(event.text);
       }
     });
     try {
