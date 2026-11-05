@@ -1,8 +1,8 @@
 import type { ApprovalRequest } from "../types.js";
 import type { TelegramSessionChoice } from "./sessions.js";
 
-export type TelegramPanel = "home" | "sessions" | "folders" | "actions" | "models" | "effort" | "swarm" | "jobs" | "updates" | "tools" | "settings";
-export type TelegramPrompt = "task" | "folder" | "create-folder" | "goal" | "rename" | "swarm" | "command" | "btw" | "attach" | "timer" | "job" | "switch";
+export type TelegramPanel = "home" | "sessions" | "folders" | "actions" | "models" | "effort" | "swarm" | "agent" | "jobs" | "updates" | "tools" | "settings";
+export type TelegramPrompt = "task" | "folder" | "create-folder" | "goal" | "rename" | "swarm" | "command" | "btw" | "attach" | "timer" | "job" | "switch" | "agent-message";
 export interface TelegramButton { text: string; callback_data: string }
 export interface TelegramKeyboard { inline_keyboard: TelegramButton[][] }
 
@@ -19,6 +19,8 @@ export interface TelegramUiState {
   confirmation?: string;
   selectedId: string;
   swarmCount: number;
+  selectedAgent?: number;
+  optionPage?: number;
   pendingReplies: number;
 }
 
@@ -87,7 +89,13 @@ export function renderTelegramKeyboard(state: TelegramUiState): TelegramKeyboard
       case "effort": {
         const kind = state.panel === "models" ? "model" : "effort";
         const choices = kind === "model" ? state.modelOptions : state.effortOptions;
-        choices.slice(0, 16).forEach((choice, index) => rows.push([button(`${index + 1}. ${choice.slice(0, 43)}`, `pick:${kind}:${index}`)]));
+        const pages = Math.max(1, Math.ceil(choices.length / 8));
+        const activePage = Math.min(state.optionPage ?? 0, pages - 1);
+        choices.slice(activePage * 8, activePage * 8 + 8).forEach((choice, index) => {
+          const absolute = activePage * 8 + index;
+          rows.push([button(`${absolute + 1}. ${choice.slice(0, 43)}`, `pick:${kind}:${absolute}`)]);
+        });
+        if (pages > 1) rows.push(page(activePage, pages, kind === "model" ? "mp" : "ep"));
         rows.push([button("↻ Загрузить список", "load:" + kind), button("◌ По умолчанию", "cmd:" + kind + "-default")]);
         rows.push([nav(kind === "model" ? "🧠 Мышление" : "🤖 Модель", kind === "model" ? "effort" : "models")]);
         rows.push(back());
@@ -98,7 +106,15 @@ export function renderTelegramKeyboard(state: TelegramUiState): TelegramKeyboard
         rows.push([button("➍ 4 агента", "swarm:4"), button("➎ 5 агентов", "swarm:5")]);
         rows.push([button("📊 Статус", "cmd:swarm-status"), button("📋 Результаты", "cmd:swarm-results")]);
         rows.push([button("🗃 История", "cmd:swarm-history"), button("🛑 Стоп всех", "cmd:swarm-stop")]);
+        rows.push([button("Агент 1", "agent:1"), button("Агент 2", "agent:2"), button("Агент 3", "agent:3")]);
+        rows.push([button("Агент 4", "agent:4"), button("Агент 5", "agent:5")]);
         rows.push(back());
+        break;
+      case "agent":
+        rows.push([button("🔍 Подробнее", "cmd:agent-inspect"), button("💬 История", "cmd:agent-chat")]);
+        rows.push([button("✍️ Написать", "ask:agent-message"), button("🪟 Открыть вкладку", "cmd:agent-open")]);
+        rows.push([button("🛑 Остановить агента", "cmd:agent-stop")]);
+        rows.push([nav("↩️ К субагентам", "swarm"), ...back()]);
         break;
       case "jobs":
         rows.push([button("📟 Процессы", "cmd:jobs"), button("⏰ Таймеры", "cmd:timers")]);
@@ -143,7 +159,7 @@ export function renderTelegramKeyboard(state: TelegramUiState): TelegramKeyboard
 export function panelTitle(panel: TelegramPanel): string {
   const labels: Record<TelegramPanel, string> = {
     home: "ГЛАВНОЕ МЕНЮ", sessions: "СЕССИИ", folders: "ПАПКИ", actions: "ЗАДАЧИ",
-    models: "МОДЕЛЬ", effort: "МЫШЛЕНИЕ", swarm: "СУБАГЕНТЫ",
+    models: "МОДЕЛЬ", effort: "МЫШЛЕНИЕ", swarm: "СУБАГЕНТЫ", agent: "УПРАВЛЕНИЕ АГЕНТОМ",
     jobs: "ПРОЦЕССЫ И ТАЙМЕРЫ", updates: "ОБНОВЛЕНИЯ",
     tools: "ИНСТРУМЕНТЫ", settings: "НАСТРОЙКИ",
   };
