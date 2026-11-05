@@ -29,4 +29,22 @@ describe("two update channels", () => {
   it("selects only stable releases in stable mode", () => {
     expect(selectReleaseByChannel(releases, "stable")?.tag_name).toBe("build-111-1");
   });
+  it("finds newest verified stable build even when GitHub latest points to an older release", () => {
+    const unsorted = [
+      { tag_name: "build-100-1", draft: false, prerelease: false },
+      { tag_name: "build-103-1", draft: false, prerelease: false },
+      { tag_name: "build-102-2", draft: false, prerelease: false },
+      { tag_name: "prerelease-999-1", draft: false, prerelease: true },
+      { tag_name: "build-200-1", draft: true, prerelease: false },
+    ];
+    expect(selectReleaseByChannel(unsorted, "stable")?.tag_name).toBe("build-103-1");
+  });
+  it("chooses highest successful attempt for the same run", () => {
+    const builds = [
+      { tag_name: "build-200-1", draft: false, prerelease: false },
+      { tag_name: "build-199-20", draft: false, prerelease: false },
+      { tag_name: "build-200-2", draft: false, prerelease: false },
+    ];
+    expect(selectReleaseByChannel(builds, "stable")?.tag_name).toBe("build-200-2");
+  });
 });
