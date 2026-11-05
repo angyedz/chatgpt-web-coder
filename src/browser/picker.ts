@@ -82,7 +82,10 @@ async function items(page: Page, modelOrigin?: PickerOrigin): Promise<MenuItem[]
   // Some ChatGPT popovers render model choices as buttons rather than ARIA
   // menu items. Only consider model-labelled controls near the opened picker.
   if (modelOrigin) {
-    const buttons = scope ? scope.locator('button, [role="button"]') : page.locator('button, [role="button"]');
+    // ChatGPT renders the model submenu in a separate popover. It is often a
+    // sibling of the effort menu, so limiting this scan to the last visible
+    // [role=menu] silently drops the actual model choices.
+    const buttons = page.locator('button, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="option"]');
     for (let index = 0; index < await buttons.count(); index += 1) {
       const locator = buttons.nth(index);
       if (!(await locator.isVisible().catch(() => false)) || await locator.isDisabled().catch(() => false)) continue;
