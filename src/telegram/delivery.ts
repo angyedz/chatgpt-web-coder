@@ -56,12 +56,18 @@ export class TelegramDelivery {
     chatId: string,
     private readonly send: (text: string) => Promise<void>,
     private readonly onError: (error: Error) => void = () => undefined,
+    private readonly onProgress: (pendingParts: number) => void = () => undefined,
   ) {
     const hash = createHash("sha256").update(chatId).digest("hex").slice(0, 24);
     this.file = path.join(harnessHome(), "telegram", "outbox-" + hash + ".json");
   }
 
   get pendingCount(): number { return this.queue.reduce((sum, item) => sum + item.parts.length - item.nextPart, 0); }
+
+  private reportProgress(): void {
+    // Observers must never turn an acknowledged Telegram send into a retry.
+    try { this.onProgress(this.pendingCount); } catch { /* best effort UI update */ }
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -95,6 +101,7 @@ export class TelegramDelivery {
     if (this.stopped || !text || this.completed.includes(id) || this.queue.some((item) => item.id === id)) return;
     this.queue.push({ id, parts: splitTelegramMessage(text), nextPart: 0 });
     await this.checkpoint();
+    this.reportProgress();
     this.wake();
   }
 
@@ -147,12 +154,14 @@ export class TelegramDelivery {
         this.completed.push(item.id);
         this.completed = this.completed.slice(-COMPLETED_IDS);
         await this.checkpoint();
+        this.reportProgress();
         continue;
       }
       try {
         await this.send(item.parts[item.nextPart]!);
         item.nextPart++;
         await this.checkpoint();
+        this.reportProgress();
         this.failures = 0;
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
