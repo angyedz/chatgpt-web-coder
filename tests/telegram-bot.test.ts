@@ -93,6 +93,16 @@ describe("Telegram command parity", () => {
     } finally { await bot.stop(); }
   });
 
+  it("switches to a saved session by ID without invoking the harness command dispatcher", async () => {
+    const { internals, callbacks, message, bot } = setup();
+    try {
+      await internals.onMessage(message(1, "/switch " + betaSession.id), 1);
+      expect(callbacks.chooseSession).toHaveBeenCalledWith(betaSession.id);
+      expect(callbacks.saveProfile).toHaveBeenCalledWith({ selectedSessionId: betaSession.id });
+      expect(callbacks.command).not.toHaveBeenCalled();
+    } finally { await bot.stop(); }
+  });
+
   it("keeps polling responsive during a long command and lets /stop cancel it", async () => {
     const { internals, callbacks, message, bot } = setup();
     let resolveCommand!: (value: string) => void;
