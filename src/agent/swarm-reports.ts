@@ -2,13 +2,14 @@ import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { harnessHome } from "../utils/paths.js";
-import type { SubagentSnapshot } from "../types.js";
+import type { SubagentSnapshot, SwarmOrchestratorSnapshot } from "../types.js";
 
 export interface SwarmReport {
   id: string;
   objective: string;
   savedAt: number;
   agents: SubagentSnapshot[];
+  orchestrator?: SwarmOrchestratorSnapshot;
 }
 
 const ID = /^[a-z0-9][a-z0-9-]{0,90}$/;

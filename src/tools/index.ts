@@ -85,10 +85,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: "delegate_subagents",
     title: "Delegate work to coding subagents",
-    description: "Launch 1–5 child coding agents in separate background ChatGPT tabs. Use only when the user explicitly requested or authorized multi-agent delegation; never launch subagents automatically without that authorization. Each agent receives a private workspace snapshot and does not use Git.",
+    description: "Start a supervised group of 1–5 workers after explicit user authorization. A dedicated orchestrator chooses task-specific assignments, reviews progress every 30 seconds and after completions, and dispatches revisions. Workers use private workspace copies without Git. Do not preassign fixed roles by worker number.",
     inputSchema: {
       count: z.number().int().min(1).max(5).describe("Number of child agents to launch."),
-      objective: z.string().min(1).max(12_000).describe("The shared task; give each agent a distinct role in the orchestrator's plan."),
+      objective: z.string().min(1).max(12_000).describe("The shared user objective and constraints. The swarm orchestrator chooses and adjusts assignments for the requested worker count."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     handler: async (args, ctx) => {
@@ -97,7 +97,7 @@ export const toolDefinitions: ToolDefinition[] = [
         const count = numberArg(args, "count", 1);
         const objective = stringArg(args, "objective");
         await ctx.subagents.start(count, objective);
-        return text(`Started ${count} subagent(s). Use wait_subagents and list_subagents to collect and inspect their work.`);
+        return text(`Started an orchestrator with ${count} worker(s). It will plan assignments and review progress automatically. Use wait_subagents and list_subagents to inspect its actual decisions and results.`);
       } catch (error) {
         return errorText(error instanceof Error ? error.message : String(error));
       }
@@ -110,7 +110,7 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: false },
     handler: async (_args, ctx) => ctx.subagents
-      ? text(safeJson(ctx.subagents.snapshots, ctx.config.maxOutputChars))
+      ? text(safeJson({ orchestrator: ctx.subagents.orchestration, agents: ctx.subagents.snapshots }, ctx.config.maxOutputChars))
       : errorText("Subagent control is available only in the root orchestrator."),
   },
   {
@@ -122,13 +122,13 @@ export const toolDefinitions: ToolDefinition[] = [
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
     handler: async (args, ctx) => ctx.subagents
-      ? text(safeJson(await ctx.subagents.waitFor(numberArg(args, "timeout_ms", 120_000)), ctx.config.maxOutputChars))
+      ? text(safeJson({ agents: await ctx.subagents.waitFor(numberArg(args, "timeout_ms", 120_000)), orchestrator: ctx.subagents.orchestration }, ctx.config.maxOutputChars))
       : errorText("Subagent control is available only in the root orchestrator."),
   },
   {
     name: "message_subagent",
     title: "Send an instruction to a child agent",
-    description: "Send a follow-up instruction to an existing child agent in its original ChatGPT conversation. Use this to clarify, redirect or request revisions after checking its current status.",
+    description: "Send a clarification, correction or revision to an existing child agent. Busy workers queue it until their current turn finishes; idle workers continue in their original conversation.",
     inputSchema: {
       id: z.string().regex(/^[1-5]$/).describe("Child agent ID."),
       message: z.string().min(1).max(12_000).describe("Follow-up instruction."),

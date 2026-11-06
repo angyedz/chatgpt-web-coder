@@ -80,6 +80,10 @@ File tools are confined to the selected workspace. Shell commands run as the cur
 
 Subagents are never started automatically. Each gets a separate background browser tab and project copy. Secret files are excluded. When work finishes, changes are copied back only if the destination files have not changed concurrently. Copies and reports remain available for review.
 
+Starting a group also opens one dedicated orchestrator tab. The orchestrator chooses task-specific roles and assignments for the requested number of workers, without a fixed role list. It reviews progress about every 30 seconds and after worker completion, and may issue revisions, verification or dependent assignments. Instructions for busy workers are queued. Before follow-up work, unchanged files in a worker copy are refreshed from integrated parent changes; conflicting local edits are preserved. The group's completion requires the orchestrator's final review, not just idle workers. Its status and findings appear in `/swarm status` and saved reports. Stopping the whole group also stops the orchestrator.
+
+Unused workers can remain `idle` with a recorded dependency or capacity reason. The orchestrator can assign them later instead of inventing redundant tasks to occupy every slot.
+
 ## Telegram
 
 Create a bot with [@BotFather](https://t.me/BotFather), then run `/telegram setup` locally and enter the token in the protected prompt. Start a private chat with the bot and pair it using the one-time words shown by the harness. The pairing phrase expires after 10 minutes and has a limited number of attempts.
@@ -102,7 +106,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-update.ps1
 
 Sessions are saved per workspace. Use `/sessions` to list them, `/session <id>` to switch, `/session new` to create one in the current folder, or `/new <absolute-path>` to open a session for another project. Model and reasoning choices are kept per session. Background jobs and timers can be inspected with `/jobs` and `/timers`.
 
-If ChatGPT appears stuck after a tool call, the harness can detect a stalled generation and continue the task in the same chat. Use `/stop` to request cancellation.
+Waiting for response startup and generation has no overall timeout, even during silent reasoning. Elapsed time alone does not stop a turn or block its goal. The legacy `browser.responseTimeoutMs` setting controls inactivity reminders; `0` disables those reminders. Use Esc or `/stop` to cancel.
+
+Automatic stopping of quiet generation is disabled by default. To opt in, set `browser.autoRecoverStalls: true` and a `browser.stallRecoveryMs` threshold (default 90000 ms). The harness may then stop a quiet response after a tool and continue the unfinished task only after confirming it stopped. Active tools and pending approvals prevent this recovery. Since long reasoning can look like a stall, keep `autoRecoverStalls: false` for uninterrupted waiting. A legacy `stallRecoveryMs` value alone does not enable automatic stopping.
 
 ## External MCP servers, skills, and project instructions
 

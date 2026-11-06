@@ -73,5 +73,15 @@ describe("MCP host", () => {
     const info = await callTool("get_workspace_info");
     const infoText = (info.content as Array<{ text?: string }>)[0]?.text ?? "";
     expect(infoText).toContain(workspace.replaceAll("\\", "\\\\"));
+
+    // The coordinator can inspect real files but cannot mutate the workspace,
+    // even when the user's normal approval mode permits writes.
+    runtime.context.allowedTools = ["read_file"];
+    const denied = await callTool("exec_command", { cmd: "node -e \"console.log('should not run')\"" });
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied.content)).toContain("only permits workspace inspection");
+    const allowed = await callTool("read_file", { path: "hello.txt" });
+    expect(allowed.isError).not.toBe(true);
+    expect(JSON.stringify(allowed.content)).toContain("hello mcp");
   });
 });

@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { SubagentSnapshot } from "../../types.js";
+import type { SubagentSnapshot, SwarmOrchestratorSnapshot } from "../../types.js";
 import { theme } from "../theme.js";
 
 export function agentColor(status: SubagentSnapshot["status"]): string {
@@ -23,12 +23,12 @@ export function agentSymbol(status: SubagentSnapshot["status"]): string {
   }
 }
 
-export function SubagentStrip({ agents, columns }: { agents: SubagentSnapshot[]; columns: number }) {
+export function SubagentStrip({ agents, columns, orchestrator }: { agents: SubagentSnapshot[]; columns: number; orchestrator?: SwarmOrchestratorSnapshot }) {
   const active = agents.filter((agent) => ["preparing", "running"].includes(agent.status)).length;
   const shown = columns < 80 ? agents.slice(0, 3) : agents;
   return (
     <Box paddingX={2} gap={2} flexShrink={0}>
-      <Text bold color={theme.accentAlt}>◈ AGENTS <Text color={theme.dim}>{active}/{agents.length} active</Text></Text>
+      <Text bold color={theme.accentAlt}>◈ AGENTS <Text color={theme.dim}>{orchestrator?.status ?? `${active}/${agents.length} active`}</Text></Text>
       {shown.map((agent) => (
         <Text key={agent.id} color={agentColor(agent.status)}>
           {agentSymbol(agent.status)} <Text color={theme.assistant}>#{agent.id}</Text>

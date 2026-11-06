@@ -790,7 +790,8 @@ export class Orchestrator {
           const details = agents.length
             ? agents.map((agent) => `#${agent.id}  ${agent.role} · ${agent.status} · ${agent.toolCount} tools · ${agent.messages?.length ?? 0} chat messages\n   ${agent.activity ?? "idle"}\n   ${agent.workspace}`).join("\n")
             : "No subagents launched. Start them explicitly with /swarm start <1-5> <objective>.";
-          this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${details}\n\nWorkers launch only on explicit request. Non-conflicting file changes are integrated automatically; conflicts remain in their local workspaces.` });
+          const orchestration = this.subagents.orchestration;
+          this.events.emit({ type: "system-message", id: newId("system"), text: `SUBAGENTS\n\n${orchestration ? `Orchestrator: ${orchestration.status}\n${orchestration.summary ?? ""}\n\n` : ""}${details}\n\nWorkers launch only on explicit request. The orchestrator assigns tasks and regularly reviews progress. Non-conflicting changes are integrated automatically; conflicts remain in their local workspaces.` });
           return;
         }
         if (argument.toLowerCase() === "history") {
@@ -826,6 +827,7 @@ export class Orchestrator {
         const reportMatch = /^report\s+([a-z0-9-]+)$/i.exec(argument);
         if (reportMatch) {
           const report = await this.subagents.report(reportMatch[1]!);
+          if (report.orchestrator) this.events.emit({ type: "system-message", id: newId("system"), text: `ORCHESTRATOR · ${report.orchestrator.status}\n${report.orchestrator.summary ?? ""}` });
           this.events.emit({ type: "system-message", id: newId("system"), text: `SWARM REPORT · ${report.id}\nObjective: ${report.objective}\n\n${report.agents.map((agent) => `#${agent.id} · ${agent.role} [${agent.status}]\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`).join("\n\n----\n\n")}` });
           return;
         }
@@ -843,6 +845,7 @@ export class Orchestrator {
         const inspect = /^inspect\s+([1-5])$/i.exec(argument);
         if (inspect) {
           const agent = this.subagents.snapshots.find((item) => item.id === inspect[1]);
+          if (agent?.assignment) this.events.emit({ type: "system-message", id: newId("system"), text: `ASSIGNMENT #${agent.id}\n${agent.assignment}${agent.queuedInstructions?.length ? `\n\nQueued instructions:\n${agent.queuedInstructions.join("\n\n")}` : ""}` });
           this.events.emit({ type: "system-message", id: newId("system"), text: agent
             ? `SUBAGENT #${agent.id} · ${agent.role}\n\nStatus: ${agent.status}\nActivity: ${agent.activity ?? "idle"}\nWorkspace: ${agent.workspace}\nTools: ${agent.toolCount}\nIntegrated files: ${agent.changedFiles?.join(", ") || "none"}\nConflicts: ${agent.conflicts?.join(", ") || "none"}\n\n${agent.error ?? agent.summary ?? agent.preview ?? "No response yet."}`
             : `Subagent #${inspect[1]} does not exist.` });

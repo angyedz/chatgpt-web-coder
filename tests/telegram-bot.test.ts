@@ -365,6 +365,17 @@ describe("Telegram interactive session cards", () => {
     } finally { await bot.stop(); }
   });
 
+  it("waits for the orchestrator review before delivering the final swarm report", async () => {
+    const { requests, bot, events } = setup();
+    const agents = [{ id: "1", role: "Storage work", objective: "Improve storage", workspace: "/projects/worker", status: "done" as const, toolCount: 3, startedAt: 5678, summary: "Worker turn finished" }];
+    try {
+      events.emit({ type: "subagents", agents, orchestrator: { status: "reviewing" } });
+      expect(requests.some((item) => String(item.body.text).includes("Background subagents have finished"))).toBe(false);
+      events.emit({ type: "subagents", agents, orchestrator: { status: "complete", summary: "Inspected the integrated files and verified the expected result." } });
+      await vi.waitFor(() => expect(requests.some((item) => String(item.body.text).includes("Orchestrator: complete"))).toBe(true));
+    } finally { await bot.stop(); }
+  });
+
   it("keeps background subagent approvals actionable after the Telegram command ends", async () => {
     const { internals, requests, bot } = setup();
     try {

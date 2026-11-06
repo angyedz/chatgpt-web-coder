@@ -388,11 +388,13 @@ export class ChatGptBrowser {
     let browserApproval = false;
     let reportedPhase: "thinking" | "responding" | "waiting-approval" | undefined;
     let warnedAboutDelay = false;
+    let lastWaitingNoticeAt = Date.now();
     let recoveryAttempted = false;
     await this.waitForResponseStart(120_000, signal, initialToolEpoch);
-    const deadline = Date.now() + this.config.responseTimeoutMs;
 
-    while (Date.now() < deadline) {
+    // A response may legitimately take hours. Keep observing the same request
+    // until it finishes, the user cancels, or the browser actually fails.
+    while (true) {
       if (signal.aborted) {
         signal.throwIfAborted();
       }
@@ -476,8 +478,15 @@ export class ChatGptBrowser {
         this.events.emit({ type: "notice", level: "warn", text: "ChatGPT is still generating, but no new text or tool calls have appeared for 30 seconds." });
       }
 
+      const reminderMs = this.config.responseTimeoutMs;
+      if (toolsQuiet && !browserApproval && this.pendingApprovals.size === 0 && reminderMs > 0 && Number.isFinite(reminderMs)
+        && Date.now() - lastProgressAt >= reminderMs && Date.now() - lastWaitingNoticeAt >= reminderMs) {
+        lastWaitingNoticeAt = Date.now();
+        this.events.emit({ type: "notice", level: "info", text: "Still waiting for ChatGPT. The response remains active; no request was resent. Use Esc or /stop to cancel." });
+      }
+
       const recoveryMs = this.config.stallRecoveryMs;
-      if (streaming && sawTool && toolsQuiet && !browserApproval && !recoveryAttempted && recoveryMs > 0 && Number.isFinite(recoveryMs) && Date.now() - lastProgressAt >= recoveryMs && options.canRecoverStall?.() && this.pendingApprovals.size === 0) {
+      if (this.config.autoRecoverStalls && streaming && sawTool && toolsQuiet && !browserApproval && !recoveryAttempted && recoveryMs > 0 && Number.isFinite(recoveryMs) && Date.now() - lastProgressAt >= recoveryMs && options.canRecoverStall?.() && this.pendingApprovals.size === 0) {
         if (!(await this.hasBrowserApproval())) {
           recoveryAttempted = true;
           this.events.emit({ type: "notice", level: "warn", text: "ChatGPT stopped making progress after a tool call. Attempting to stop the stalled response and continue the unfinished plan…" });
@@ -494,8 +503,6 @@ export class ChatGptBrowser {
       await page.waitForTimeout(250);
     }
 
-    this.events.emit({ type: "phase", phase: "error" });
-    throw new Error("Timed out waiting for ChatGPT. The request may still be running in the browser; check it before retrying.");
     } catch (error) {
       responseStream.interrupt(signal.aborted ? "cancelled" : "interrupted");
       throw error;
@@ -919,12 +926,12 @@ export class ChatGptBrowser {
 
   private async waitForResponseStart(timeoutMs: number, signal: AbortSignal, initialToolEpoch: number): Promise<void> {
     const page = this.requirePage();
-    let deadline = Date.now() + timeoutMs;
     let lastApprovalCheck = 0;
     let warned = false;
     let browserApproval = false;
     const startedAt = Date.now();
-    while (Date.now() < deadline) {
+    let lastWaitingNoticeAt = startedAt;
+    while (true) {
       signal.throwIfAborted();
       if (page.isClosed()) throw new Error("Browser page closed after sending. The request may have been received; check the conversation before retrying.");
       if (this.toolEpoch !== initialToolEpoch) return;
@@ -936,7 +943,6 @@ export class ChatGptBrowser {
         lastApprovalCheck = Date.now();
         if (this.config.autoApproveToolCalls) await this.autoApproveToolCall();
         const approval = await this.hasBrowserApproval();
-        if (approval || approval !== browserApproval) deadline = Date.now() + timeoutMs;
         if (approval !== browserApproval) {
           browserApproval = approval;
           this.events.emit({ type: "phase", phase: approval ? "waiting-approval" : "thinking" });
@@ -947,9 +953,12 @@ export class ChatGptBrowser {
         warned = true;
         this.events.emit({ type: "notice", level: "warn", text: "Waiting for ChatGPT to start. Check the browser and use /status for diagnostics." });
       }
+      if (!browserApproval && Date.now() - lastWaitingNoticeAt >= timeoutMs) {
+        lastWaitingNoticeAt = Date.now();
+        this.events.emit({ type: "notice", level: "info", text: "ChatGPT has not visibly started yet. Continuing to wait for this same request; use Esc or /stop to cancel." });
+      }
       await page.waitForTimeout(250);
     }
-    throw new Error("ChatGPT did not visibly start responding. The prompt may have been sent; check the browser before retrying.");
   }
 
   async diagnostics(): Promise<string> {

@@ -198,6 +198,7 @@ it("recovers a stalled generating response after a tool without waiting for the 
   const config = defaultConfig(process.cwd()).browser;
   config.attachConnector = false;
   config.stallRecoveryMs = 700;
+  config.autoRecoverStalls = true;
   config.responseTimeoutMs = 10_000;
   const adapter = new ChatGptBrowser(config, events);
   Object.assign(adapter, { context, page, chatStarted: true });
@@ -233,6 +234,7 @@ it("does not restart while an approval or tool is still pending", async () => {
   const config = defaultConfig(process.cwd()).browser;
   config.attachConnector = false;
   config.stallRecoveryMs = 500;
+  config.autoRecoverStalls = true;
   config.responseTimeoutMs = 10_000;
   const adapter = new ChatGptBrowser(config, events);
   Object.assign(adapter, { context, page, chatStarted: true });
@@ -271,6 +273,7 @@ it("does not send a continuation when the stop button does not actually stop gen
   const config = defaultConfig(process.cwd()).browser;
   config.attachConnector = false;
   config.stallRecoveryMs = 500;
+  config.autoRecoverStalls = true;
   config.responseTimeoutMs = 10_000;
   const adapter = new ChatGptBrowser(config, events);
   Object.assign(adapter, { context, page, chatStarted: true });
@@ -307,6 +310,7 @@ it("waits for a late tool call before considering the stopped response safe to r
   const config = defaultConfig(process.cwd()).browser;
   config.attachConnector = false;
   config.stallRecoveryMs = 500;
+  config.autoRecoverStalls = true;
   config.responseTimeoutMs = 15_000;
   const adapter = new ChatGptBrowser(config, events);
   Object.assign(adapter, { context, page, chatStarted: true });

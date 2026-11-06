@@ -250,6 +250,9 @@ export function createMcpServer(ctx: ToolContext, resolveWorker?: (turnId: strin
         if (!callTurnId || callTurnId !== active.turnId || !callSignal || callSignal.aborted) {
           return errorText("Rejected stale tool call: no active matching harness turn.") as CallToolResult;
         }
+        if (active.allowedTools && !active.allowedTools.includes(def.name)) {
+          return errorText("This orchestrator turn only permits workspace inspection. Delegate other actions to its workers.") as CallToolResult;
+        }
         const callContext = { ...active, turnId: callTurnId, turnSignal: callSignal };
         await active.beforeToolStart?.().catch(() => undefined);
         if (!validTurn()) return errorText("The turn was cancelled or replaced before this tool started.") as CallToolResult;

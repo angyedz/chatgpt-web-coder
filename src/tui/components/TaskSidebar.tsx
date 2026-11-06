@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import wrapAnsi from "wrap-ansi";
 import type { Goal } from "../../runtime/goals.js";
-import type { PlanStep, SubagentSnapshot } from "../../types.js";
+import type { PlanStep, SubagentSnapshot, SwarmOrchestratorSnapshot } from "../../types.js";
 import { agentColor, agentSymbol } from "./SubagentStrip.js";
 import { terminalText } from "../terminal-text.js";
 import { theme } from "../theme.js";
@@ -18,6 +18,7 @@ interface TaskSidebarProps {
   timers: number;
   nextTimerSeconds: number;
   agents?: SubagentSnapshot[];
+  orchestrator?: SwarmOrchestratorSnapshot;
 }
 interface Line { text: string; color?: string; bold?: boolean }
 
@@ -31,7 +32,7 @@ function wrapped(value: string, width: number, limit: number): string[] {
   return lines;
 }
 
-export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers, nextTimerSeconds, agents = [] }: TaskSidebarProps) {
+export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers, nextTimerSeconds, agents = [], orchestrator }: TaskSidebarProps) {
   const inner = Math.max(1, width - 4);
   const capacity = Math.max(0, height - 2);
   const rows: Line[] = [{ text: "◆  WORKSPACE", color: theme.accent, bold: true }];
@@ -43,6 +44,7 @@ export function TaskSidebar({ width, height, goal, steps, notices, jobs, timers,
     if (capacity >= 20) rows.push({ text: " " });
   }
   if (agents.length) {
+    if (orchestrator) rows.push({ text: `Orchestrator · ${orchestrator.status}`, color: theme.accentAlt });
     const running = agents.filter((agent) => ["preparing", "running"].includes(agent.status)).length;
     rows.push({ text: `◈  AGENTS  ·  ${running}/${agents.length} active`, color: theme.accentAlt, bold: true });
     for (const agent of agents) {

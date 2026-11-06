@@ -84,7 +84,9 @@ export interface SubagentSnapshot {
   id: string;
   role: string;
   objective: string;
-  status: "preparing" | "running" | "done" | "failed" | "stopped";
+  assignment?: string;
+  queuedInstructions?: string[];
+  status: "preparing" | "idle" | "running" | "done" | "failed" | "stopped";
   workspace: string;
   toolCount: number;
   activity?: string;
@@ -98,10 +100,16 @@ export interface SubagentSnapshot {
   error?: string;
 }
 
+export interface SwarmOrchestratorSnapshot {
+  status: "planning" | "monitoring" | "reviewing" | "complete" | "blocked" | "failed" | "stopped";
+  summary?: string;
+  lastReviewedAt?: number;
+}
+
 export type HarnessEvent =
   | { type: "user-message"; id: string; text: string; channel?: "btw" | "telegram" }
   | { type: "telegram-setup"; state?: TelegramSetupState }
-  | { type: "subagents"; agents: SubagentSnapshot[] }
+  | { type: "subagents"; agents: SubagentSnapshot[]; orchestrator?: SwarmOrchestratorSnapshot }
   | { type: "system-message"; id: string; text: string }
   | { type: "assistant-start"; id: string; channel?: "btw" | "telegram" }
   | { type: "assistant-delta"; id: string; text: string; channel?: "btw" | "telegram" }

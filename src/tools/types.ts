@@ -9,10 +9,11 @@ import type { BackgroundTaskManager } from "../runtime/tasks.js";
 import type { ExternalMcpManager } from "../mcp/client.js";
 import type { GoalStore } from "../runtime/goals.js";
 import type { AttachmentStore } from "../runtime/attachments.js";
-import type { SubagentSnapshot } from "../types.js";
+import type { SubagentSnapshot, SwarmOrchestratorSnapshot } from "../types.js";
 
 export interface SubagentControl {
   readonly snapshots: SubagentSnapshot[];
+  readonly orchestration?: SwarmOrchestratorSnapshot;
   start(count: number, objective: string): Promise<void>;
   sendMessage(id: string, message: string): Promise<string>;
   waitFor(timeoutMs?: number): Promise<SubagentSnapshot[]>;
@@ -50,6 +51,8 @@ export interface ToolContext {
   tasks: BackgroundTaskManager;
   externalMcp: ExternalMcpManager;
   subagents?: SubagentControl;
+  /** Restrict a dedicated coordinator to workspace inspection tools. */
+  allowedTools?: readonly string[];
   browser?: {
     listInteractiveControls(): Promise<string>;
     interactWithControl(controlId: string, action: "click" | "fill" | "select" | "check" | "uncheck", value?: string): Promise<string>;

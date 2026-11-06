@@ -497,17 +497,26 @@ export class TelegramBot {
     this.queueDashboard();
   }
 
-  /** Events from a non-foreground workspace runner must not pollute the main session. */
-  onExternalSessionEvent(event: HarnessEvent): void {
-    if (event.type === "subagents" && event.agents.length && event.agents.every((item) => ["done", "failed", "stopped"].includes(item.status))) {
+  private captureFinishedSwarm(event: HarnessEvent): void {
+    if (!this.identity) return;
+    if (event.type === "subagents" && event.agents.length
+      && (!event.orchestrator || ["complete", "blocked", "failed", "stopped"].includes(event.orchestrator.status))
+      && event.agents.every((item) => ["done", "failed", "stopped", "idle"].includes(item.status))) {
       const key = event.agents.map((item) => item.workspace + ":" + item.startedAt).join("|");
       const digest = createHash("sha256").update(key).digest("hex").slice(0, 24);
       if (!this.finishedSwarmReports.has(digest)) {
         this.finishedSwarmReports.add(digest);
-        const report = "🏁 Background subagents have finished.\n\n" + event.agents.map((item) => `#${item.id} ${item.role}: ${item.status}\n${(item.error ?? item.summary ?? "Open Subagents → Results for details.").slice(0, 650)}`).join("\n\n");
+        const report = "🏁 Background subagents have finished.\n\n"
+          + (event.orchestrator ? `Orchestrator: ${event.orchestrator.status}\n${event.orchestrator.summary ?? ""}\n\n` : "")
+          + event.agents.map((item) => `#${item.id} ${item.role}: ${item.status}\n${(item.error ?? item.summary ?? "Open Subagents → Results for details.").slice(0, 650)}`).join("\n\n");
         void this.queueFullMessage("swarm:" + digest, report).catch(() => undefined);
       }
     }
+  }
+
+  /** Events from a non-foreground workspace runner must not pollute the main session. */
+  onExternalSessionEvent(event: HarnessEvent): void {
+    this.captureFinishedSwarm(event);
     this.captureFullAssistantReply(event);
     if ((this.requestActive && this.externalRequest) || event.type === "approval" || event.type === "approval-resolved") this.processAgentEvent(event);
   }
@@ -829,6 +838,7 @@ export class TelegramBot {
   }
 
   private onAgentEvent(event: HarnessEvent): void {
+    this.captureFinishedSwarm(event);
     this.captureFullAssistantReply(event);
     if (!this.identity || (this.requestActive && this.externalRequest)) return;
     this.processAgentEvent(event);

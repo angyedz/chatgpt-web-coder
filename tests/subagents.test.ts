@@ -7,6 +7,7 @@ import { ChatGptBrowser } from "../src/browser/chatgpt.js";
 import { HarnessEvents } from "../src/events.js";
 import { McpHost } from "../src/mcp/server.js";
 import { SubagentManager } from "../src/agent/subagents.js";
+import type { SubagentSnapshot } from "../src/types.js";
 
 function manager(open: boolean, connector = true): SubagentManager {
   const config = defaultConfig();
@@ -19,7 +20,9 @@ function manager(open: boolean, connector = true): SubagentManager {
 function completion(events: HarnessEvents): Promise<void> {
   return new Promise((resolve) => {
     const unsubscribe = events.on((event) => {
-      if (event.type === "subagents" && event.agents.length > 0 && event.agents.every((agent) => ["done", "failed", "stopped"].includes(agent.status))) {
+      if (event.type === "subagents" && event.agents.length > 0
+        && (!event.orchestrator || ["complete", "blocked", "failed", "stopped"].includes(event.orchestrator.status))
+        && event.agents.every((agent) => ["done", "failed", "stopped", "idle"].includes(agent.status))) {
         unsubscribe();
         resolve();
       }
@@ -27,7 +30,7 @@ function completion(events: HarnessEvents): Promise<void> {
   });
 }
 
-function browserFor(send: (prompt: string) => Promise<string>): ChatGptBrowser {
+function browserFor(send: (prompt: string) => Promise<string>, review?: (prompt: string) => Promise<string>): ChatGptBrowser {
   const side = {
     isOpen: true,
     send,
@@ -36,9 +39,25 @@ function browserFor(send: (prompt: string) => Promise<string>): ChatGptBrowser {
     closeSideChat: vi.fn(async () => undefined),
     stop: async () => undefined,
   };
+  const coordinator = {
+    ...side,
+    closeSideChat: vi.fn(async () => undefined),
+    send: review ?? (async (prompt: string) => {
+      const agents = JSON.parse(/CURRENT WORKER SNAPSHOT\n([^\n]+)/.exec(prompt)![1]!) as Array<{ id: string; conflicts?: string[] }>;
+      const objective = /USER OBJECTIVE\n([\s\S]+?)\n\nAVAILABLE WORKERS/.exec(prompt)![1]!;
+      const initial = prompt.includes("FIRST REVIEW:");
+      return JSON.stringify({
+        status: initial ? "continue" : agents.some((agent) => agent.conflicts?.length) ? "blocked" : "complete",
+        summary: initial ? "Assign specific work for the requested objective." : "Reviewed worker results and integration evidence.",
+        assignments: initial ? agents.map((agent) => ({ id: agent.id, role: "Project-specific work", task: objective })) : [],
+        instructions: [],
+      });
+    }),
+  };
+  let opened = false;
   return Object.assign({
     isOpen: true,
-    openSideChat: async () => side,
+    openSideChat: async () => { if (!opened) { opened = true; return coordinator; } return side; },
   }, { sideChat: side }) as unknown as ChatGptBrowser;
 }
 
@@ -180,6 +199,142 @@ describe("SubagentManager explicit launch boundaries", () => {
       expect(result.changedFiles).toEqual([]);
       expect(result.conflicts).toContain("shared.txt");
       expect(await readFile(file, "utf8")).toBe("edited by the parent");
+    } finally {
+      await agents.shutdown();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the orchestrator choose assignments, review busy workers and queue useful corrections", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-swarm-supervision-"));
+    const source = path.join(temporaryHome, "project");
+    await mkdir(source);
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(temporaryHome, "home"));
+    let release!: () => void;
+    const working = new Promise<void>((resolve) => { release = resolve; });
+    let workCalls = 0;
+    let reviews = 0;
+    const workerPrompts: string[] = [];
+    const browser = browserFor(async (prompt) => {
+      workerPrompts.push(prompt);
+      if (++workCalls === 1) await working;
+      return "Concrete storage work and verification finished.";
+    }, async (prompt) => {
+      reviews += 1;
+      if (reviews === 1) return JSON.stringify({ status: "continue", summary: "One worker should own the storage migration.", assignments: [{ id: "1", role: "Storage migration", task: "Implement a recoverable migration for project storage." }] });
+      if (reviews === 2) return JSON.stringify({ status: "continue", summary: "The worker is still running; add the compatibility requirement.", instructions: [{ id: "1", message: "Also verify compatibility with the previous storage format." }] });
+      const snapshots = JSON.parse(/CURRENT WORKER SNAPSHOT\n([^\n]+)/.exec(prompt)![1]!);
+      return JSON.stringify({ status: snapshots.every((agent: SubagentSnapshot) => agent.status === "done") ? "complete" : "continue", summary: "Reviewed storage changes and compatibility verification evidence." });
+    });
+    const agents = new SubagentManager(defaultConfig(source), browser, mcpHost(), new HarnessEvents());
+    vi.useFakeTimers();
+    try {
+      await agents.start(1, "Improve project storage");
+      await vi.waitFor(() => expect(workCalls).toBe(1));
+      expect(agents.snapshots[0]?.role).toBe("Storage migration");
+      expect(workerPrompts[0]).toContain("Implement a recoverable migration");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(reviews).toBe(2);
+      expect(workCalls).toBe(1);
+      expect(agents.snapshots[0]?.queuedInstructions).toEqual(["Also verify compatibility with the previous storage format."]);
+      release();
+      await vi.waitFor(() => expect(agents.orchestration?.status).toBe("complete"));
+      expect(workCalls).toBe(2);
+      expect(workerPrompts[1]).toContain("Also verify compatibility");
+      expect(agents.active).toBe(false);
+    } finally {
+      release();
+      await agents.shutdown();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes integrated parent files before an orchestrator-assigned dependent task", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-swarm-dependent-"));
+    const source = path.join(temporaryHome, "project");
+    await mkdir(source);
+    await writeFile(path.join(source, "upstream.txt"), "initial");
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(temporaryHome, "home"));
+    let reviews = 0;
+    let calls = 0;
+    let workspace = "";
+    const browser = browserFor(async (prompt) => {
+      if (++calls === 1) workspace = /^Workspace: (.+)$/m.exec(prompt)![1]!;
+      else expect(await readFile(path.join(workspace, "upstream.txt"), "utf8")).toBe("integrated elsewhere");
+      return "Verified the current project files.";
+    }, async () => {
+      reviews += 1;
+      if (reviews === 2) await writeFile(path.join(source, "upstream.txt"), "integrated elsewhere");
+      return JSON.stringify({
+        status: reviews < 3 ? "continue" : "complete", summary: "Reviewed current files and completed dependent verification.",
+        assignments: reviews < 3 ? [{ id: "1", role: reviews === 1 ? "Data owner" : "Dependent verification", task: reviews === 1 ? "Inspect the project storage files." : "Verify the newly integrated upstream changes." }] : [],
+      });
+    });
+    const agents = new SubagentManager(defaultConfig(source), browser, mcpHost(), new HarnessEvents());
+    try {
+      await agents.start(1, "Improve storage with verification");
+      await agents.waitFor(5_000);
+      expect(agents.orchestration?.status).toBe("complete");
+      expect(agents.snapshots[0]?.role).toBe("Dependent verification");
+      expect(calls).toBe(2);
+    } finally {
+      await agents.shutdown();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels planning and never dispatches late assignments after stop all", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-swarm-stop-plan-"));
+    await mkdir(path.join(temporaryHome, "project"));
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(temporaryHome, "home"));
+    let finishPlanning!: (value: string) => void;
+    let planning = false;
+    const decision = new Promise<string>((resolve) => { finishPlanning = resolve; });
+    const work = vi.fn(async () => "Work finished");
+    const browser = browserFor(work, async () => { planning = true; return decision; });
+    const agents = new SubagentManager(defaultConfig(path.join(temporaryHome, "project")), browser, mcpHost(), new HarnessEvents());
+    try {
+      await agents.start(1, "Improve the project");
+      await vi.waitFor(() => expect(planning).toBe(true));
+      agents.stop("all");
+      await expect(agents.start(1, "Another task")).rejects.toThrow("already running");
+      finishPlanning(JSON.stringify({ status: "continue", summary: "A late plan must not restart stopped work.", assignments: [{ id: "1", role: "Data work", task: "Implement the planned data migration." }] }));
+      await agents.shutdown();
+      expect(work).not.toHaveBeenCalled();
+      expect(agents.orchestration?.status).toBe("stopped");
+      expect(agents.active).toBe(false);
+    } finally {
+      finishPlanning("{}");
+      await agents.shutdown();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the orchestrator keep unused capacity idle instead of inventing duplicate tasks", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-swarm-idle-"));
+    await mkdir(path.join(temporaryHome, "project"));
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(temporaryHome, "home"));
+    let reviews = 0;
+    const work = vi.fn(async () => "Verified the small sequential change.");
+    const browser = browserFor(work, async () => JSON.stringify(++reviews === 1 ? {
+      status: "continue", summary: "This small change is sequential; keep the second slot available.",
+      assignments: [{ id: "1", role: "Storage change", task: "Implement and verify the single storage change." }],
+      waiting: [{ id: "2", reason: "No independent work is available until the storage change finishes." }],
+    } : { status: "complete", summary: "Reviewed the finished change; no additional parallel work was needed." }));
+    const agents = new SubagentManager(defaultConfig(path.join(temporaryHome, "project")), browser, mcpHost(), new HarnessEvents());
+    try {
+      await agents.start(2, "Make a small storage change");
+      await agents.waitFor(5_000);
+      expect(work).toHaveBeenCalledOnce();
+      expect(agents.snapshots).toHaveLength(2);
+      expect(agents.snapshots[1]?.status).toBe("idle");
+      expect(agents.orchestration?.status).toBe("complete");
+      expect(agents.active).toBe(false);
     } finally {
       await agents.shutdown();
       vi.unstubAllEnvs();

@@ -352,7 +352,8 @@ export class TelegramSessionBridge {
     const action = argument.trim();
     if (!action || action.toLowerCase() === "status") {
       const agents = manager.snapshots;
-      return agents.length ? "Selected project subagents:\n" + agents.map((a) => `#${a.id} · ${a.role} · ${a.status} · ${a.toolCount} tools\n${a.workspace}\n${a.activity ?? "idle"}`).join("\n\n") : "No subagents for the selected project. Use /swarm start <1-5> <objective>.";
+      const orchestrator = manager.orchestration;
+      return agents.length ? `Orchestrator: ${orchestrator?.status ?? "idle"}\n${orchestrator?.summary ?? ""}\n\nSelected project subagents:\n` + agents.map((a) => `#${a.id} · ${a.role} · ${a.status} · ${a.toolCount} tools\nAssignment: ${a.assignment ?? "awaiting plan"}\n${a.workspace}\n${a.activity ?? "idle"}`).join("\n\n") : "No subagents for the selected project. Use /swarm start <1-5> <objective>.";
     }
     if (action.toLowerCase() === "history") {
       const reports = await manager.history();
@@ -361,12 +362,12 @@ export class TelegramSessionBridge {
     const report = /^report\s+([a-z0-9-]+)$/i.exec(action);
     if (report) {
       const item = await manager.report(report[1]!);
-      return `Swarm report ${item.id}\n${item.objective}\n\n` + item.agents.map((a) => `#${a.id} [${a.status}] ${a.role}\n${a.error ?? a.summary ?? a.preview ?? "No result"}`).join("\n\n");
+      return `Swarm report ${item.id}\n${item.objective}\nOrchestrator: ${item.orchestrator?.status ?? "not recorded"}\n${item.orchestrator?.summary ?? ""}\n\n` + item.agents.map((a) => `#${a.id} [${a.status}] ${a.role}\n${a.error ?? a.summary ?? a.preview ?? "No result"}`).join("\n\n");
     }
     const start = /^start\s+([1-5])\s+([\s\S]+)$/i.exec(action);
     if (start) {
       await manager.start(Number(start[1]), start[2]!);
-      return `Started ${start[1]} subagents for selected workspace. Use /swarm status or /swarm results to inspect their progress.`;
+      return `Started an orchestrator with ${start[1]} workers for the selected workspace. It plans assignments and reviews progress automatically. Use /swarm status to inspect its decisions.`;
     }
     const stop = /^stop(?:\s+(all|[1-5]))?$/i.exec(action);
     if (stop) { manager.stop(stop[1]); return "Stop requested for the selected session's subagents."; }

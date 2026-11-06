@@ -82,6 +82,10 @@ See the full [command reference](docs/REFERENCE.en.md).
 
 ### Subagents
 
+A dedicated background orchestrator chooses assignments from the shared objective and requested worker count. Worker numbers have no fixed roles. The orchestrator reviews progress about every 30 seconds and when a worker finishes, then sends clarifications, revisions, verification or dependent work as needed. Busy workers queue instructions until their current turn ends. The group finishes only after the orchestrator reviews the results; `/swarm status` and saved reports include its state and findings. The orchestrator uses one additional browser tab beyond the requested 1–5 workers.
+
+Workers may stay `idle` while waiting for dependencies or when there is no useful parallel work. The orchestrator records the reason and can assign work to them later.
+
 Subagents only start when explicitly requested. Start up to five with `/swarm start 5 <task>`. Each gets its own background ChatGPT tab and local project copy. Secrets such as `.env` files and private keys are excluded. Changes are copied back only when the target files have not changed in the meantime. Review status and conflicts with `/swarm history` and `/swarm report <run-id>`.
 
 ### Telegram bot
@@ -91,6 +95,10 @@ Create a bot with [@BotFather](https://t.me/BotFather), then run `/telegram setu
 ### Long messages and attachments
 
 Long prompts are stored locally and attached as files so the full text is preserved. Attach local files with `/attach <path>` or use the Windows clipboard command `/attach clipboard`. Local files are not automatically sent with Telegram messages.
+
+## Long-running responses
+
+Long ChatGPT responses, including silent reasoning, have no overall response time limit. The harness keeps waiting for the same request until it finishes or you cancel with Esc or `/stop`; elapsed time alone does not block a goal. `browser.responseTimeoutMs` is now an inactivity reminder interval. Automatic stopping of apparently stalled responses is disabled by default (`browser.autoRecoverStalls: false`).
 
 ## Updates and releases
 

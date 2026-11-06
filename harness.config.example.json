@@ -23,6 +23,7 @@
     "autoApproveToolCalls": true,
     "loginTimeoutMs": 600000,
     "responseTimeoutMs": 900000,
+    "autoRecoverStalls": false,
     "stallRecoveryMs": 90000,
     "navigationTimeoutMs": 60000
   },

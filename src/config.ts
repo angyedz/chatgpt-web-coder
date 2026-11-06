@@ -20,7 +20,9 @@ export interface BrowserConfig {
   attachConnector: boolean;
   autoApproveToolCalls: boolean;
   loginTimeoutMs: number;
+  /** Legacy name: inactivity reminder interval; it does not abort a response. */
   responseTimeoutMs: number;
+  autoRecoverStalls: boolean;
   stallRecoveryMs: number;
   navigationTimeoutMs: number;
 }
@@ -109,6 +111,7 @@ export function defaultConfig(workspace = process.cwd()): HarnessConfig {
       autoApproveToolCalls: true,
       loginTimeoutMs: 10 * 60_000,
       responseTimeoutMs: 15 * 60_000,
+      autoRecoverStalls: false,
       stallRecoveryMs: 90_000,
       navigationTimeoutMs: 60_000,
     },
@@ -399,6 +402,7 @@ export function exampleConfig(): string {
         connectorName: "chatgpt-coder",
         attachConnector: true,
         autoApproveToolCalls: true,
+        autoRecoverStalls: false,
         stallRecoveryMs: 90_000,
       },
       mcp: { host: "127.0.0.1", port: 8790, path: "/mcp" },

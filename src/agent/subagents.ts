@@ -8,17 +8,11 @@ import type { McpHost } from "../mcp/server.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
 import { harnessHome, isInside } from "../utils/paths.js";
 import { newId } from "../utils/ids.js";
-import type { SubagentChatMessage, SubagentSnapshot } from "../types.js";
+import type { SubagentChatMessage, SubagentSnapshot, SwarmOrchestratorSnapshot } from "../types.js";
 import { listSwarmReports, readSwarmReport, saveSwarmReport, type SwarmReport } from "./swarm-reports.js";
+import { ORCHESTRATOR_TOOLS, parseSwarmDecision, SWARM_REVIEW_INTERVAL_MS, swarmOrchestratorPrompt } from "./swarm-orchestrator.js";
 
 const MAX_AGENTS = 5;
-const ROLES = [
-  "Architecture & discovery",
-  "Implementation",
-  "Tests & verification",
-  "Reliability & review",
-  "UX & polish",
-] as const;
 const IGNORED_PATHS = new Set([
   ".git", ".svn", ".hg", "node_modules", "dist", "coverage", ".cache", ".turbo",
   ".next", ".nuxt", ".output", ".venv", "venv", "__pycache__", ".pytest_cache",
@@ -48,6 +42,7 @@ type AgentRecord = {
   approvalIds: Set<string>;
   lastPreviewPublish?: number;
   settled?: boolean;
+  pendingMessages: string[];
 };
 
 function isIgnored(relative: string, stateRelative?: string): boolean {
@@ -211,6 +206,12 @@ export class SubagentManager {
   private reportQueue: Promise<void> = Promise.resolve();
   private integrationQueue: Promise<void> = Promise.resolve();
   private sourceRoot?: string;
+  private orchestratorState?: SwarmOrchestratorSnapshot;
+  private orchestratorController?: AbortController;
+  private orchestratorBrowser?: ChatGptBrowser;
+  private orchestratorTask?: Promise<void>;
+  private wakeReview?: () => void;
+  private workerRevision = 0;
 
   constructor(
     private readonly config: HarnessConfig,
@@ -222,8 +223,13 @@ export class SubagentManager {
   get snapshots(): SubagentSnapshot[] {
     return this.agents.map((agent) => ({
       ...agent.info,
+      queuedInstructions: [...agent.pendingMessages],
       messages: agent.info.messages?.map((message) => ({ ...message })),
     }));
+  }
+
+  get orchestration(): SwarmOrchestratorSnapshot | undefined {
+    return this.orchestratorState ? { ...this.orchestratorState } : undefined;
   }
 
   private recordChatMessage(agent: AgentRecord, message: SubagentChatMessage, publish = true): void {
@@ -243,7 +249,7 @@ export class SubagentManager {
   }
 
   private publish(): void {
-    this.events.emit({ type: "subagents", agents: this.snapshots });
+    this.events.emit({ type: "subagents", agents: this.snapshots, orchestrator: this.orchestration });
   }
 
   private persistReport(): void {
@@ -255,6 +261,7 @@ export class SubagentManager {
       objective: agents[0]!.objective,
       savedAt: Date.now(),
       agents,
+      orchestrator: this.orchestration,
     };
     this.reportQueue = this.reportQueue.catch(() => undefined).then(() => saveSwarmReport(report)).catch((error: unknown) => {
       this.events.emit({ type: "notice", level: "warn", text: `Could not save subagent report: ${error instanceof Error ? error.message : String(error)}` });
@@ -272,7 +279,8 @@ export class SubagentManager {
   }
 
   get active(): boolean {
-    return this.initializing || this.agents.some((agent) => !agent.settled);
+    return this.initializing || Boolean(this.orchestratorController)
+      || this.agents.some((agent) => !agent.settled);
   }
 
   async start(count: number, objective: string): Promise<void> {
@@ -294,6 +302,7 @@ export class SubagentManager {
     }));
     this.agents = [];
     this.reportId = undefined;
+    this.orchestratorState = { status: "planning", summary: "Planning assignments for the requested worker count." };
     this.publish();
     try {
       const sourceRoot = await realpath(this.config.workspace);
@@ -308,12 +317,13 @@ export class SubagentManager {
         const workspace = path.join(workspaceRoot, `swarm-${runId}-${id}`);
         const baseFiles = await createWorkspaceSnapshot(sourceRoot, workspace, startup.signal);
         const record: AgentRecord = {
-          info: { id, role: ROLES[index]!, objective, status: "preparing", workspace, toolCount: 0, startedAt: Date.now() },
+          info: { id, role: "Awaiting assignment", objective, status: "preparing", workspace, toolCount: 0, startedAt: Date.now(), activity: "Orchestrator is planning the task" },
           controller: new AbortController(),
           turnId: newId("turn"),
           baseFiles,
           approvalIds: new Set(),
-          settled: false,
+          settled: true,
+          pendingMessages: [],
         };
         this.agents.push(record);
         this.publish();
@@ -324,6 +334,7 @@ export class SubagentManager {
         agent.info = { ...agent.info, status: startup.signal.aborted ? "stopped" : "failed", finishedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
         agent.settled = true;
       }
+      this.orchestratorState = { status: startup.signal.aborted ? "stopped" : "failed", summary: error instanceof Error ? error.message : String(error) };
       this.publish();
       this.persistReport();
       throw error;
@@ -334,10 +345,161 @@ export class SubagentManager {
       this.persistReport();
     }
 
-    // Each worker gets a background ChatGPT tab and a private local copy.
-    // Safe, non-conflicting file changes are integrated when that worker finishes.
-    for (const agent of this.agents) agent.task = this.runAgent(agent);
-    this.events.emit({ type: "notice", level: "info", text: `Started ${this.agents.length} isolated subagents in background tabs. Non-conflicting file changes are integrated automatically; conflicting edits remain in each agent workspace.` });
+    const controller = new AbortController();
+    this.orchestratorController = controller;
+    this.orchestratorTask = this.orchestrate(objective, controller);
+    this.events.emit({ type: "notice", level: "info", text: `Started an orchestrator for ${this.agents.length} isolated subagents. It assigns tasks from the objective and reviews progress every 30 seconds and after worker completion.` });
+  }
+
+  private async orchestrate(objective: string, controller: AbortController): Promise<void> {
+    const events = new HarnessEvents();
+    const runtime = createRuntime(this.config, events);
+    runtime.context.turnSignal = controller.signal;
+    runtime.context.allowedTools = ORCHESTRATOR_TOOLS;
+    let browser: ChatGptBrowser | undefined;
+    let initial = true;
+    let invalidResponses = 0;
+    let feedback = "";
+    try {
+      browser = await this.primaryBrowser.openSideChat(events, { attachConnector: true });
+      this.orchestratorBrowser = browser;
+      let reviews = 0;
+      while (!controller.signal.aborted) {
+        this.orchestratorState = { ...this.orchestratorState, status: initial ? "planning" : "reviewing" };
+        this.publish();
+        const turnId = newId("swarm-review");
+        const reviewedRevision = this.workerRevision;
+        runtime.context.turnId = turnId;
+        runtime.context.beforeToolStart = () => browser!.snapshotBeforeTool();
+        this.mcp.registerTurnContext(turnId, runtime.context);
+        let answer: string;
+        try {
+          answer = await browser.send([
+            swarmOrchestratorPrompt(objective, this.snapshots, initial),
+            `Workspace: ${this.config.workspace}\nUse only the configured MCP connector for workspace facts. Allowed read-only tools: ${ORCHESTRATOR_TOOLS.join(", ")}. Every call requires turn_id: ${turnId}.`,
+            this.orchestratorState?.summary ? `PREVIOUS REVIEW SUMMARY\n${this.orchestratorState.summary}` : "",
+            feedback,
+          ].filter(Boolean).join("\n\n"), controller.signal, { turnId, continueChat: reviews % 12 !== 0 });
+          reviews += 1;
+        } finally {
+          this.mcp.unregisterTurnContext(turnId);
+        }
+        controller.signal.throwIfAborted();
+        let decision;
+        try {
+          decision = parseSwarmDecision(answer, this.snapshots, initial);
+          invalidResponses = 0;
+          feedback = "";
+        } catch (error) {
+          if (++invalidResponses >= 3) throw new Error(`Orchestrator could not produce a valid decision: ${error instanceof Error ? error.message : String(error)}`);
+          feedback = `Your previous response was rejected without dispatching its actions: ${error instanceof Error ? error.message : String(error)}. Review the current snapshot and return a valid JSON decision.`;
+          continue;
+        }
+        this.orchestratorState = {
+          status: decision.status === "continue" ? "monitoring" : decision.status,
+          summary: decision.summary,
+          lastReviewedAt: Date.now(),
+        };
+        this.events.emit({ type: "notice", level: "info", text: `Swarm orchestrator [${this.orchestratorState.status}]: ${decision.summary}` });
+        controller.signal.throwIfAborted();
+        if (decision.status !== "continue") {
+          // Unused capacity stays idle in the final report.
+          for (const agent of this.agents) if (!agent.info.assignment && agent.settled) {
+            if (agent.info.status !== "stopped") agent.info = { ...agent.info, status: "idle", activity: decision.summary };
+          }
+          break;
+        }
+        for (const assignment of decision.assignments) {
+          controller.signal.throwIfAborted();
+          this.assignWorker(assignment.id, assignment.role, assignment.task);
+        }
+        for (const instruction of decision.instructions) {
+          controller.signal.throwIfAborted();
+          this.queueInstruction(instruction.id, instruction.message);
+        }
+        for (const waiting of decision.waiting) {
+          const agent = this.agents.find((item) => item.info.id === waiting.id)!;
+          agent.info = { ...agent.info, status: "idle", activity: waiting.reason };
+        }
+        initial = false;
+        this.publish();
+        this.persistReport();
+        if (reviewedRevision !== this.workerRevision) continue;
+        await this.waitForReview(controller.signal, Boolean(decision.assignments.length || decision.instructions.length));
+      }
+    } catch (error) {
+      this.orchestratorState = {
+        status: controller.signal.aborted ? "stopped" : "failed",
+        summary: controller.signal.aborted ? "Stopped by the user." : error instanceof Error ? error.message : String(error),
+        lastReviewedAt: Date.now(),
+      };
+      for (const agent of this.agents) if (!agent.info.assignment && agent.settled && agent.info.status !== "stopped") {
+        agent.info = { ...agent.info, status: "failed", error: this.orchestratorState.summary, finishedAt: Date.now() };
+      }
+      if (!controller.signal.aborted) this.events.emit({ type: "notice", level: "error", text: `Swarm orchestrator: ${this.orchestratorState.summary}` });
+    } finally {
+      runtime.approvals.denyAll();
+      runtime.timers.dispose();
+      await runtime.externalMcp.close().catch(() => undefined);
+      await runtime.exec.dispose().catch(() => undefined);
+      await browser?.closeSideChat().catch(() => undefined);
+      this.orchestratorBrowser = undefined;
+      if (this.orchestratorController === controller) this.orchestratorController = undefined;
+      this.publish();
+      this.persistReport();
+    }
+  }
+
+  private waitForReview(signal: AbortSignal, immediateWhenIdle: boolean): Promise<void> {
+    if (signal.aborted || (immediateWhenIdle && !this.agents.some((agent) => !agent.settled))) return Promise.resolve();
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", finish);
+        if (this.wakeReview === finish) this.wakeReview = undefined;
+        resolve();
+      };
+      const timer = setTimeout(finish, SWARM_REVIEW_INTERVAL_MS);
+      this.wakeReview = finish;
+      signal.addEventListener("abort", finish, { once: true });
+      if (signal.aborted) finish();
+    });
+  }
+
+  private assignWorker(id: string, role: string, task: string): void {
+    const agent = this.agents.find((item) => item.info.id === id)!;
+    if (!agent.settled || agent.info.status === "stopped") throw new Error(`Worker ${id} is not available for assignment.`);
+    agent.info = { ...agent.info, role, assignment: task, status: "running", activity: "Orchestrator assigned a task", summary: undefined, error: undefined, finishedAt: undefined };
+    const instruction = [task, ...agent.pendingMessages.splice(0)].join("\n\n");
+    agent.settled = false;
+    if (agent.browser?.isOpen && agent.sideEvents) {
+      agent.task = this.runFollowup(agent, instruction).then(() => undefined, () => undefined);
+    } else {
+      agent.controller = new AbortController();
+      agent.turnId = newId("turn");
+      agent.task = this.runAgent(agent, instruction);
+    }
+  }
+
+  private queueInstruction(id: string, message: string): void {
+    const agent = this.agents.find((item) => item.info.id === id);
+    if (!agent || agent.info.status === "stopped") throw new Error(`Worker ${id} is unavailable.`);
+    if (!agent.settled || !agent.browser?.isOpen) {
+      if (!agent.pendingMessages.includes(message)) agent.pendingMessages.push(message);
+    }
+    else agent.task = this.runFollowup(agent, message).then(() => undefined, () => undefined);
+  }
+
+  private workerFinished(agent: AgentRecord): void {
+    this.workerRevision += 1;
+    agent.settled = true;
+    if (!agent.controller.signal.aborted && agent.pendingMessages.length && agent.browser?.isOpen) {
+      const instruction = agent.pendingMessages.splice(0).join("\n\n");
+      agent.task = this.runFollowup(agent, instruction).then(() => undefined, () => undefined);
+    }
+    this.publish();
+    this.persistReport();
+    this.wakeReview?.();
   }
 
   approve(id: string, allowed: boolean): boolean {
@@ -356,9 +518,19 @@ export class SubagentManager {
       if (!id || id === "all") { this.startupController?.abort(); return; }
       throw new Error(`No subagent with id ${id}.`);
     }
-    if (!id || id === "all") this.startupController?.abort();
+    if (!id || id === "all") {
+      this.startupController?.abort();
+      this.orchestratorController?.abort();
+      if (this.orchestratorBrowser) void this.orchestratorBrowser.stop().catch(() => undefined);
+      if (this.orchestratorController) this.orchestratorState = { ...this.orchestratorState, status: "stopped", summary: "Stopped by the user." };
+    }
     for (const agent of targets) {
-      if (!["preparing", "running"].includes(agent.info.status)) continue;
+      agent.pendingMessages = [];
+      if (agent.info.status === "idle" && !this.orchestratorController) continue;
+      if (!["preparing", "idle", "running"].includes(agent.info.status)) {
+        if (id && id !== "all") agent.info = { ...agent.info, status: "stopped", activity: "stopped by user" };
+        continue;
+      }
       agent.controller.abort();
       agent.runtime?.approvals.denyAll();
       if (agent.browser) void agent.browser.stop().catch(() => undefined);
@@ -367,10 +539,12 @@ export class SubagentManager {
     }
     this.publish();
     this.persistReport();
+    this.wakeReview?.();
   }
 
   async shutdown(): Promise<void> {
     this.stop("all");
+    await this.orchestratorTask;
     await Promise.allSettled(this.agents.map((agent) => agent.task).filter((task): task is Promise<void> => Boolean(task)));
     await Promise.all(this.agents.map(async (agent) => {
       await agent.browser?.closeSideChat().catch(() => undefined);
@@ -399,6 +573,22 @@ export class SubagentManager {
     return work;
   }
 
+  private refreshWorkspace(agent: AgentRecord): Promise<void> {
+    const work = this.integrationQueue.catch(() => undefined).then(async () => {
+      // Reverse the same conflict-safe copy operation: refresh only files the
+      // worker has not changed, preserving its unintegrated edits.
+      const result = await integrateWorkspaceChanges(agent.info.workspace, this.sourceRoot ?? this.config.workspace, agent.baseFiles);
+      const current = await scanWorkspace(agent.info.workspace);
+      for (const relative of result.applied) {
+        const digest = current.get(relative);
+        if (digest === undefined) agent.baseFiles.delete(relative);
+        else agent.baseFiles.set(relative, digest);
+      }
+    });
+    this.integrationQueue = work.then(() => undefined, () => undefined);
+    return work;
+  }
+
   async open(id: string): Promise<void> {
     const agent = this.agents.find((item) => item.info.id === id);
     if (!agent) throw new Error(`No subagent with id ${id}.`);
@@ -410,7 +600,12 @@ export class SubagentManager {
     const agent = this.agents.find((item) => item.info.id === id);
     if (!agent) throw new Error(`No subagent with id ${id}.`);
     if (!message.trim()) throw new Error("Usage: /swarm message <id> <instruction>");
-    if (!agent.settled || agent.info.status === "running") throw new Error(`Subagent ${id} is already working.`);
+    if (!agent.settled || agent.info.status === "running" || (this.orchestratorController && !agent.browser && ["preparing", "idle"].includes(agent.info.status))) {
+      agent.pendingMessages.push(message.trim());
+      this.publish();
+      this.wakeReview?.();
+      return Promise.resolve(`Instruction queued for subagent ${id}; it will be applied after its current turn.`);
+    }
     if (!agent.browser?.isOpen || !agent.sideEvents) throw new Error(`Subagent ${id} has no reusable ChatGPT chat.`);
     const task = this.runFollowup(agent, message.trim());
     agent.task = task.then(() => undefined, () => undefined);
@@ -451,13 +646,15 @@ export class SubagentManager {
     runtime.context.turnSignal = controller.signal;
     runtime.context.browser = browser;
     runtime.context.beforeToolStart = () => browser.snapshotBeforeTool();
-    agent.info = { ...agent.info, status: "running", activity: "Orchestrator sent a follow-up", error: undefined, finishedAt: undefined };
+    agent.info = { ...agent.info, status: "running", activity: "Orchestrator sent a follow-up", summary: undefined, preview: undefined, error: undefined, finishedAt: undefined };
     this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: message, createdAt: Date.now() });
     let registered = false;
     try {
+      await this.refreshWorkspace(agent);
+      controller.signal.throwIfAborted();
       this.mcp.registerTurnContext(turnId, runtime.context);
       registered = true;
-      const answer = await browser.send(message, controller.signal, { turnId, continueChat: true });
+      const answer = await browser.send(`ORCHESTRATOR FOLLOW-UP\nCurrent role: ${agent.info.role}\nShared objective: ${agent.info.objective}\n\nFollow this latest assignment or correction:\n${message}\n\nUnchanged files in your workspace have been refreshed from the parent project. Inspect current files before editing. Your unintegrated conflicting edits are preserved.`, controller.signal, { turnId, continueChat: true });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
       agent.info = {
@@ -489,13 +686,11 @@ export class SubagentManager {
       await runtime.externalMcp.close().catch(() => undefined);
       await runtime.exec.dispose().catch(() => undefined);
       agent.runtime = undefined;
-      agent.settled = true;
-      this.publish();
-      this.persistReport();
+      this.workerFinished(agent);
     }
   }
 
-  private async runAgent(agent: AgentRecord): Promise<void> {
+  private async runAgent(agent: AgentRecord, assignment: string): Promise<void> {
     const { info, controller, turnId } = agent;
     const sideEvents = new HarnessEvents();
     agent.sideEvents = sideEvents;
@@ -552,8 +747,10 @@ export class SubagentManager {
         "If your assignment overlaps another agent, focus on your named role and minimize edits outside that scope.",
         "Finish with a concise summary of files changed, tests and failures, and any suggested integration steps.",
         `USER-APPROVED SWARM OBJECTIVE\n${info.objective}`,
+        `YOUR CURRENT ASSIGNMENT FROM THE ORCHESTRATOR\n${assignment}\n\nComplete this assignment within the shared objective. Do not independently take over other workers' tasks. Report concrete results, remaining dependencies and blockers so the orchestrator can decide the next step.`,
+        "The orchestrator may change your role and assignment in a follow-up. Follow its latest instruction rather than keeping your initial specialization.",
       ].join("\n\n");
-      this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: info.objective, createdAt: Date.now() });
+      this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: assignment, createdAt: Date.now() });
       const answer = await browser.send(prompt, controller.signal, { turnId });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
@@ -568,7 +765,7 @@ export class SubagentManager {
         status: "done",
         activity: `completed · ${integrationSummary}${conflictSummary}`,
         summary: answer.slice(-6_000),
-        changedFiles: integration.applied,
+        changedFiles: [...new Set([...(agent.info.changedFiles ?? []), ...integration.applied])],
         conflicts: integration.conflicts,
         preview: undefined,
         finishedAt: Date.now(),
@@ -593,9 +790,7 @@ export class SubagentManager {
       await runtime.externalMcp.close().catch(() => undefined);
       await runtime.exec.dispose().catch(() => undefined);
       agent.runtime = undefined;
-      agent.settled = true;
-      this.publish();
-      this.persistReport();
+      this.workerFinished(agent);
     }
   }
 }

@@ -56,6 +56,16 @@ async function pickerButton(page: Page, kind: PickerKind): Promise<Locator | und
   return closest?.locator;
 }
 
+async function waitForPickerButton(page: Page, kind: PickerKind, timeoutMs = 8_000): Promise<Locator | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const button = await pickerButton(page, kind);
+    if (button) return button;
+    await page.waitForTimeout(200);
+  } while (Date.now() < deadline);
+  return undefined;
+}
+
 interface MenuItem { label: string; locator: Locator; submenu: boolean }
 interface Choice { label: string; route: string[] }
 interface PickerOrigin { x: number; y: number }
@@ -131,7 +141,7 @@ async function chooseRoute(page: Page, route: string[], modelOrigin?: PickerOrig
 }
 
 async function openModelPicker(page: Page): Promise<PickerOrigin | undefined> {
-  const effort = await pickerButton(page, "effort");
+  const effort = await waitForPickerButton(page, "effort");
   if (effort) {
     const box = await effort.boundingBox().catch(() => null);
     if (box) {
@@ -161,7 +171,7 @@ async function openModelPicker(page: Page): Promise<PickerOrigin | undefined> {
       await page.keyboard.press("Escape").catch(() => undefined);
     }
   }
-  const model = await pickerButton(page, "model");
+  const model = await waitForPickerButton(page, "model");
   if (!model) return undefined;
   await model.click();
   await page.waitForTimeout(300);
@@ -305,7 +315,7 @@ export async function readPicker(page: Page, kind: PickerKind, select?: string):
       modelOrigin = await openModelPicker(page);
       if (!modelOrigin) throw new Error("The model control was not found in ChatGPT. Open the thinking effort control to check its availability.");
     } else {
-      button = await pickerButton(page, kind);
+      button = await waitForPickerButton(page, kind);
       if (!button) throw new Error("The effort control was not found in ChatGPT. Its availability depends on the model and account.");
       await button.click();
       await page.waitForTimeout(300);

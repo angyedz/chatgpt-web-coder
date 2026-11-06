@@ -9,6 +9,7 @@ import type {
   PlanStep,
   SessionInfo,
   SubagentSnapshot,
+  SwarmOrchestratorSnapshot,
   ToolCallView,
   TelegramSetupState,
   TurnPhase,
@@ -59,6 +60,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
   const [notices, setNotices] = useState<Notice[]>(() => orchestrator.sessionStartupNotice ? [{ id: 0, level: "info", text: orchestrator.sessionStartupNotice }] : []);
   const [plan, setPlan] = useState<PlanStep[]>(() => initialSession?.plan ?? []);
   const [agents, setAgents] = useState<SubagentSnapshot[]>(() => orchestrator.subagents?.snapshots ?? []);
+  const [swarmOrchestrator, setSwarmOrchestrator] = useState<SwarmOrchestratorSnapshot | undefined>(() => orchestrator.subagents?.orchestration);
   const [goal, setGoal] = useState(() => initialSession?.goal);
   const [attachments, setAttachments] = useState(() => initialSession?.attachments ?? []);
   const [localSessionId, setLocalSessionId] = useState(() => initialSession?.id ?? "");
@@ -103,6 +105,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
       switch (event.type) {
         case "subagents":
           setAgents(event.agents);
+          setSwarmOrchestrator(event.orchestrator);
           break;
 
         case "user-message":
@@ -515,6 +518,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
           timers={timerCount}
           nextTimerSeconds={nextTimerSeconds}
           agents={agents}
+          orchestrator={swarmOrchestrator}
         /> : null}
       </Box> : null}
 
@@ -567,7 +571,7 @@ export function App({ orchestrator, selection }: { orchestrator: Orchestrator; s
 
       {approval ? <ApprovalPrompt request={approval} /> : null}
 
-      {showAgentStrip && !showSidebar ? <SubagentStrip agents={agents} columns={columns} /> : null}
+      {showAgentStrip && !showSidebar ? <SubagentStrip agents={agents} columns={columns} orchestrator={swarmOrchestrator} /> : null}
 
       {showLive ? <ActivityBar phase={phase} startedAt={turnStartedAt} /> : null}
 
