@@ -51,7 +51,9 @@ export interface ToolContext {
   tasks: BackgroundTaskManager;
   externalMcp: ExternalMcpManager;
   subagents?: SubagentControl;
-  /** Restrict a dedicated coordinator to workspace inspection tools. */
+  /** Present only in an active dedicated swarm coordinator turn. */
+  reviewSwarm?: (input: Record<string, unknown>) => string;
+  /** Restrict a dedicated coordinator to inspection and coordination tools. */
   allowedTools?: readonly string[];
   browser?: {
     listInteractiveControls(): Promise<string>;

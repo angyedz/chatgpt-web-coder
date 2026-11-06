@@ -5,9 +5,10 @@ export const SWARM_REVIEW_INTERVAL_MS = 30_000;
 export const ORCHESTRATOR_TOOLS = [
   "get_workspace_info", "list_dir", "glob", "grep", "read_file",
   "get_project_instructions", "list_skills", "read_skill",
+  "update_swarm",
 ] as const;
 
-const decisionSchema = z.object({
+export const swarmReviewSchema = z.object({
   status: z.enum(["continue", "complete", "blocked"]),
   summary: z.string().trim().min(10).max(4_000),
   assignments: z.array(z.object({
@@ -24,11 +25,10 @@ const decisionSchema = z.object({
     reason: z.string().trim().min(10).max(1_000),
   })).max(5).default([]),
 });
-export type SwarmDecision = z.infer<typeof decisionSchema>;
+export type SwarmDecision = z.infer<typeof swarmReviewSchema>;
 
-export function parseSwarmDecision(answer: string, agents: SubagentSnapshot[], initial: boolean): SwarmDecision {
-  const text = answer.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const decision = decisionSchema.parse(JSON.parse(text));
+export function validateSwarmReview(input: unknown, agents: SubagentSnapshot[], initial: boolean): SwarmDecision {
+  const decision = swarmReviewSchema.parse(input);
   const ids = new Set(agents.map((agent) => agent.id));
   const assigned = new Set<string>();
   for (const assignment of decision.assignments) {
@@ -69,8 +69,8 @@ export function swarmOrchestratorPrompt(objective: string, agents: SubagentSnaps
     "The harness invokes you on a 30-second review interval while workers run, and when a worker finishes. Reviews are serialized and their processing time may extend that interval. You do not need to wait, poll or schedule a timer inside this response. You must review final results and evidence before completing the group. Report blocked only for a concrete obstacle that prevents further useful work.",
     initial
       ? "FIRST REVIEW: inspect the project if needed, then account for each requested worker with a concrete assignment or an explicit waiting reason (dependencies or work that cannot usefully run in parallel). Start useful work on at least one worker; use the available count without inventing redundant tasks. Exclude user-stopped workers. Do not send the shared objective as every worker's entire assignment. You may report blocked without assignments if a concrete prerequisite prevents starting."
-      : "PROGRESS REVIEW: revise assignments from actual progress, not a fixed role list. Inspect changed files before accepting claims. Reuse idle workers for remaining work or verification. If work is still running and no adjustment is needed, return continue with empty action arrays.",
-    "Return only a JSON object (no prose or Markdown): {\"status\":\"continue|complete|blocked\",\"summary\":\"concrete plan, findings or completion evidence\",\"assignments\":[{\"id\":\"1\",\"role\":\"task-specific role\",\"task\":\"concrete instruction, scope and expected result\"}],\"instructions\":[{\"id\":\"2\",\"message\":\"useful correction or new information\"}],\"waiting\":[{\"id\":\"3\",\"reason\":\"waiting for an upstream result\"}]}. Assignments are for available workers only. Instructions are for workers that already have an assignment. Waiting is only for unused slots. Terminal decisions must have no actions. Complete requires finished assignments and no unresolved conflicts; unused slots may stay idle, and user-stopped workers must remain stopped. Blocked must explain the obstacle. Use only the existing worker IDs.",
+      : "PROGRESS REVIEW: revise assignments from actual progress, not a fixed role list. Inspect changed files before accepting claims. Reuse idle workers for remaining work or verification. If work is still running and no adjustment is needed, call update_swarm with status continue and no actions.",
+    "CONTROL PROTOCOL: use actual MCP tool calls exclusively. Never output JSON, code blocks, or tool-call imitations as an assistant reply. Assistant text is only a human-readable explanation and cannot assign work or change state. Before ending this review, call update_swarm through the configured connector with the current turn_id. Its arguments include status (continue, complete, blocked), a concrete summary, and optional assignments (worker id, role, task), instructions (worker id, message), and waiting slots (worker id, reason). A successful tool result confirms the actions were applied; correct rejected arguments through another MCP call. Make only one successful update_swarm call per review. Assignments are for available workers only. Instructions are for workers that already have an assignment. Waiting is only for unused slots. Terminal reviews must have no actions. Complete requires finished assignments and no unresolved conflicts; unused slots may stay idle, and user-stopped workers must remain stopped. Blocked must explain a concrete external obstacle. A quiet worker, connector delay or missing tool call is not a task blocker. Use only the existing worker IDs.",
     `CURRENT WORKER SNAPSHOT\n${JSON.stringify(agents.map((agent) => ({ ...agent, messages: agent.messages?.slice(-6).map((message) => ({ ...message, text: message.text.slice(-2_000) })) })))}`,
   ].join("\n\n");
 }

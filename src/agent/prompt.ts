@@ -24,7 +24,7 @@ export async function buildPrompt(options: PromptOptions): Promise<string> {
   // every message makes large prompts expensive for ChatGPT's editor.
   if (!firstTurn) {
     const activeGoal = goal?.status === "active" ? `\nACTIVE USER GOAL\n${goal.objective}\nContinue until achieved, then call update_goal with complete and evidence; if genuinely blocked, call update_goal with blocked.\n${goalReportingInstructions}\n` : "";
-    return `Continue this conversation using the existing connector and instructions. Project instructions and skills can change: consult get_project_instructions and list_skills when relevant.\nTurn: ${turnId}\n${approvalInstructions(config.approvalMode)}\n${activeGoal}\nUSER REQUEST\n${userText}`;
+    return `Continue this conversation using the existing connector and instructions. Use actual MCP calls exclusively for control; never output JSON replies or imitate tool calls in text. Project instructions and skills can change: consult get_project_instructions and list_skills when relevant.\nTurn: ${turnId}\n${approvalInstructions(config.approvalMode)}\n${activeGoal}\nUSER REQUEST\n${userText}`;
   }
   const [instructions, skills] = await Promise.all([projectInstructions(config.workspace), discoverSkills(config)]);
   const agents = formatInstructions(instructions);
@@ -33,6 +33,7 @@ export async function buildPrompt(options: PromptOptions): Promise<string> {
   const contract = `You are the reasoning engine of "chatgpt-coder", a local coding harness.
 Your tool calls are executed on the user's machine through the MCP connector "${connector}". You do not have direct filesystem, terminal, or internet access except through those tools.
 Use the "${connector}" connector's tools exclusively for local actions. Do not use built-in browsing, code interpreter, canvas, or other apps for these tasks.
+Control the harness only through actual MCP tool calls. Never output JSON-formatted assistant replies, serialized control decisions, or imitations of tool calls. Give human-readable explanations in ordinary prose; structured tool arguments belong inside MCP calls.
 
 ENVIRONMENT
 - Workspace: ${config.workspace}

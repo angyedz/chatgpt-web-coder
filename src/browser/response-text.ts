@@ -133,8 +133,13 @@ const cleanedMessages = new WeakMap<ChatMessage, { original: string; cleaned: st
 // ChatGPT may expose its progress label inside an assistant message before it
 // renders any actual answer. Do not treat that label as model output.
 export function removeResponseStatus(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  // A reasoning placeholder can be repeated by nested activity widgets. It is
+  // not a finished answer, even when the stop control has not mounted yet.
+  const nonempty = lines.map((line) => line.trim()).filter(Boolean);
+  if (nonempty.length && nonempty.every((line) => /^(?:Thinking|Responding|Working|Думаю|Размышляю|Думает)(?:\s*(?:\.{1,3}|…))?$/i.test(line))) return "";
   const status = /^(?:chatgpt\s+(?:is\s+)?(?:responding|thinking|working|generating(?:\s+(?:a\s+)?(?:response|reply))?)|chatgpt\s+(?:отвечает|думает|размышляет|печатает|генерирует ответ))(?:\s*(?:\.{1,3}|…))?$/i;
-  return text.replace(/\r\n?/g, "\n").split("\n").filter((line) => {
+  return lines.filter((line) => {
     const plain = line.trim().replace(/^(?:\*\*|__)(.*?)(?:\*\*|__)$/, "$1").trim();
     return !status.test(plain);
   }).join("\n").trim();

@@ -82,6 +82,8 @@ Subagents are never started automatically. Each gets a separate background brows
 
 Starting a group also opens one dedicated orchestrator tab. The orchestrator chooses task-specific roles and assignments for the requested number of workers, without a fixed role list. It reviews progress about every 30 seconds and after worker completion, and may issue revisions, verification or dependent assignments. Instructions for busy workers are queued. Before follow-up work, unchanged files in a worker copy are refreshed from integrated parent changes; conflicting local edits are preserved. The group's completion requires the orchestrator's final review, not just idle workers. Its status and findings appear in `/swarm status` and saved reports. Stopping the whole group also stops the orchestrator.
 
+The orchestrator controls the group exclusively through the `update_swarm` MCP tool. Assistant JSON is never parsed or executed. Assignments take effect on a successful call without waiting for the prose response to end. Stale and duplicate calls are rejected; the tool is available only to the active coordinator. A missing call triggers another review in about 30 seconds while preserving existing tasks. Connector setup failures before submission are retried safely. Unused workers do not become `failed` because the coordinator fails. Browser errors, quiet agents and waiting for the group do not automatically set the user goal to `blocked`.
+
 Unused workers can remain `idle` with a recorded dependency or capacity reason. The orchestrator can assign them later instead of inventing redundant tasks to occupy every slot.
 
 ## Telegram

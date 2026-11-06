@@ -663,10 +663,13 @@ export class Orchestrator {
       let noProgress = 0;
       let lastGoalActionRevision = this.goalActionRevision;
       while (this.runtime.goal.current?.status === "active") {
-        while (this.runtime.goal.current?.status === "active" && (this.runtime.approvals.pendingRequests.length || this.runtime.tasks.list().some((task) => task.status === "running"))) await delay(1000, undefined, { signal: controller.signal });
+        while (this.runtime.goal.current?.status === "active" && (this.subagents.active || this.runtime.approvals.pendingRequests.length || this.runtime.tasks.list().some((task) => task.status === "running"))) {
+          if (this.subagents.active) { noProgress = 0; lastGoalActionRevision = this.goalActionRevision; }
+          await delay(1000, undefined, { signal: controller.signal });
+        }
         if (this.runtime.goal.current?.status !== "active") break;
         if (noProgress >= 3) {
-          this.runtime.goal.setStatus("blocked", "The agent stopped making progress after three continuations. Review the result and use /goal resume or provide new instructions.");
+          this.events.emit({ type: "notice", level: "warn", text: "Three continuations produced no new actions. The goal remains active; no external blocker was established. Review the conversation or send a follow-up." });
           break;
         }
         this.events.emit({ type: "notice", level: "info", text: "Goal remains active; continuing the task…" });
@@ -713,12 +716,8 @@ export class Orchestrator {
       }
     } catch (error) {
       const userCancelled = controller.signal.aborted;
-      if (this.runtime.goal.current?.status === "active") {
-        if (userCancelled) {
-          this.runtime.goal.setStatus("blocked", "The turn was aborted without an explicit user pause request. Review the interruption and use /goal resume when ready.");
-        } else {
-          this.runtime.goal.setStatus("blocked", `Turn failed: ${error instanceof Error ? error.message : String(error)}. The goal was blocked by this turn error; inspect it and use /goal resume when ready.`);
-        }
+      if (this.runtime.goal.current?.status === "active" && userCancelled) {
+        this.runtime.goal.setStatus("blocked", "The turn was aborted without an explicit user pause request. Review the interruption and use /goal resume when ready.");
       }
       if (userCancelled) {
         this.events.emit({

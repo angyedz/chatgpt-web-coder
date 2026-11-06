@@ -15,6 +15,7 @@ import {
 import { fetchWebPage, searxngSearch } from "./search.js";
 import { scheduleTimer, describeTimer } from "../runtime/schedule.js";
 import { extensionTools } from "./extensions.js";
+import { swarmReviewSchema } from "../agent/swarm-orchestrator.js";
 import { sshTools } from "./ssh.js";
 import { formatInstructions, projectInstructions } from "../runtime/instructions.js";
 import { readAttachmentChunk } from "../runtime/attachments.js";
@@ -82,6 +83,18 @@ function formatExecResult(
 export const toolDefinitions: ToolDefinition[] = [
   ...extensionTools,
   ...sshTools,
+  {
+    name: "update_swarm",
+    title: "Assign and review swarm work",
+    description: "Dedicated swarm orchestrator only: submit a review, assign available workers, queue instructions or record unused capacity. Applies actions through MCP immediately. Use once successfully per review, with the current turn_id. Never substitute an assistant JSON reply for this tool. Terminal reviews require no pending work or actions.",
+    inputSchema: swarmReviewSchema.shape,
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    handler: async (args, ctx) => {
+      if (!ctx.reviewSwarm) return errorText("Swarm reviews are available only in an active dedicated swarm orchestrator turn.");
+      try { return text(ctx.reviewSwarm(args)); }
+      catch (error) { return errorText(error instanceof Error ? error.message : String(error)); }
+    },
+  },
   {
     name: "delegate_subagents",
     title: "Delegate work to coding subagents",

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import type { HarnessConfig } from "../config.js";
-import { ChatGptBrowser } from "../browser/chatgpt.js";
+import { ChatGptBrowser, ConnectorAttachmentError } from "../browser/chatgpt.js";
 import { HarnessEvents } from "../events.js";
 import type { McpHost } from "../mcp/server.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
@@ -10,7 +10,7 @@ import { harnessHome, isInside } from "../utils/paths.js";
 import { newId } from "../utils/ids.js";
 import type { SubagentChatMessage, SubagentSnapshot, SwarmOrchestratorSnapshot } from "../types.js";
 import { listSwarmReports, readSwarmReport, saveSwarmReport, type SwarmReport } from "./swarm-reports.js";
-import { ORCHESTRATOR_TOOLS, parseSwarmDecision, SWARM_REVIEW_INTERVAL_MS, swarmOrchestratorPrompt } from "./swarm-orchestrator.js";
+import { ORCHESTRATOR_TOOLS, validateSwarmReview, SWARM_REVIEW_INTERVAL_MS, swarmOrchestratorPrompt, type SwarmDecision } from "./swarm-orchestrator.js";
 
 const MAX_AGENTS = 5;
 const IGNORED_PATHS = new Set([
@@ -358,7 +358,6 @@ export class SubagentManager {
     runtime.context.allowedTools = ORCHESTRATOR_TOOLS;
     let browser: ChatGptBrowser | undefined;
     let initial = true;
-    let invalidResponses = 0;
     let feedback = "";
     try {
       browser = await this.primaryBrowser.openSideChat(events, { attachConnector: true });
@@ -372,55 +371,52 @@ export class SubagentManager {
         runtime.context.turnId = turnId;
         runtime.context.beforeToolStart = () => browser!.snapshotBeforeTool();
         this.mcp.registerTurnContext(turnId, runtime.context);
-        let answer: string;
+        const submitted: { decision?: SwarmDecision } = {};
+        runtime.context.reviewSwarm = (input) => {
+          controller.signal.throwIfAborted();
+          if (runtime.context.turnId !== turnId) throw new Error("This swarm review turn has expired.");
+          if (submitted.decision) throw new Error("This review was already applied. Wait for the next review turn before dispatching more work.");
+          const review = validateSwarmReview(input, this.snapshots, initial);
+          // A worker may already have produced a result while its runtime is
+          // still cleaning up. Validate all slots before applying any action.
+          if (review.assignments.some((assignment) => !this.agents.find((agent) => agent.info.id === assignment.id)?.settled)) throw new Error("An assigned worker is still finishing its previous turn. Wait for the next review.");
+          if (review.status !== "continue" && this.agents.some((agent) => !agent.settled)) throw new Error("Workers are still finishing their turns. Review their final results before a terminal update.");
+          this.applyReview(review);
+          submitted.decision = review;
+          return `Swarm review applied: ${review.status}. ${review.assignments.length} assignment(s), ${review.instructions.length} instruction(s), ${review.waiting.length} waiting slot(s). ${review.summary}`;
+        };
         try {
-          answer = await browser.send([
+          const continueChat = reviews++ % 12 !== 0;
+          await browser.send([
             swarmOrchestratorPrompt(objective, this.snapshots, initial),
-            `Workspace: ${this.config.workspace}\nUse only the configured MCP connector for workspace facts. Allowed read-only tools: ${ORCHESTRATOR_TOOLS.join(", ")}. Every call requires turn_id: ${turnId}.`,
+            `Workspace: ${this.config.workspace}\nUse only the configured MCP connector. Allowed tools: ${ORCHESTRATOR_TOOLS.join(", ")}. Every call requires turn_id: ${turnId}.`,
             this.orchestratorState?.summary ? `PREVIOUS REVIEW SUMMARY\n${this.orchestratorState.summary}` : "",
             feedback,
-          ].filter(Boolean).join("\n\n"), controller.signal, { turnId, continueChat: reviews % 12 !== 0 });
-          reviews += 1;
+          ].filter(Boolean).join("\n\n"), controller.signal, { turnId, continueChat });
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          // Retrying connector setup is safe: this error is raised before Send.
+          // Once a review was applied, preserve it even if response observation
+          // fails afterwards; never dispatch its assignments a second time.
+          if (!submitted.decision && !(error instanceof ConnectorAttachmentError)) throw error;
+          this.events.emit({ type: "notice", level: "warn", text: `Swarm coordinator: ${error instanceof Error ? error.message : String(error)}${submitted.decision ? " Applied MCP actions were preserved." : " No message was sent; connector setup will retry."}` });
         } finally {
+          runtime.context.reviewSwarm = undefined;
           this.mcp.unregisterTurnContext(turnId);
         }
         controller.signal.throwIfAborted();
-        let decision;
-        try {
-          decision = parseSwarmDecision(answer, this.snapshots, initial);
-          invalidResponses = 0;
-          feedback = "";
-        } catch (error) {
-          if (++invalidResponses >= 3) throw new Error(`Orchestrator could not produce a valid decision: ${error instanceof Error ? error.message : String(error)}`);
-          feedback = `Your previous response was rejected without dispatching its actions: ${error instanceof Error ? error.message : String(error)}. Review the current snapshot and return a valid JSON decision.`;
+        const decision = submitted.decision;
+        if (!decision) {
+          feedback = "No successful update_swarm MCP call was received in the previous review. Assistant text cannot control the swarm. Inspect any actual tool error, then call update_swarm through the connector with the current turn_id. Do not output JSON or pretend to call a tool.";
+          this.orchestratorState = { ...this.orchestratorState, status: initial ? "planning" : "monitoring", summary: "Waiting for an MCP review; existing worker tasks are preserved. The orchestrator will retry." };
+          this.events.emit({ type: "notice", level: "warn", text: "Swarm orchestrator returned without an MCP review. Retrying; no workers were failed or restarted." });
+          this.publish();
+          this.persistReport();
+          await this.waitForReview(controller.signal, false);
           continue;
         }
-        this.orchestratorState = {
-          status: decision.status === "continue" ? "monitoring" : decision.status,
-          summary: decision.summary,
-          lastReviewedAt: Date.now(),
-        };
-        this.events.emit({ type: "notice", level: "info", text: `Swarm orchestrator [${this.orchestratorState.status}]: ${decision.summary}` });
-        controller.signal.throwIfAborted();
-        if (decision.status !== "continue") {
-          // Unused capacity stays idle in the final report.
-          for (const agent of this.agents) if (!agent.info.assignment && agent.settled) {
-            if (agent.info.status !== "stopped") agent.info = { ...agent.info, status: "idle", activity: decision.summary };
-          }
-          break;
-        }
-        for (const assignment of decision.assignments) {
-          controller.signal.throwIfAborted();
-          this.assignWorker(assignment.id, assignment.role, assignment.task);
-        }
-        for (const instruction of decision.instructions) {
-          controller.signal.throwIfAborted();
-          this.queueInstruction(instruction.id, instruction.message);
-        }
-        for (const waiting of decision.waiting) {
-          const agent = this.agents.find((item) => item.info.id === waiting.id)!;
-          agent.info = { ...agent.info, status: "idle", activity: waiting.reason };
-        }
+        feedback = "";
+        if (decision.status !== "continue") break;
         initial = false;
         this.publish();
         this.persistReport();
@@ -434,7 +430,7 @@ export class SubagentManager {
         lastReviewedAt: Date.now(),
       };
       for (const agent of this.agents) if (!agent.info.assignment && agent.settled && agent.info.status !== "stopped") {
-        agent.info = { ...agent.info, status: "failed", error: this.orchestratorState.summary, finishedAt: Date.now() };
+        agent.info = { ...agent.info, status: "idle", activity: "Awaiting assignment; coordinator unavailable" };
       }
       if (!controller.signal.aborted) this.events.emit({ type: "notice", level: "error", text: `Swarm orchestrator: ${this.orchestratorState.summary}` });
     } finally {
@@ -448,6 +444,22 @@ export class SubagentManager {
       this.publish();
       this.persistReport();
     }
+  }
+
+  private applyReview(decision: SwarmDecision): void {
+    for (const assignment of decision.assignments) this.assignWorker(assignment.id, assignment.role, assignment.task);
+    for (const instruction of decision.instructions) this.queueInstruction(instruction.id, instruction.message);
+    for (const waiting of decision.waiting) {
+      const agent = this.agents.find((item) => item.info.id === waiting.id)!;
+      agent.info = { ...agent.info, status: "idle", activity: waiting.reason };
+    }
+    if (decision.status !== "continue") for (const agent of this.agents) {
+      if (!agent.info.assignment && agent.settled && agent.info.status !== "stopped") agent.info = { ...agent.info, status: "idle", activity: decision.summary };
+    }
+    this.orchestratorState = { status: decision.status === "continue" ? "monitoring" : decision.status, summary: decision.summary, lastReviewedAt: Date.now() };
+    this.events.emit({ type: "notice", level: "info", text: `Swarm orchestrator [${this.orchestratorState.status}]: ${decision.summary}` });
+    this.publish();
+    this.persistReport();
   }
 
   private waitForReview(signal: AbortSignal, immediateWhenIdle: boolean): Promise<void> {
@@ -654,7 +666,7 @@ export class SubagentManager {
       controller.signal.throwIfAborted();
       this.mcp.registerTurnContext(turnId, runtime.context);
       registered = true;
-      const answer = await browser.send(`ORCHESTRATOR FOLLOW-UP\nCurrent role: ${agent.info.role}\nShared objective: ${agent.info.objective}\n\nFollow this latest assignment or correction:\n${message}\n\nUnchanged files in your workspace have been refreshed from the parent project. Inspect current files before editing. Your unintegrated conflicting edits are preserved.`, controller.signal, { turnId, continueChat: true });
+      const answer = await browser.send(`ORCHESTRATOR FOLLOW-UP\nUse actual MCP tools exclusively for actions; explain results in ordinary prose, never a JSON reply or tool-call imitation.\nWorkspace: ${agent.info.workspace}\nCurrent role: ${agent.info.role}\nShared objective: ${agent.info.objective}\n\nFollow this latest assignment or correction:\n${message}\n\nUnchanged files in your workspace have been refreshed from the parent project. Inspect current files before editing. Your unintegrated conflicting edits are preserved.`, controller.signal, { turnId, continueChat: true });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
       agent.info = {
@@ -735,6 +747,7 @@ export class SubagentManager {
       this.publish();
       const prompt = [
         "You are one explicitly user-launched coding subagent in an isolated local workspace snapshot.",
+        "Use actual MCP tools exclusively for actions. Never output JSON-formatted assistant replies or imitate tool calls in text. Explain results in ordinary prose.",
         `Your role: ${info.role}. Agent ${info.id} of ${this.agents.length}.`,
         `Workspace: ${info.workspace}`,
         "This workspace is a private copy of the project files, including uncommitted changes, but excluding Git metadata, dependency caches and credential files such as .env, private keys and cloud credentials.",

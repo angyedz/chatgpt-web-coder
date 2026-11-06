@@ -5,6 +5,44 @@ import { defaultConfig } from "../src/config.js";
 import { HarnessEvents } from "../src/events.js";
 import type { HarnessEvent, ToolCallView } from "../src/types.js";
 
+it("does not finish on repeated Thinking placeholders while the send control is disabled and no stop control has mounted", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const config = defaultConfig().browser;
+  config.attachConnector = false;
+  const events = new HarnessEvents();
+  const adapter = new ChatGptBrowser(config, events);
+  Object.assign(adapter, { context, page, chatStarted: true });
+  const controller = new AbortController();
+  let response: Promise<unknown> | undefined;
+  try {
+    await page.setContent(`<div id="prompt-textarea" contenteditable="true"></div><button data-testid="send-button">Send</button><div id="messages"><article data-testid="conversation-turn-0"><div data-message-author-role="assistant">Previous answer.</div><button data-testid="copy-turn-action-button">Copy</button></article></div>
+      <script>document.querySelector('button').onclick = () => {
+        document.querySelector('button').disabled = true;
+        document.body.dataset.sent = 'yes';
+        setTimeout(() => { document.querySelector('#messages').innerHTML += '<div data-message-author-role="assistant">Thinking<br>Thinking</div>'; }, 3_000);
+      };</script>`);
+    let settled = false;
+    response = adapter.send("Continue the work", controller.signal).catch((error: unknown) => error).finally(() => { settled = true; });
+    await page.waitForFunction(() => document.body.dataset.sent === "yes");
+    const call: ToolCallView = { id: "early-tool", name: "read_file", args: {}, status: "running", startedAt: Date.now() };
+    events.emit({ type: "tool-start", call });
+    events.emit({ type: "tool-end", call: { ...call, status: "ok", endedAt: Date.now() } });
+    await page.waitForTimeout(4_000);
+    expect(settled).toBe(false);
+    await page.evaluate(() => {
+      document.querySelectorAll('[data-message-author-role="assistant"]')[1]!.outerHTML = '<article data-testid="conversation-turn-1"><div data-message-author-role="assistant"><div class="markdown">The requested work is complete.</div></div><button data-testid="copy-turn-action-button">Copy</button></article>';
+    });
+    expect(await response).toBe("The requested work is complete.");
+  } finally {
+    controller.abort();
+    await response;
+    await adapter.close();
+    await browser.close();
+  }
+}, 15_000);
+
 it("keeps a slow tool-using response alive beyond the old timeout without stopping or resending it", async () => {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();

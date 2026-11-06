@@ -48,6 +48,13 @@ const PAGE = `<!doctype html>
         selection.addRange(range);
         composer.dispatchEvent(new Event('input', { bubbles: true }));
       });
+      connectorRow.addEventListener('click', () => {
+        composer.innerHTML = '<span data-id="plugin:chatgpt-coder" data-keyword="chatgpt-coder" contenteditable="false">chatgpt-coder</span>';
+        menu.style.display = 'none';
+        const range = document.createRange();
+        range.selectNodeContents(composer); range.collapse(false);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      });
 
       send.addEventListener('click', () => {
         const prompt = composer.innerText || '';

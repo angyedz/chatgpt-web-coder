@@ -13,6 +13,49 @@ import { GoalStore } from "../src/runtime/goals.js";
 import { HarnessEvents } from "../src/events.js";
 
 describe("goal completion", () => {
+  it("waits for an active swarm without counting quiet root turns as lack of progress", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-goal-swarm-"));
+    vi.stubEnv("CHATGPT_CODER_HOME", temporaryHome);
+    const orchestrator = new Orchestrator(defaultConfig(temporaryHome));
+    let swarmActive = true;
+    vi.spyOn(orchestrator.subagents, "active", "get").mockImplementation(() => swarmActive);
+    const send = vi.spyOn(orchestrator.browser, "send").mockResolvedValueOnce("Workers are running.").mockImplementationOnce(async () => {
+      await findTool("update_goal")!.handler({ status: "complete", detail: "Reviewed all integrated swarm results." }, orchestrator.runtime.context);
+      return "The requested work is complete.";
+    });
+    try {
+      const submission = orchestrator.submit("/goal Finish the delegated work");
+      await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+      expect(orchestrator.runtime.goal.current?.status).toBe("active");
+      expect(orchestrator.isBusy).toBe(true);
+      swarmActive = false;
+      await submission;
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(orchestrator.runtime.goal.current?.status).toBe("complete");
+    } finally {
+      swarmActive = false;
+      await orchestrator.sessions.flush();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the goal active when three continuations have no tool actions", async () => {
+    const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-goal-no-tools-"));
+    vi.stubEnv("CHATGPT_CODER_HOME", temporaryHome);
+    const orchestrator = new Orchestrator(defaultConfig(temporaryHome));
+    vi.spyOn(orchestrator.browser, "send").mockResolvedValue("No MCP actions were performed.");
+    try {
+      await orchestrator.submit("/goal Finish the work");
+      expect(orchestrator.runtime.goal.current?.status).toBe("active");
+      expect(orchestrator.isBusy).toBe(false);
+    } finally {
+      await orchestrator.sessions.flush();
+      vi.unstubAllEnvs();
+      await rm(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
   it("exposes update_goal through MCP and rejects completion until the plan is done", async () => {
     const config = defaultConfig(process.cwd());
     config.mcp.port = 0;
@@ -85,15 +128,14 @@ describe("goal completion", () => {
     }
   });
 
-  it("marks an actual turn failure as blocked, not as a user pause", async () => {
+  it("preserves an active goal after a browser transport failure", async () => {
     const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-goal-error-"));
     vi.stubEnv("CHATGPT_CODER_HOME", temporaryHome);
     const orchestrator = new Orchestrator(defaultConfig(temporaryHome));
     vi.spyOn(orchestrator.browser, "send").mockRejectedValue(new Error("temporary browser transport failure"));
     try {
       await orchestrator.submit("/goal Finish the project");
-      expect(orchestrator.runtime.goal.current?.status).toBe("blocked");
-      expect(orchestrator.runtime.goal.current?.detail).toContain("temporary browser transport failure");
+      expect(orchestrator.runtime.goal.current?.status).toBe("active");
       expect(orchestrator.runtime.goal.current?.status).not.toBe("paused");
       expect(orchestrator.isBusy).toBe(false);
     } finally {

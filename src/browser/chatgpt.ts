@@ -9,6 +9,9 @@ import { newId } from "../utils/ids.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { readPicker, type PickerKind } from "./picker.js";
 
+/** Connector preparation failed before the message was submitted; safe to retry. */
+export class ConnectorAttachmentError extends Error {}
+
 export class ChatGptBrowser {
   private context?: BrowserContext;
   private page?: Page;
@@ -81,7 +84,7 @@ export class ChatGptBrowser {
       ...this.config,
       attachConnector: options.attachConnector ?? false,
       newChatPerTurn: true,
-      useTemporaryChat: true,
+      useTemporaryChat: this.config.useTemporaryChat,
     }, events);
     side.context = this.context;
     // Playwright's headless shell does not support CDP's background option;
@@ -669,9 +672,8 @@ export class ChatGptBrowser {
 
   private async resetComposer(composer: Locator): Promise<void> {
     const page = this.requirePage();
-    await composer.click();
-    await page.keyboard.press("Control+A");
-    await page.keyboard.press("Backspace");
+    await composer.press("Control+A");
+    await composer.press("Backspace");
     await page.waitForTimeout(120);
   }
 
@@ -763,7 +765,8 @@ export class ChatGptBrowser {
           await exact.first().waitFor({ state: "visible", timeout: 2_500 });
           opened = true;
         } catch {
-          await page.keyboard.press("Escape").catch(() => undefined);
+          await active.press("Escape").catch(() => undefined);
+          await this.ensureTemporaryPersonalization();
           await page.waitForTimeout(200);
         }
       }
@@ -773,7 +776,7 @@ export class ChatGptBrowser {
     if (!opened) {
       const active = await this.firstVisible("composer");
       if (active) await this.resetComposer(active).catch(() => undefined);
-      throw new Error(
+      throw new ConnectorAttachmentError(
         `ChatGPT did not show the connector "${name}" in the @ mention menu. ` +
           `Create a custom MCP connector with exactly this name, enable Developer Mode, ` +
           `and make sure the temporary chat uses personalized mode (plugins are unavailable ` +
@@ -784,30 +787,14 @@ export class ChatGptBrowser {
     const visibleExact = exact.filter({ visible: true });
     const count = await visibleExact.count();
     if (count !== 1) {
-      throw new Error(
+      throw new ConnectorAttachmentError(
         `ChatGPT exposed ${count} connector menu rows named "${name}"; expected exactly one.`,
       );
     }
 
-    const row = visibleExact.first();
-    const highlighted = async () =>
-      (await row.getAttribute("data-highlighted").catch(() => null)) !== null ||
-      (await row.getAttribute("aria-current").catch(() => null)) === "true";
-
-    if (!(await highlighted())) {
-      const total = await rows.count();
-      for (let step = 0; step < total && !(await highlighted()); step += 1) {
-        await page.keyboard.press("ArrowDown");
-      }
-    }
-    if (!(await highlighted())) {
-      throw new Error(
-        `ChatGPT's connector menu could not highlight the "${name}" row.`,
-      );
-    }
-
-    const active = await this.activeComposer(30_000);
-    await active.press("Enter");
+    // Click the exact row instead of relying on keyboard highlighting, which
+    // can be absent in background chats and in newer mention menus.
+    await visibleExact.first().click();
     await page.waitForTimeout(500);
 
     let selected = await this.activeComposer(30_000);
@@ -827,7 +814,7 @@ export class ChatGptBrowser {
     }
 
     if (!(await this.connectorSelected(selected))) {
-      throw new Error(
+      throw new ConnectorAttachmentError(
         `ChatGPT did not attach the "${name}" connector to the composer.`,
       );
     }
@@ -843,6 +830,9 @@ export class ChatGptBrowser {
   private async ensureTemporaryPersonalization(): Promise<void> {
     if (!this.config.useTemporaryChat) return;
     const page = this.requirePage();
+    // New chats can expose personalization as a toolbar menu, without a modal.
+    const unpersonalized = page.getByRole("button", { name: /^(?:Unpersonalized|Без персонализации|Неперсонализированный|非个性化)\s*$/i }).first();
+    if (await unpersonalized.isVisible().catch(() => false)) await unpersonalized.click();
     const dialogs = page.locator(selectors.connectorDialog.join(", "));
     const deadline = Date.now() + 3_000;
     let chooser: Locator | undefined;
@@ -1165,8 +1155,24 @@ export class ChatGptBrowser {
       this.sawStopButton = true;
       return true;
     }
+    const messages = this.requirePage().locator(selectors.assistantMessage.join(", "));
+    const latest = messages.last();
+    const hasCurrentMessage = await messages.count() > this.baseline;
+    // A completed response may leave an empty, disabled Send button. A visible
+    // response action also confirms completion when a very fast response was
+    // never observed with Stop mounted.
+    const turn = latest.locator('xpath=ancestor-or-self::*[self::article or starts-with(@data-testid,"conversation-turn-")][1]');
+    const actions = turn.locator('[data-testid="copy-turn-action-button"], [data-testid="good-response-turn-action-button"], [data-testid="bad-response-turn-action-button"]');
+    if (hasCurrentMessage) for (let index = 0; index < await actions.count(); index++) if (await actions.nth(index).isVisible().catch(() => false)) return false;
+    if (hasCurrentMessage && await latest.isVisible().catch(() => false)) {
+      const raw = (await latest.innerText().catch(() => "")).trim();
+      // A stale generic "ChatGPT is responding" label may remain after an
+      // observed Stop disappears on a tool-only response. Bare Thinking is a
+      // reasoning placeholder and must never establish completion by itself.
+      if (raw && !removeResponseStatus(raw) && (!this.sawStopButton || !/^ChatGPT\s/i.test(raw))) return true;
+    }
     const send = await this.firstVisible("sendButton");
-    if (send) return false;
+    if (send && await send.isEnabled().catch(() => false)) return false;
     if (this.sawStopButton && await this.firstVisible("composer")) return false;
     return true;
   }

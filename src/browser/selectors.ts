@@ -61,6 +61,8 @@ export const selectors = {
     '.__menu-item[tabindex="0"]',
     '[data-mention-list-scroll-area] button[data-list-navigation-item="true"]',
     '[role="option"][data-keyword]',
+    '[role="option"]',
+    '[role="menuitem"]',
   ],
   connectorDialog: [
     '[role="dialog"]',
