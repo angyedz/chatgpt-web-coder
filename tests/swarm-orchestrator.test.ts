@@ -47,4 +47,10 @@ describe("Swarm orchestrator decisions", () => {
     expect(validateSwarmReview(blocked, agents, true).status).toBe("blocked");
     expect(() => validateSwarmReview(plan, [{ ...agents[0]!, status: "stopped" }, agents[1]!], false)).toThrow("stopped");
   });
+
+  it("reuses failed worker IDs and refuses to declare browser setup an external blocker", () => {
+    const failed = agents.map((agent) => ({ ...agent, status: "failed" as const, failurePhase: "setup" as const, error: "Picker DOM was replaced before Send" }));
+    expect(() => validateSwarmReview({ status: "blocked", summary: "All workers failed and no new worker slots remain." }, failed, false)).toThrow("reusable");
+    expect(validateSwarmReview(plan, failed, false).assignments).toHaveLength(2);
+  });
 });

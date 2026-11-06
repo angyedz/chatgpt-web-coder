@@ -98,6 +98,7 @@ export interface SubagentSnapshot {
   changedFiles?: string[];
   conflicts?: string[];
   error?: string;
+  failurePhase?: "setup" | "work";
 }
 
 export interface SwarmOrchestratorSnapshot {

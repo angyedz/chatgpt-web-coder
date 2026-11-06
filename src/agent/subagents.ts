@@ -8,6 +8,8 @@ import type { McpHost } from "../mcp/server.js";
 import { createRuntime, type Runtime } from "../runtime/context.js";
 import { harnessHome, isInside } from "../utils/paths.js";
 import { newId } from "../utils/ids.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { PickerPreparationError } from "../browser/picker.js";
 import type { SubagentChatMessage, SubagentSnapshot, SwarmOrchestratorSnapshot } from "../types.js";
 import { listSwarmReports, readSwarmReport, saveSwarmReport, type SwarmReport } from "./swarm-reports.js";
 import { ORCHESTRATOR_TOOLS, validateSwarmReview, SWARM_REVIEW_INTERVAL_MS, swarmOrchestratorPrompt, type SwarmDecision } from "./swarm-orchestrator.js";
@@ -42,6 +44,7 @@ type AgentRecord = {
   approvalIds: Set<string>;
   lastPreviewPublish?: number;
   settled?: boolean;
+  hasSubmittedTask?: boolean;
   pendingMessages: string[];
 };
 
@@ -395,11 +398,11 @@ export class SubagentManager {
           ].filter(Boolean).join("\n\n"), controller.signal, { turnId, continueChat });
         } catch (error) {
           controller.signal.throwIfAborted();
-          // Retrying connector setup is safe: this error is raised before Send.
+          // Retrying browser setup is safe: this error is raised before Send.
           // Once a review was applied, preserve it even if response observation
           // fails afterwards; never dispatch its assignments a second time.
-          if (!submitted.decision && !(error instanceof ConnectorAttachmentError)) throw error;
-          this.events.emit({ type: "notice", level: "warn", text: `Swarm coordinator: ${error instanceof Error ? error.message : String(error)}${submitted.decision ? " Applied MCP actions were preserved." : " No message was sent; connector setup will retry."}` });
+          if (!submitted.decision && !(error instanceof ConnectorAttachmentError || error instanceof PickerPreparationError)) throw error;
+          this.events.emit({ type: "notice", level: "warn", text: `Swarm coordinator: ${error instanceof Error ? error.message : String(error)}${submitted.decision ? " Applied MCP actions were preserved." : " No message was sent; browser setup will retry."}` });
         } finally {
           runtime.context.reviewSwarm = undefined;
           this.mcp.unregisterTurnContext(turnId);
@@ -481,10 +484,10 @@ export class SubagentManager {
   private assignWorker(id: string, role: string, task: string): void {
     const agent = this.agents.find((item) => item.info.id === id)!;
     if (!agent.settled || agent.info.status === "stopped") throw new Error(`Worker ${id} is not available for assignment.`);
-    agent.info = { ...agent.info, role, assignment: task, status: "running", activity: "Orchestrator assigned a task", summary: undefined, error: undefined, finishedAt: undefined };
+    agent.info = { ...agent.info, role, assignment: task, status: "running", activity: "Orchestrator assigned a task", summary: undefined, error: undefined, failurePhase: undefined, finishedAt: undefined };
     const instruction = [task, ...agent.pendingMessages.splice(0)].join("\n\n");
     agent.settled = false;
-    if (agent.browser?.isOpen && agent.sideEvents) {
+    if (agent.browser?.isOpen && agent.sideEvents && agent.hasSubmittedTask) {
       agent.task = this.runFollowup(agent, instruction).then(() => undefined, () => undefined);
     } else {
       agent.controller = new AbortController();
@@ -658,7 +661,7 @@ export class SubagentManager {
     runtime.context.turnSignal = controller.signal;
     runtime.context.browser = browser;
     runtime.context.beforeToolStart = () => browser.snapshotBeforeTool();
-    agent.info = { ...agent.info, status: "running", activity: "Orchestrator sent a follow-up", summary: undefined, preview: undefined, error: undefined, finishedAt: undefined };
+    agent.info = { ...agent.info, status: "running", activity: "Orchestrator sent a follow-up", summary: undefined, preview: undefined, error: undefined, failurePhase: undefined, finishedAt: undefined };
     this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: message, createdAt: Date.now() });
     let registered = false;
     try {
@@ -666,7 +669,7 @@ export class SubagentManager {
       controller.signal.throwIfAborted();
       this.mcp.registerTurnContext(turnId, runtime.context);
       registered = true;
-      const answer = await browser.send(`ORCHESTRATOR FOLLOW-UP\nUse actual MCP tools exclusively for actions; explain results in ordinary prose, never a JSON reply or tool-call imitation.\nWorkspace: ${agent.info.workspace}\nCurrent role: ${agent.info.role}\nShared objective: ${agent.info.objective}\n\nFollow this latest assignment or correction:\n${message}\n\nUnchanged files in your workspace have been refreshed from the parent project. Inspect current files before editing. Your unintegrated conflicting edits are preserved.`, controller.signal, { turnId, continueChat: true });
+      const answer = await this.sendWorker(agent, browser, `ORCHESTRATOR FOLLOW-UP\nUse actual MCP tools exclusively for actions; explain results in ordinary prose, never a JSON reply or tool-call imitation.\nWorkspace: ${agent.info.workspace}\nCurrent role: ${agent.info.role}\nShared objective: ${agent.info.objective}\n\nFollow this latest assignment or correction:\n${message}\n\nUnchanged files in your workspace have been refreshed from the parent project. Inspect current files before editing. Your unintegrated conflicting edits are preserved.`, controller.signal, { turnId, continueChat: true });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
       agent.info = {
@@ -686,6 +689,7 @@ export class SubagentManager {
         status: aborted ? "stopped" : "failed",
         activity: aborted ? "follow-up cancelled" : "follow-up failed",
         error: aborted ? undefined : error instanceof Error ? error.message : String(error),
+        failurePhase: aborted ? undefined : error instanceof PickerPreparationError || error instanceof ConnectorAttachmentError ? "setup" : "work",
         finishedAt: Date.now(),
       };
       throw error;
@@ -704,6 +708,10 @@ export class SubagentManager {
 
   private async runAgent(agent: AgentRecord, assignment: string): Promise<void> {
     const { info, controller, turnId } = agent;
+    const unusedBrowser = agent.browser;
+    agent.unsubscribe?.();
+    agent.browser = undefined;
+    agent.hasSubmittedTask = false;
     const sideEvents = new HarnessEvents();
     agent.sideEvents = sideEvents;
     const config: HarnessConfig = { ...this.config, workspace: info.workspace, browser: { ...this.config.browser } };
@@ -736,6 +744,7 @@ export class SubagentManager {
       }
     });
     try {
+      await unusedBrowser?.closeSideChat().catch(() => undefined);
       controller.signal.throwIfAborted();
       const browser = await this.primaryBrowser.openSideChat(sideEvents, { attachConnector: true });
       agent.browser = browser;
@@ -764,7 +773,7 @@ export class SubagentManager {
         "The orchestrator may change your role and assignment in a follow-up. Follow its latest instruction rather than keeping your initial specialization.",
       ].join("\n\n");
       this.recordChatMessage(agent, { id: newId("agent-user"), role: "user", text: assignment, createdAt: Date.now() });
-      const answer = await browser.send(prompt, controller.signal, { turnId });
+      const answer = await this.sendWorker(agent, browser, prompt, controller.signal, { turnId });
       controller.signal.throwIfAborted();
       const integration = await this.integrate(agent);
       const integrationSummary = integration.applied.length
@@ -790,6 +799,7 @@ export class SubagentManager {
         status: aborted ? "stopped" : "failed",
         activity: aborted ? "cancelled" : "failed",
         error: aborted ? undefined : error instanceof Error ? error.message : String(error),
+        failurePhase: aborted ? undefined : error instanceof PickerPreparationError || error instanceof ConnectorAttachmentError ? "setup" : "work",
         finishedAt: Date.now(),
       };
     } finally {
@@ -804,6 +814,31 @@ export class SubagentManager {
       await runtime.exec.dispose().catch(() => undefined);
       agent.runtime = undefined;
       this.workerFinished(agent);
+    }
+  }
+
+  private async sendWorker(agent: AgentRecord, browser: ChatGptBrowser, prompt: string, signal: AbortSignal, options: Parameters<ChatGptBrowser["send"]>[2]): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted();
+      try {
+        const answer = await browser.send(prompt, signal, { ...options, onSubmitted: () => {
+          agent.hasSubmittedTask = true;
+          options?.onSubmitted?.();
+        } });
+        agent.hasSubmittedTask = true;
+        return answer;
+      }
+      catch (error) {
+        signal.throwIfAborted();
+        // These typed errors occur before Send. Never replay a submitted
+        // request or completed MCP action after an observation/transport error.
+        if (!(error instanceof PickerPreparationError || error instanceof ConnectorAttachmentError) || attempt >= 2) throw error;
+        agent.info = { ...agent.info, status: "preparing", activity: `Retrying browser setup (${attempt + 1}/2); no request was sent` };
+        this.events.emit({ type: "notice", level: "warn", text: `Agent ${agent.info.id}: browser setup will retry before sending. ${error.message}` });
+        this.publish();
+        await delay(500, undefined, { signal });
+        agent.info = { ...agent.info, status: "running", activity: "Preparing ChatGPT model and connector" };
+      }
     }
   }
 }

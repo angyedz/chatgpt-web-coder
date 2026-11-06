@@ -86,6 +86,8 @@ A dedicated background orchestrator chooses assignments from the shared objectiv
 
 The orchestrator controls the group only through actual `update_swarm` MCP calls. Assistant text, including JSON, never launches workers. A missing call triggers another review without failing unused workers. Browser errors and waiting for an active group do not automatically block the user goal.
 
+Tabs sharing a browser profile prepare sequentially: chat creation, verified model and effort selection, MCP attachment and submission. Response waits remain parallel. Every nested picker layer is dismissed; covered or replaced controls are reacquired. Setup failures before submission can be retried safely, and existing failed worker IDs can be reassigned.
+
 Workers may stay `idle` while waiting for dependencies or when there is no useful parallel work. The orchestrator records the reason and can assign work to them later.
 
 Subagents only start when explicitly requested. Start up to five with `/swarm start 5 <task>`. Each gets its own background ChatGPT tab and local project copy. Secrets such as `.env` files and private keys are excluded. Changes are copied back only when the target files have not changed in the meantime. Review status and conflicts with `/swarm history` and `/swarm report <run-id>`.

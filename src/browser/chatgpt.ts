@@ -7,7 +7,8 @@ import { cleanBrowserFallback, extractResponse, removeObservedActivity, removeRe
 import { readFallbackText, readMarkdown } from "./markdown.js";
 import { newId } from "../utils/ids.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { readPicker, type PickerKind } from "./picker.js";
+import { preparePicker, readPicker, type PickerKind } from "./picker.js";
+import { withBrowserUi } from "./ui-queue.js";
 
 /** Connector preparation failed before the message was submitted; safe to retry. */
 export class ConnectorAttachmentError extends Error {}
@@ -80,21 +81,27 @@ export class ChatGptBrowser {
 
   async openSideChat(events: HarnessEvents, options: { attachConnector?: boolean } = {}): Promise<ChatGptBrowser> {
     if (!this.isOpen || !this.context) throw new Error("The main ChatGPT browser is not connected.");
+    return withBrowserUi(this.context, () => this.openSideChatUnlocked(events, options));
+  }
+
+  private async openSideChatUnlocked(events: HarnessEvents, options: { attachConnector?: boolean }): Promise<ChatGptBrowser> {
+    const context = this.context;
+    if (!this.isOpen || !context) throw new Error("The main ChatGPT browser is not connected.");
     const side = new ChatGptBrowser({
       ...this.config,
       attachConnector: options.attachConnector ?? false,
       newChatPerTurn: true,
       useTemporaryChat: this.config.useTemporaryChat,
     }, events);
-    side.context = this.context;
+    side.context = context;
     // Playwright's headless shell does not support CDP's background option;
     // a headless page cannot steal OS focus because no window exists.
     if (this.config.headless) {
-      side.page = await this.context.newPage();
+      side.page = await context.newPage();
     } else {
       // Never call newPage() in headed mode: it can steal the user's focus.
       // Fail closed if the background target API is unavailable.
-      const browser = this.context.browser();
+      const browser = context.browser();
       if (!browser) throw new Error("Background tabs require Chromium's browser CDP connection.");
       const cdp = await browser.newBrowserCDPSession();
       const url = `about:blank#chatgpt-coder-side-${newId("tab")}`;
@@ -105,7 +112,7 @@ export class ChatGptBrowser {
         // worker's simultaneously created tab.
         const deadline = Date.now() + 15_000;
         while (Date.now() < deadline) {
-          side.page = this.context.pages().find((page) => !page.isClosed() && page.url() === url);
+          side.page = context.pages().find((page) => !page.isClosed() && page.url() === url);
           if (side.page) break;
           await delay(100);
         }
@@ -296,6 +303,10 @@ export class ChatGptBrowser {
 
   async newChat(): Promise<void> {
     await this.ensureLoggedIn();
+    await withBrowserUi(this.context!, () => this.newChatUnlocked());
+  }
+
+  private async newChatUnlocked(): Promise<void> {
     const page = this.requirePage();
     const base = this.config.baseUrl.replace(/\/+$/, "");
     const url = this.config.useTemporaryChat
@@ -337,6 +348,14 @@ export class ChatGptBrowser {
     return result;
   }
 
+  private async applyPicker(kind: PickerKind, label: string, signal: AbortSignal): Promise<void> {
+    const result = await preparePicker(this.requirePage(), kind, label, signal);
+    if (result.selected) {
+      this.appliedPicker[kind] = result.selected;
+      if (kind === "model") delete this.appliedPicker.effort;
+    }
+  }
+
   /** Apply per-session picker overrides without changing the main harness configuration. */
   setPickerPreference(kind: PickerKind, label: string): void {
     if (kind === "model") this.config.modelLabel = label;
@@ -353,32 +372,39 @@ export class ChatGptBrowser {
     signal.throwIfAborted();
     const outgoingPrompt = options.turnId ? `${prompt}\n\nCurrent harness turn_id (required for tool calls): ${options.turnId}` : prompt;
     await this.ensureLoggedIn();
-    const page = this.requirePage();
-    signal.throwIfAborted();
-    if (!options.continueChat) await this.ensureChat();
-    signal.throwIfAborted();
-    if (await this.firstVisible("stopButton")) throw new Error("ChatGPT is still generating a previous response. Wait or stop it in the browser before sending another request.");
-    signal.throwIfAborted();
-    if (this.config.modelLabel.trim() && this.appliedPicker.model !== this.config.modelLabel) await this.picker("model", this.config.modelLabel);
-    if (this.config.effortLabel.trim() && this.appliedPicker.effort !== this.config.effortLabel) await this.picker("effort", this.config.effortLabel);
-    signal.throwIfAborted();
-
-    this.endedAfterTool = false;
-    this.sawStopButton = false;
-    this.submittedPrompt = outgoingPrompt;
-    this.baseline = await this.count("assistantMessage");
-    this.baselineMarkdown = await this.requirePage().locator(selectors.markdown.join(", ")).count();
-    await this.fillComposer(outgoingPrompt, options.files ?? [], signal);
-    signal.throwIfAborted();
-    const responseStream = new ResponseStream(this.events, newId("assistant"), this.responseChannel);
-    this.responseStream = responseStream;
-    this.responseSignal = signal;
-    const initialToolEpoch = this.toolEpoch;
+    const { page, responseStream, initialToolEpoch } = await withBrowserUi(this.context!, async () => {
+      signal.throwIfAborted();
+      if (!options.continueChat && (!this.chatStarted || this.config.newChatPerTurn)) await this.newChatUnlocked();
+      const page = this.requirePage();
+      signal.throwIfAborted();
+      if (await this.firstVisible("stopButton")) throw new Error("ChatGPT is still generating a previous response. Wait or stop it in the browser before sending another request.");
+      if (this.config.modelLabel.trim() && this.appliedPicker.model !== this.config.modelLabel) await this.applyPicker("model", this.config.modelLabel, signal);
+      if (this.config.effortLabel.trim() && this.appliedPicker.effort !== this.config.effortLabel) await this.applyPicker("effort", this.config.effortLabel, signal);
+      signal.throwIfAborted();
+      this.endedAfterTool = false;
+      this.sawStopButton = false;
+      this.submittedPrompt = outgoingPrompt;
+      this.baseline = await this.count("assistantMessage");
+      this.baselineMarkdown = await page.locator(selectors.markdown.join(", ")).count();
+      await this.fillComposer(outgoingPrompt, options.files ?? [], signal);
+      signal.throwIfAborted();
+      const responseStream = new ResponseStream(this.events, newId("assistant"), this.responseChannel);
+      this.responseStream = responseStream;
+      this.responseSignal = signal;
+      const initialToolEpoch = this.toolEpoch;
+      try {
+        await this.clickSend();
+        options.onSubmitted?.();
+        signal.throwIfAborted();
+      } catch (error) {
+        responseStream.interrupt(signal.aborted ? "cancelled" : "interrupted");
+        this.responseStream = undefined;
+        this.responseSignal = undefined;
+        throw error;
+      }
+      return { page, responseStream, initialToolEpoch };
+    }, signal);
     try {
-    await this.clickSend();
-    options.onSubmitted?.();
-    signal.throwIfAborted();
-
     this.events.emit({ type: "phase", phase: "thinking" });
     let lastText = "";
     let stableTicks = 0;
@@ -807,7 +833,7 @@ export class ChatGptBrowser {
       // Some accounts show a one-time "Allow ChatGPT to use …?" card before the
       // connector pill appears. Click Allow once if the harness is allowed to.
       if (this.config.autoApproveToolCalls) {
-        await this.autoApproveToolCall();
+        await this.autoApproveToolCallUnlocked();
         await page.waitForTimeout(600);
         selected = await this.activeComposer(30_000);
       }
@@ -971,6 +997,10 @@ export class ChatGptBrowser {
   }
 
   async interactWithControl(controlId: string, action: "click" | "fill" | "select" | "check" | "uncheck", value?: string): Promise<string> {
+    return withBrowserUi(this.requirePage().context(), () => this.interactWithControlUnlocked(controlId, action, value));
+  }
+
+  private async interactWithControlUnlocked(controlId: string, action: "click" | "fill" | "select" | "check" | "uncheck", value?: string): Promise<string> {
     const control = this.interactiveControls.get(controlId);
     if (!control) throw new Error("That control ID has expired. Call list_chatgpt_controls again.");
     if (!(await control.isVisible().catch(() => false)) || !(await control.isEnabled().catch(() => false))) {
@@ -1227,6 +1257,10 @@ export class ChatGptBrowser {
   }
 
   private async autoApproveToolCall(): Promise<void> {
+    return withBrowserUi(this.requirePage().context(), () => this.autoApproveToolCallUnlocked(), this.responseSignal);
+  }
+
+  private async autoApproveToolCallUnlocked(): Promise<void> {
     const page = this.requirePage();
     for (const selector of selectors.allowButton) {
       const buttons = page.locator(selector);

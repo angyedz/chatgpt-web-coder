@@ -10,6 +10,7 @@ import { SubagentManager } from "../src/agent/subagents.js";
 import type { SubagentSnapshot } from "../src/types.js";
 import type { ToolContext } from "../src/tools/types.js";
 import { findTool } from "../src/tools/index.js";
+import { PickerPreparationError } from "../src/browser/picker.js";
 
 const turnContexts = new Map<string, ToolContext>();
 
@@ -81,6 +82,69 @@ function mcpHost(): McpHost {
 }
 
 describe("SubagentManager explicit launch boundaries", () => {
+  it("reassigns the same worker after exhausted setup retries with its full initial contract", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "cc-worker-reassign-"));
+    const source = path.join(directory, "project");
+    await mkdir(source);
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(directory, "home"));
+    let attempts = 0;
+    let reviews = 0;
+    const browser = browserFor(async (prompt) => {
+      if (++attempts <= 3) throw new PickerPreparationError("Picker could not be prepared before Send.");
+      expect(prompt).toContain("You are one explicitly user-launched coding subagent");
+      expect(prompt).toContain("Do not run Git commands");
+      expect(prompt).toContain("Retry the requested storage implementation");
+      return "Completed and verified the worker assignment.";
+    }, async () => ++reviews <= 2
+      ? { status: "continue", summary: "Reuse the same worker slot after browser preparation failed.", assignments: [{ id: "1", role: "Storage owner", task: reviews === 1 ? "Implement the requested storage change." : "Retry the requested storage implementation after setup recovery." }] }
+      : { status: "complete", summary: "Reviewed the completed work after reassigning the original ID." });
+    const agents = new SubagentManager(defaultConfig(source), browser, mcpHost(), new HarnessEvents());
+    vi.useFakeTimers();
+    try {
+      await agents.start(1, "Implement and verify a storage change");
+      await vi.waitFor(() => expect(attempts).toBe(1));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(agents.orchestration?.status).toBe("complete"));
+      expect(attempts).toBe(4);
+      expect(agents.snapshots).toHaveLength(1);
+      expect(agents.snapshots[0]?.id).toBe("1");
+      expect(agents.snapshots[0]?.status).toBe("done");
+    } finally {
+      await agents.shutdown();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a worker picker failure before Send without failing its assignment", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "cc-worker-picker-"));
+    const source = path.join(directory, "project");
+    await mkdir(source);
+    vi.stubEnv("CHATGPT_CODER_HOME", path.join(directory, "home"));
+    let attempts = 0;
+    const browser = browserFor(async () => {
+      if (++attempts === 1) throw new PickerPreparationError("Picker trigger was replaced before submission.");
+      return "The requested worker task was completed.";
+    });
+    const agents = new SubagentManager(defaultConfig(source), browser, mcpHost(), new HarnessEvents());
+    vi.useFakeTimers();
+    try {
+      await agents.start(1, "Complete the requested storage work");
+      await vi.waitFor(() => expect(attempts).toBe(1));
+      expect(agents.snapshots[0]?.status).toBe("preparing");
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.waitFor(() => expect(agents.orchestration?.status).toBe("complete"));
+      expect(attempts).toBe(2);
+      expect(agents.snapshots[0]?.status).toBe("done");
+    } finally {
+      await agents.shutdown();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("ignores assistant JSON and prose, keeps planning after three missed MCP reviews, then accepts a real tool call", async () => {
     const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "cc-swarm-no-json-"));
     const source = path.join(temporaryHome, "project");
